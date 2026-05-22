@@ -1,6 +1,6 @@
 use dioxus::prelude::*;
 use crate::services::chain::ChainDetail;
-use crate::services::{azure, names};
+use crate::services::{azure, kpi, names};
 use crate::components::trigger_panel::TriggerPanel;
 use std::collections::HashMap;
 
@@ -29,6 +29,7 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
     let deployed: std::collections::HashSet<&str> = props.deployed_workflows.iter().map(|s| s.as_str()).collect();
 
     let mut run_statuses = use_signal(|| HashMap::<String, RunStatus>::new());
+    let mut all_runs = use_signal(|| HashMap::<String, Vec<azure::RunInfo>>::new());
     let mut queue_statuses = use_signal(|| HashMap::<String, QueueStatus>::new());
     let mut loading = use_signal(|| false);
     let mut show_trigger = use_signal(|| false);
@@ -159,15 +160,17 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                                 loading.set(true);
                                 spawn(async move {
                                     let mut statuses = HashMap::new();
+                                    let mut runs_map = HashMap::new();
                                     for wf in &steps {
                                         let az = az.clone();
                                         let wf_name = wf.clone();
                                         let wf_key = wf.clone();
                                         let result = tokio::task::spawn_blocking(move || {
-                                            azure::list_runs(&az.subscription, &az.resource_group, &az.app_name, &wf_name, 1)
+                                            azure::list_runs(&az.subscription, &az.resource_group, &az.app_name, &wf_name, 20)
                                         }).await;
                                         let status = match result {
-                                            Ok(Ok(runs)) if !runs.is_empty() => {
+                                            Ok(Ok(ref runs)) if !runs.is_empty() => {
+                                                runs_map.insert(wf_key.clone(), runs.clone());
                                                 RunStatus {
                                                     run_id: runs[0].id.clone(),
                                                     last_status: runs[0].status.clone(),
@@ -183,6 +186,7 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                                         statuses.insert(wf_key, status);
                                     }
                                     run_statuses.set(statuses);
+                                    all_runs.set(runs_map);
 
                                     let mut q_statuses = HashMap::new();
                                     for q in &queues {
@@ -217,6 +221,93 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                         az_config: az.clone(),
                         payloads_dir: props.logic_apps_dir.clone(),
                     }
+                }
+            }
+
+            // KPI banner
+            {
+                let runs_data = all_runs.read();
+                let has_data = !runs_data.is_empty();
+                if has_data {
+                    let workflow_kpis: Vec<(&String, kpi::ChainKpi)> = chain.steps.iter()
+                        .filter_map(|s| {
+                            runs_data.get(&s.workflow).map(|runs| (&s.workflow, kpi::compute_workflow_kpi(runs)))
+                        })
+                        .collect();
+                    let total_runs: usize = workflow_kpis.iter().map(|(_, k)| k.total_runs).sum();
+                    let total_succeeded: usize = workflow_kpis.iter().map(|(_, k)| k.succeeded).sum();
+                    let total_failed: usize = workflow_kpis.iter().map(|(_, k)| k.failed).sum();
+                    let overall_rate = if total_runs > 0 { (total_succeeded as f64 / total_runs as f64) * 100.0 } else { 0.0 };
+                    let max_streak = workflow_kpis.iter().map(|(_, k)| k.failure_streak).max().unwrap_or(0);
+                    let avg_durations: Vec<f64> = workflow_kpis.iter().filter_map(|(_, k)| k.avg_duration_secs).collect();
+                    let overall_avg = if avg_durations.is_empty() { None } else {
+                        Some(avg_durations.iter().sum::<f64>() / avg_durations.len() as f64)
+                    };
+                    let p95_durations: Vec<f64> = workflow_kpis.iter().filter_map(|(_, k)| k.p95_duration_secs).collect();
+                    let overall_p95 = p95_durations.iter().cloned().reduce(f64::max);
+
+                    let rate_class = if overall_rate >= 95.0 { "kpi-value kpi-good" }
+                        else if overall_rate >= 80.0 { "kpi-value kpi-warn" }
+                        else { "kpi-value kpi-bad" };
+                    let streak_class = if max_streak == 0 { "kpi-value kpi-good" }
+                        else if max_streak <= 2 { "kpi-value kpi-warn" }
+                        else { "kpi-value kpi-bad" };
+
+                    rsx! {
+                        div { class: "kpi-banner",
+                            div { class: "kpi-card",
+                                div { class: "kpi-label", "Success Rate" }
+                                div { class: "{rate_class}", "{overall_rate:.1}%" }
+                                div { class: "kpi-sub", "{total_succeeded}/{total_runs} runs" }
+                            }
+                            div { class: "kpi-card",
+                                div { class: "kpi-label", "Avg Duration" }
+                                div { class: "kpi-value",
+                                    {match overall_avg {
+                                        Some(s) => format_duration(s),
+                                        None => "—".into(),
+                                    }}
+                                }
+                                div { class: "kpi-sub",
+                                    {match overall_p95 {
+                                        Some(s) => format!("p95: {}", format_duration(s)),
+                                        None => String::new(),
+                                    }}
+                                }
+                            }
+                            div { class: "kpi-card",
+                                div { class: "kpi-label", "Failure Streak" }
+                                div { class: "{streak_class}", "{max_streak}" }
+                                div { class: "kpi-sub",
+                                    if total_failed > 0 { "{total_failed} failed total" } else { "all clear" }
+                                }
+                            }
+                            // Per-workflow breakdown for chains with multiple steps
+                            if workflow_kpis.len() > 1 {
+                                for (wf_name, wk) in workflow_kpis.iter() {
+                                    {
+                                        let wf_rate_class = if wk.success_rate >= 95.0 { "kpi-value kpi-good" }
+                                            else if wk.success_rate >= 80.0 { "kpi-value kpi-warn" }
+                                            else { "kpi-value kpi-bad" };
+                                        rsx! {
+                                            div { class: "kpi-card kpi-card-small",
+                                                div { class: "kpi-label", "{wf_name}" }
+                                                div { class: "{wf_rate_class}", "{wk.success_rate:.0}%" }
+                                                div { class: "kpi-sub",
+                                                    {match wk.avg_duration_secs {
+                                                        Some(s) => format_duration(s),
+                                                        None => "—".into(),
+                                                    }}
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    rsx! {}
                 }
             }
 
@@ -406,6 +497,18 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                 }
             }
         }
+    }
+}
+
+fn format_duration(secs: f64) -> String {
+    if secs < 1.0 {
+        format!("{:.0}ms", secs * 1000.0)
+    } else if secs < 60.0 {
+        format!("{:.1}s", secs)
+    } else if secs < 3600.0 {
+        format!("{:.1}m", secs / 60.0)
+    } else {
+        format!("{:.1}h", secs / 3600.0)
     }
 }
 

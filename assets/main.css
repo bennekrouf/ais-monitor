@@ -351,7 +351,7 @@ body {
     transition: background 0.15s;
 }
 .resize-handle:hover,
-.resize-handle:active {
+.resize-handle.dragging {
     background: var(--blue);
 }
 
@@ -481,6 +481,64 @@ body {
     border-radius: 6px;
     outline: none;
     min-width: 250px;
+}
+
+/* ── KPI banner ──────────────────────────────────────────────────── */
+.kpi-banner {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 16px;
+    flex-wrap: wrap;
+}
+
+.kpi-card {
+    background: var(--bg1);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px 18px;
+    min-width: 130px;
+    text-align: center;
+}
+
+.kpi-card-small {
+    padding: 8px 14px;
+    min-width: 100px;
+}
+.kpi-card-small .kpi-label {
+    font-size: 10px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 120px;
+}
+
+.kpi-label {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--text3);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    margin-bottom: 4px;
+}
+
+.kpi-value {
+    font-size: 22px;
+    font-weight: 700;
+    color: var(--text1);
+    line-height: 1.2;
+}
+.kpi-card-small .kpi-value {
+    font-size: 16px;
+}
+
+.kpi-good { color: var(--green); }
+.kpi-warn { color: var(--yellow); }
+.kpi-bad  { color: var(--red); }
+
+.kpi-sub {
+    font-size: 10px;
+    color: var(--text3);
+    margin-top: 2px;
 }
 
 /* ── Steps table ──────────────────────────────────────────────────── */
@@ -777,6 +835,141 @@ body {
     max-height: 300px;
     overflow-y: auto;
     white-space: pre-wrap;
+    word-break: break-all;
+}
+
+/* ══════════════════════════════════════════════
+   EVENTGRID TOPOLOGY (Phase E)
+══════════════════════════════════════════════ */
+.eg-panel {
+    padding: 0;
+}
+
+.eg-header {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-bottom: 20px;
+}
+.eg-header h3 {
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text1);
+    margin: 0;
+}
+.eg-rg {
+    font-size: 12px;
+    color: var(--text3);
+}
+
+.eg-loading, .eg-empty {
+    color: var(--text3);
+    font-size: 13px;
+    font-style: italic;
+    padding: 20px 0;
+}
+.eg-error {
+    color: var(--red);
+    font-size: 12px;
+    padding: 8px 12px;
+    background: rgba(248,81,73,0.08);
+    border-radius: 6px;
+    margin-bottom: 12px;
+}
+
+.eg-topic {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 12px;
+    overflow: hidden;
+}
+
+.eg-topic-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 14px;
+    background: var(--bg1);
+    cursor: pointer;
+    transition: background 0.1s;
+}
+.eg-topic-header:hover { background: var(--bg2); }
+
+.eg-topic-arrow {
+    font-size: 10px;
+    color: var(--text3);
+    width: 14px;
+    flex-shrink: 0;
+}
+.eg-topic-icon {
+    font-size: 14px;
+    flex-shrink: 0;
+}
+.eg-topic-name {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text1);
+}
+.eg-topic-badge {
+    font-size: 10px;
+    padding: 2px 8px;
+    border-radius: 8px;
+    background: var(--bg2);
+    color: var(--text2);
+    border: 1px solid var(--border);
+    margin-left: auto;
+    flex-shrink: 0;
+}
+
+.eg-subs {
+    border-top: 1px solid var(--border);
+}
+
+.eg-sub {
+    padding: 10px 14px 10px 36px;
+    border-bottom: 1px solid var(--border2);
+}
+.eg-sub:last-child { border-bottom: none; }
+
+.eg-sub-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+}
+.eg-sub-icon { font-size: 14px; flex-shrink: 0; }
+.eg-sub-name { color: var(--text1); font-weight: 500; }
+.eg-sub-arrow { color: var(--text3); font-size: 12px; }
+.eg-sub-dest {
+    color: var(--yellow);
+    font-weight: 500;
+    font-size: 12px;
+}
+
+.eg-filters {
+    margin-top: 6px;
+    padding-left: 24px;
+}
+
+.eg-filter {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    font-size: 11px;
+    padding: 2px 0;
+    color: var(--text2);
+}
+.eg-filter-key {
+    color: var(--purple);
+    font-weight: 500;
+}
+.eg-filter-op {
+    color: var(--text3);
+    font-size: 10px;
+    text-transform: lowercase;
+}
+.eg-filter-val {
+    color: var(--blue);
     word-break: break-all;
 }
 

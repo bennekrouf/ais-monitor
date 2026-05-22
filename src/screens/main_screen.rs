@@ -32,33 +32,36 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     use_effect(move || {
         document::eval(r#"
             (function() {
-                var handle = document.getElementById('resize-handle');
-                if (!handle || handle._resizeInit) return;
-                handle._resizeInit = true;
-                var list = handle.previousElementSibling;
-                var dragging = false;
-                handle.addEventListener('mousedown', function(e) {
-                    dragging = true;
+                if (window.__ais_monitor_resize_init) return;
+                window.__ais_monitor_resize_init = true;
+                document.body.addEventListener('mousedown', function(e) {
+                    var target = e.target;
+                    if (!target || target.id !== 'resize-handle') return;
+                    e.preventDefault();
+                    var list = target.previousElementSibling;
+                    if (!list) return;
+                    var startX = e.clientX;
+                    var startW = list.getBoundingClientRect().width;
+                    target.classList.add('dragging');
                     document.body.style.cursor = 'col-resize';
                     document.body.style.userSelect = 'none';
-                    e.preventDefault();
-                });
-                document.addEventListener('mousemove', function(e) {
-                    if (!dragging) return;
-                    var container = handle.parentElement;
-                    var rect = container.getBoundingClientRect();
-                    var x = e.clientX - rect.left;
-                    var min = 160, max = rect.width * 0.6;
-                    if (x < min) x = min;
-                    if (x > max) x = max;
-                    list.style.width = x + 'px';
-                });
-                document.addEventListener('mouseup', function() {
-                    if (dragging) {
-                        dragging = false;
+                    document.body.style.webkitUserSelect = 'none';
+                    var onMove = function(ev) {
+                        var w = startW + (ev.clientX - startX);
+                        if (w < 160) w = 160;
+                        if (w > 520) w = 520;
+                        list.style.width = w + 'px';
+                    };
+                    var onUp = function() {
+                        target.classList.remove('dragging');
                         document.body.style.cursor = '';
                         document.body.style.userSelect = '';
-                    }
+                        document.body.style.webkitUserSelect = '';
+                        document.removeEventListener('mousemove', onMove);
+                        document.removeEventListener('mouseup', onUp);
+                    };
+                    document.addEventListener('mousemove', onMove);
+                    document.addEventListener('mouseup', onUp);
                 });
             })();
         "#);
