@@ -1,0 +1,12 @@
+[application]
+name = "ais-monitor"
+default_platform = "desktop"
+
+[desktop]
+title = "AIS Monitor"
+
+[bundle]
+identifier = "com.ais-monitor.app"
+
+[web.app]
+title = "AIS Monitor"

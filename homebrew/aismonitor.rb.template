@@ -1,0 +1,18 @@
+class Aismonitor < Formula
+  desc "AIS Monitor — Azure Logic Apps chain monitor and debugger"
+  homepage "https://github.com/Bennekrouf/ais-monitor"
+  version "0.1.0"
+  url "https://github.com/Bennekrouf/ais-monitor/releases/download/v#{version}/ais-monitor-macos-arm64.tar.gz"
+  sha256 "REPLACE_WITH_SHA256"
+
+  depends_on arch: :arm64
+  depends_on "azure-cli"
+
+  def install
+    bin.install "ais-monitor"
+  end
+
+  test do
+    assert_predicate bin/"ais-monitor", :executable?
+  end
+end
