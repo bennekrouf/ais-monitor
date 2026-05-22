@@ -4,6 +4,7 @@ mod services;
 
 use dioxus::prelude::*;
 use dioxus::desktop::LogicalSize;
+use components::chain_detail::AzConfig;
 use screens::{welcome::Welcome, main_screen::MainScreen};
 
 const MAIN_CSS: &str = include_str!("../assets/main.css");
@@ -36,13 +37,11 @@ fn make_icon() -> Option<dioxus::desktop::tao::window::Icon> {
             let radius = SIZE as f32 / 2.0;
             let alpha = if r_sq > (radius * radius) { 0u8 } else { 255u8 };
 
-            // Teal/green gradient for monitor (distinct from ais-runner blue)
             let t = (x + y) as f32 / (SIZE * 2) as f32;
-            let r = (0.0_f32 + t * 15.0) as u8;
-            let g = (160.0 - t * 30.0) as u8;
-            let b = (120.0 - t * 20.0) as u8;
+            let r = (0.0_f32 + t * 20.0) as u8;
+            let g = (100.0 + t * 20.0) as u8;
+            let b = (200.0 - t * 30.0) as u8;
 
-            // White "eye" / monitor shape
             let in_shape = is_monitor_shape(x, y, SIZE);
             let (r, g, b) = if in_shape { (255u8, 255u8, 255u8) } else { (r, g, b) };
 
@@ -57,20 +56,52 @@ fn is_monitor_shape(x: u32, y: u32, size: u32) -> bool {
     let fx = x as f32;
     let fy = y as f32;
 
-    // Central "eye" circle (monitoring)
-    let cx = s * 0.50;
-    let cy = s * 0.45;
-    if (fx - cx).hypot(fy - cy) < s * 0.15 { return true; }
+    // Shield outline: rounded top, pointed bottom
+    let scx = s * 0.50;
+    let top = s * 0.18;
+    let bot = s * 0.82;
+    let w = s * 0.32;
+    let mid_y = s * 0.55;
+    let inside = if fy < top || fy > bot {
+        false
+    } else if fy <= mid_y {
+        (fx - scx).abs() < w && (fx - scx).abs() > w - s * 0.04
+    } else {
+        let frac = (fy - mid_y) / (bot - mid_y);
+        let cur_w = w * (1.0 - frac);
+        cur_w > s * 0.02 && (fx - scx).abs() < cur_w && (fx - scx).abs() > cur_w - s * 0.04
+    };
+    if inside { return true; }
+    // Shield top arc
+    if fy >= top - s * 0.02 && fy <= top + s * 0.02 && (fx - scx).abs() < w {
+        return true;
+    }
 
-    // Outer ring
-    let dist = (fx - cx).hypot(fy - cy);
-    if dist > s * 0.25 && dist < s * 0.30 { return true; }
+    // Heartbeat / pulse line across the shield center
+    let pulse_y = s * 0.48;
+    let thick = s * 0.025;
+    if fy > pulse_y - s * 0.18 && fy < pulse_y + s * 0.18 && fx > scx - w + s * 0.06 && fx < scx + w - s * 0.06 {
+        let left = scx - w + s * 0.06;
+        let right = scx + w - s * 0.06;
+        let span = right - left;
+        let t = (fx - left) / span;
 
-    // Three small dots at bottom (chain links)
-    for i in 0..3 {
-        let dx = s * (0.30 + i as f32 * 0.20);
-        let dy = s * 0.78;
-        if (fx - dx).hypot(fy - dy) < s * 0.06 { return true; }
+        let py = if t < 0.30 {
+            pulse_y
+        } else if t < 0.40 {
+            let u = (t - 0.30) / 0.10;
+            pulse_y - s * 0.15 * u
+        } else if t < 0.50 {
+            let u = (t - 0.40) / 0.10;
+            pulse_y - s * 0.15 * (1.0 - u) + s * 0.12 * u
+        } else if t < 0.58 {
+            let u = (t - 0.50) / 0.08;
+            pulse_y + s * 0.12 * (1.0 - u)
+        } else {
+            pulse_y
+        };
+
+        if (fy - py).abs() < thick { return true; }
     }
 
     false
@@ -78,21 +109,21 @@ fn is_monitor_shape(x: u32, y: u32, size: u32) -> bool {
 
 #[component]
 fn App() -> Element {
-    let mut selected_dir = use_signal(|| Option::<String>::None);
-    let dir_val = selected_dir.read().clone();
+    let mut az_config = use_signal(|| Option::<AzConfig>::None);
+    let config_val = az_config.read().clone();
 
-    match dir_val {
+    match config_val {
         None => rsx! {
             document::Style { "{MAIN_CSS}" }
             Welcome {
-                on_select: move |dir: String| selected_dir.set(Some(dir)),
+                on_connect: move |config: AzConfig| az_config.set(Some(config)),
             }
         },
-        Some(dir) => rsx! {
+        Some(config) => rsx! {
             document::Style { "{MAIN_CSS}" }
             MainScreen {
-                logic_apps_dir: dir.clone(),
-                on_back: move |_| selected_dir.set(None),
+                az_config: config,
+                on_back: move |_| az_config.set(None),
             }
         },
     }

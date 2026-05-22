@@ -11,6 +11,14 @@ pub struct ChainKpi {
     pub p95_duration_secs: Option<f64>,
     pub failure_streak: usize,
     pub last_success_ago: Option<String>,
+    pub stuck_runs: Vec<StuckRun>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct StuckRun {
+    pub run_id: String,
+    pub elapsed_secs: f64,
+    pub p95_secs: f64,
 }
 
 pub fn compute_workflow_kpi(runs: &[RunInfo]) -> ChainKpi {
@@ -47,6 +55,24 @@ pub fn compute_workflow_kpi(runs: &[RunInfo]) -> ChainKpi {
         .and_then(|r| DateTime::parse_from_rfc3339(&r.start).ok())
         .map(|dt| format_ago(dt.with_timezone(&Utc)));
 
+    let stuck_runs = if let Some(p95_val) = p95 {
+        let now = Utc::now();
+        runs.iter()
+            .filter(|r| r.status == "Running")
+            .filter_map(|r| {
+                let start = DateTime::parse_from_rfc3339(&r.start).ok()?;
+                let elapsed = (now - start.with_timezone(&Utc)).num_milliseconds() as f64 / 1000.0;
+                if elapsed > p95_val {
+                    Some(StuckRun { run_id: r.id.clone(), elapsed_secs: elapsed, p95_secs: p95_val })
+                } else {
+                    None
+                }
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
+
     ChainKpi {
         total_runs: total,
         succeeded,
@@ -56,6 +82,7 @@ pub fn compute_workflow_kpi(runs: &[RunInfo]) -> ChainKpi {
         p95_duration_secs: p95,
         failure_streak: streak,
         last_success_ago,
+        stuck_runs,
     }
 }
 

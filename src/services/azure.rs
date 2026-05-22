@@ -3,7 +3,6 @@ use std::process::Command;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum AzLoginState {
-    Unknown,
     Checking,
     LoggedIn { account: String, subscription_id: String },
     Expired,
@@ -205,29 +204,65 @@ pub struct QueueInfo {
     pub scheduled: i64,
 }
 
-/// Get the callback URL for an HTTP-triggered workflow (blocking)
-pub fn get_trigger_url(sub: &str, rg: &str, app: &str, workflow: &str) -> Result<String, String> {
+/// List trigger names for a workflow (blocking)
+pub fn list_triggers(sub: &str, rg: &str, app: &str, workflow: &str) -> Result<Vec<String>, String> {
     let url = format!(
-        "https://management.azure.com/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.Web/sites/{app}/hostruntime/runtime/webhooks/workflow/api/management/workflows/{workflow}/triggers/manual/listCallbackUrl?api-version=2024-04-01"
+        "https://management.azure.com/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.Web/sites/{app}/hostruntime/runtime/webhooks/workflow/api/management/workflows/{workflow}/triggers?api-version=2024-04-01"
     );
 
     let output = Command::new("az")
-        .args(["rest", "--method", "POST", "--url", &url, "--output", "json"])
+        .args(["rest", "--method", "GET", "--url", &url, "--output", "json"])
         .output()
         .map_err(|e| format!("az rest failed: {e}"))?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Failed to get trigger URL: {stderr}"));
+        return Err(String::from_utf8_lossy(&output.stderr).to_string());
     }
 
     let body = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(&body)
         .map_err(|e| format!("parse: {e}"))?;
 
-    json["value"].as_str()
-        .map(String::from)
-        .ok_or_else(|| "No callback URL in response".into())
+    let arr = if json.is_array() { json.as_array() } else { json["value"].as_array() };
+
+    Ok(arr
+        .unwrap_or(&vec![])
+        .iter()
+        .filter_map(|v| v["name"].as_str().map(String::from))
+        .collect())
+}
+
+/// Get the callback URL for a workflow trigger (blocking).
+/// Tries each trigger name until one returns a callback URL.
+pub fn get_trigger_url(sub: &str, rg: &str, app: &str, workflow: &str) -> Result<String, String> {
+    let triggers = list_triggers(sub, rg, app, workflow)
+        .unwrap_or_else(|_| vec!["manual".into()]);
+
+    let trigger_names = if triggers.is_empty() { vec!["manual".into()] } else { triggers };
+
+    for trigger_name in &trigger_names {
+        let url = format!(
+            "https://management.azure.com/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.Web/sites/{app}/hostruntime/runtime/webhooks/workflow/api/management/workflows/{workflow}/triggers/{trigger_name}/listCallbackUrl?api-version=2024-04-01"
+        );
+
+        let output = Command::new("az")
+            .args(["rest", "--method", "POST", "--url", &url, "--output", "json"])
+            .output()
+            .map_err(|e| format!("az rest failed: {e}"))?;
+
+        if !output.status.success() {
+            continue;
+        }
+
+        let body = String::from_utf8_lossy(&output.stdout);
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&body) {
+            if let Some(val) = json["value"].as_str() {
+                return Ok(val.to_string());
+            }
+        }
+    }
+
+    Err(format!("No callback URL found. Triggers: {}. This workflow may use a non-HTTP trigger (Service Bus, Timer, etc.)", trigger_names.join(", ")))
 }
 
 /// Trigger a workflow by POSTing a JSON payload to its callback URL (blocking)
@@ -258,6 +293,25 @@ pub fn trigger_workflow(callback_url: &str, payload: &str) -> Result<TriggerResu
 pub struct TriggerResult {
     pub status_code: u16,
     pub body: String,
+}
+
+/// Fetch the full workflow definition (blocking)
+pub fn get_workflow_definition(sub: &str, rg: &str, app: &str, workflow: &str) -> Result<serde_json::Value, String> {
+    let url = format!(
+        "https://management.azure.com/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.Web/sites/{app}/hostruntime/runtime/webhooks/workflow/api/management/workflows/{workflow}?api-version=2024-04-01"
+    );
+
+    let output = Command::new("az")
+        .args(["rest", "--method", "GET", "--url", &url, "--output", "json"])
+        .output()
+        .map_err(|e| format!("az rest failed: {e}"))?;
+
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).to_string());
+    }
+
+    let body = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))
 }
 
 /// Get queue message counts (blocking)

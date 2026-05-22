@@ -11,7 +11,7 @@ pub struct LoginBannerProps {
 #[component]
 pub fn LoginBanner(props: LoginBannerProps) -> Element {
     match &props.state {
-        AzLoginState::Unknown | AzLoginState::Checking => rsx! {
+        AzLoginState::Checking => rsx! {
             div { class: "login-banner checking",
                 span { class: "dot pulse" }
                 span { "Checking Azure login…" }

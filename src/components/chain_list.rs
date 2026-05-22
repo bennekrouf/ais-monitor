@@ -1,5 +1,6 @@
 use dioxus::prelude::*;
 use crate::services::chain::ChainDetail;
+use crate::components::chain_detail::ChainHealth;
 use std::collections::HashMap;
 
 #[derive(Props, Clone, PartialEq)]
@@ -9,6 +10,8 @@ pub struct ChainListProps {
     pub on_select: EventHandler<String>,
     #[props(default)]
     pub chain_names: HashMap<String, String>,
+    #[props(default)]
+    pub chain_health: HashMap<String, ChainHealth>,
 }
 
 #[component]
@@ -39,16 +42,51 @@ pub fn ChainList(props: ChainListProps) -> Element {
                     let trigger = chain.steps.first()
                         .map(|s| s.trigger_info.clone())
                         .unwrap_or_default();
+                    let health = props.chain_health.get(&label).cloned();
                     rsx! {
                         div {
                             key: "{label}",
                             class: if is_sel { "chain-item selected" } else { "chain-item" },
                             onclick: move |_| props.on_select.call(lbl.clone()),
                             div { class: "chain-header",
+                                {
+                                    if let Some(ref h) = health {
+                                        let dot_class = if h.dead_letters > 0 || h.stuck_count > 0 || h.failure_streak > 2 {
+                                            "dot error"
+                                        } else if let Some(rate) = h.success_rate {
+                                            if rate >= 95.0 { "dot ok" }
+                                            else if rate >= 80.0 { "dot warn" }
+                                            else { "dot error" }
+                                        } else {
+                                            "dot ok"
+                                        };
+                                        rsx! { span { class: "{dot_class}" } }
+                                    } else {
+                                        rsx! {}
+                                    }
+                                }
                                 span { class: "chain-name", "{display_name}" }
                                 span { class: "chain-badge", "{steps} steps" }
                                 if queues > 0 {
                                     span { class: "chain-badge queue-badge", "{queues} queues" }
+                                }
+                            }
+                            if let Some(ref h) = health {
+                                div { class: "chain-health-badges",
+                                    if let Some(rate) = h.success_rate {
+                                        {
+                                            let rate_class = if rate >= 95.0 { "health-badge health-good" }
+                                                else if rate >= 80.0 { "health-badge health-warn" }
+                                                else { "health-badge health-bad" };
+                                            rsx! { span { class: "{rate_class}", "{rate:.0}%" } }
+                                        }
+                                    }
+                                    if h.dead_letters > 0 {
+                                        span { class: "health-badge health-bad", "DL:{h.dead_letters}" }
+                                    }
+                                    if h.stuck_count > 0 {
+                                        span { class: "health-badge health-bad", "stuck:{h.stuck_count}" }
+                                    }
                                 }
                             }
                             if has_custom {

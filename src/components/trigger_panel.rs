@@ -7,6 +7,8 @@ pub struct TriggerPanelProps {
     pub workflow: String,
     pub az_config: AzConfig,
     pub payloads_dir: String,
+    #[props(default)]
+    pub on_triggered: Option<EventHandler<()>>,
 }
 
 #[component]
@@ -22,6 +24,7 @@ pub fn TriggerPanel(props: TriggerPanelProps) -> Element {
     let az = props.az_config.clone();
     let workflow = props.workflow.clone();
     let payloads_dir = props.payloads_dir.clone();
+    let on_triggered = props.on_triggered.clone();
 
     // Fetch trigger URL on mount
     use_effect({
@@ -184,21 +187,37 @@ pub fn TriggerPanel(props: TriggerPanelProps) -> Element {
                                     let result = tokio::task::spawn_blocking(move || {
                                         azure::trigger_workflow(&cb, &body)
                                     }).await;
-                                    match result {
-                                        Ok(Ok(r)) => trigger_result.set(Some(TriggerState {
-                                            status: r.status_code,
-                                            body: r.body,
-                                        })),
-                                        Ok(Err(e)) => trigger_result.set(Some(TriggerState {
-                                            status: 0,
-                                            body: e,
-                                        })),
-                                        Err(e) => trigger_result.set(Some(TriggerState {
-                                            status: 0,
-                                            body: format!("{e}"),
-                                        })),
-                                    }
+                                    let success = match result {
+                                        Ok(Ok(r)) => {
+                                            let ok = r.status_code >= 200 && r.status_code < 300;
+                                            trigger_result.set(Some(TriggerState {
+                                                status: r.status_code,
+                                                body: r.body,
+                                            }));
+                                            ok
+                                        }
+                                        Ok(Err(e)) => {
+                                            trigger_result.set(Some(TriggerState {
+                                                status: 0,
+                                                body: e,
+                                            }));
+                                            false
+                                        }
+                                        Err(e) => {
+                                            trigger_result.set(Some(TriggerState {
+                                                status: 0,
+                                                body: format!("{e}"),
+                                            }));
+                                            false
+                                        }
+                                    };
                                     triggering.set(false);
+                                    if success {
+                                        if let Some(ref cb) = on_triggered {
+                                            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                                            cb.call(());
+                                        }
+                                    }
                                 });
                             }
                         }

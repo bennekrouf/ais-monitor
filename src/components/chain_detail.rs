@@ -4,23 +4,35 @@ use crate::services::{azure, kpi, names};
 use crate::components::trigger_panel::TriggerPanel;
 use std::collections::HashMap;
 
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct ChainHealth {
+    pub success_rate: Option<f64>,
+    pub dead_letters: i64,
+    pub stuck_count: usize,
+    pub failure_streak: usize,
+}
+
 #[derive(Props, Clone, PartialEq)]
 pub struct ChainDetailProps {
     pub chain: ChainDetail,
     pub deployed_workflows: Vec<String>,
     pub az_config: Option<AzConfig>,
     #[props(default)]
-    pub logic_apps_dir: String,
-    #[props(default)]
     pub chain_names: Signal<HashMap<String, String>>,
+    #[props(default)]
+    pub chain_health: Option<Signal<HashMap<String, ChainHealth>>>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AzConfig {
     pub subscription: String,
     pub resource_group: String,
     pub app_name: String,
     pub sb_namespace: String,
+    #[serde(default)]
+    pub tenant: String,
+    #[serde(default)]
+    pub label: String,
 }
 
 #[component]
@@ -32,7 +44,11 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
     let mut all_runs = use_signal(|| HashMap::<String, Vec<azure::RunInfo>>::new());
     let mut queue_statuses = use_signal(|| HashMap::<String, QueueStatus>::new());
     let mut loading = use_signal(|| false);
+    let mut run_depth = use_signal(|| 20u32);
     let mut show_trigger = use_signal(|| false);
+    let mut trigger_step_idx = use_signal(|| 0usize);
+    let mut auto_poll = use_signal(|| false);
+    let mut poll_interval = use_signal(|| 30u64);
     let mut editing_name = use_signal(|| false);
     let mut name_input = use_signal(|| String::new());
 
@@ -40,6 +56,8 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
     let mut expanded_step = use_signal(|| Option::<String>::None);
     let mut step_actions = use_signal(|| HashMap::<String, Vec<ActionDetail>>::new());
     let mut loading_actions = use_signal(|| Option::<String>::None);
+
+    let chain_health_signal = props.chain_health;
 
     let az = props.az_config.clone();
     let chain_steps: Vec<String> = chain.steps.iter().map(|s| s.workflow.clone()).collect();
@@ -52,7 +70,96 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
         .unwrap_or_else(|| chain_label.clone());
 
     let mut chain_names = props.chain_names;
-    let dir = props.logic_apps_dir.clone();
+    let dir = az.as_ref()
+        .map(|a| {
+            dirs::config_dir()
+                .unwrap_or_else(|| std::path::PathBuf::from("."))
+                .join("ais-monitor")
+                .join(format!("{}_{}", a.resource_group, a.app_name))
+                .to_string_lossy()
+                .to_string()
+        })
+        .unwrap_or_default();
+
+    // Auto-poll effect
+    use_effect({
+        let az = az.clone();
+        let steps = chain_steps.clone();
+        let queues = chain_queues.clone();
+        let label_for_health = chain_label.clone();
+        move || {
+            let is_on = *auto_poll.read();
+            let interval_secs = *poll_interval.read();
+            if !is_on { return; }
+            let az = match az.clone() {
+                Some(a) => a,
+                None => return,
+            };
+            let steps = steps.clone();
+            let queues = queues.clone();
+            let top = *run_depth.read();
+            let lbl = label_for_health.clone();
+            spawn(async move {
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(interval_secs)).await;
+                    if !*auto_poll.read() { break; }
+                    loading.set(true);
+                    let mut statuses = HashMap::new();
+                    let mut runs_map = HashMap::new();
+                    for wf in &steps {
+                        let az = az.clone();
+                        let wf_name = wf.clone();
+                        let wf_key = wf.clone();
+                        let result = tokio::task::spawn_blocking(move || {
+                            azure::list_runs(&az.subscription, &az.resource_group, &az.app_name, &wf_name, top)
+                        }).await;
+                        let status = match result {
+                            Ok(Ok(ref runs)) if !runs.is_empty() => {
+                                runs_map.insert(wf_key.clone(), runs.clone());
+                                RunStatus {
+                                    run_id: runs[0].id.clone(),
+                                    last_status: runs[0].status.clone(),
+                                    last_time: runs[0].start.clone(),
+                                }
+                            }
+                            _ => RunStatus {
+                                run_id: String::new(),
+                                last_status: "no runs".into(),
+                                last_time: String::new(),
+                            },
+                        };
+                        statuses.insert(wf_key, status);
+                    }
+                    run_statuses.set(statuses);
+                    all_runs.set(runs_map.clone());
+
+                    let mut q_statuses = HashMap::new();
+                    for q in &queues {
+                        let az = az.clone();
+                        let q_name = q.clone();
+                        let q_key = q.clone();
+                        let result = tokio::task::spawn_blocking(move || {
+                            azure::check_queue(&az.sb_namespace, &az.resource_group, &q_name)
+                        }).await;
+                        if let Ok(Ok(info)) = result {
+                            q_statuses.insert(q_key, QueueStatus {
+                                active: info.active,
+                                dead_letter: info.dead_letter,
+                            });
+                        }
+                    }
+                    queue_statuses.set(q_statuses.clone());
+                    if let Some(mut health_sig) = chain_health_signal {
+                        let health = compute_health(&runs_map, &q_statuses);
+                        let mut map = health_sig.read().clone();
+                        map.insert(lbl.clone(), health);
+                        health_sig.set(map);
+                    }
+                    loading.set(false);
+                }
+            });
+        }
+    });
 
     rsx! {
         div { class: "chain-detail",
@@ -146,6 +253,18 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                         },
                         if *show_trigger.read() { "Hide Trigger" } else { "Trigger" }
                     }
+                    select {
+                        class: "select-depth",
+                        value: "{run_depth.read()}",
+                        onchange: move |e: Event<FormData>| {
+                            if let Ok(v) = e.value().parse::<u32>() {
+                                run_depth.set(v);
+                            }
+                        },
+                        option { value: "20", "Last 20" }
+                        option { value: "50", "Last 50" }
+                        option { value: "100", "Last 100" }
+                    }
                     button {
                         class: "btn btn-primary",
                         disabled: *loading.read(),
@@ -153,10 +272,13 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                             let az = az.clone().unwrap();
                             let steps = chain_steps.clone();
                             let queues = chain_queues.clone();
+                            let label_for_health = chain_label.clone();
                             move |_| {
                                 let az = az.clone();
                                 let steps = steps.clone();
                                 let queues = queues.clone();
+                                let top = *run_depth.read();
+                                let lbl = label_for_health.clone();
                                 loading.set(true);
                                 spawn(async move {
                                     let mut statuses = HashMap::new();
@@ -166,7 +288,7 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                                         let wf_name = wf.clone();
                                         let wf_key = wf.clone();
                                         let result = tokio::task::spawn_blocking(move || {
-                                            azure::list_runs(&az.subscription, &az.resource_group, &az.app_name, &wf_name, 20)
+                                            azure::list_runs(&az.subscription, &az.resource_group, &az.app_name, &wf_name, top)
                                         }).await;
                                         let status = match result {
                                             Ok(Ok(ref runs)) if !runs.is_empty() => {
@@ -186,7 +308,7 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                                         statuses.insert(wf_key, status);
                                     }
                                     run_statuses.set(statuses);
-                                    all_runs.set(runs_map);
+                                    all_runs.set(runs_map.clone());
 
                                     let mut q_statuses = HashMap::new();
                                     for q in &queues {
@@ -203,12 +325,41 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                                             });
                                         }
                                     }
-                                    queue_statuses.set(q_statuses);
+                                    queue_statuses.set(q_statuses.clone());
+                                    if let Some(mut health_sig) = chain_health_signal {
+                                        let health = compute_health(&runs_map, &q_statuses);
+                                        let mut map = health_sig.read().clone();
+                                        map.insert(lbl, health);
+                                        health_sig.set(map);
+                                    }
                                     loading.set(false);
                                 });
                             }
                         },
                         if *loading.read() { "Checking…" } else { "Check" }
+                    }
+                    button {
+                        class: if *auto_poll.read() { "btn btn-poll active" } else { "btn btn-poll" },
+                        onclick: move |_| {
+                            let cur = *auto_poll.read();
+                            auto_poll.set(!cur);
+                        },
+                        if *auto_poll.read() { "Auto: ON" } else { "Auto: OFF" }
+                    }
+                    if *auto_poll.read() {
+                        select {
+                            class: "select-depth",
+                            value: "{poll_interval.read()}",
+                            onchange: move |e: Event<FormData>| {
+                                if let Ok(v) = e.value().parse::<u64>() {
+                                    poll_interval.set(v);
+                                }
+                            },
+                            option { value: "15", "15s" }
+                            option { value: "30", "30s" }
+                            option { value: "60", "1m" }
+                            option { value: "300", "5m" }
+                        }
                     }
                 }
             }
@@ -216,10 +367,106 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
             // Trigger panel
             if *show_trigger.read() {
                 if let Some(ref az) = az {
-                    TriggerPanel {
-                        workflow: chain.steps[0].workflow.clone(),
-                        az_config: az.clone(),
-                        payloads_dir: props.logic_apps_dir.clone(),
+                    {
+                        let step_names: Vec<String> = chain.steps.iter().map(|s| s.workflow.clone()).collect();
+                        let idx = *trigger_step_idx.read();
+                        let selected_wf = step_names.get(idx).cloned().unwrap_or_default();
+                        let az_refresh = az.clone();
+                        let steps_refresh = chain_steps.clone();
+                        let queues_refresh = chain_queues.clone();
+                        let top_refresh = *run_depth.read();
+                        rsx! {
+                            if step_names.len() > 1 {
+                                div { class: "trigger-step-select",
+                                    span { class: "trigger-label", "Step" }
+                                    select {
+                                        class: "select-depth",
+                                        value: "{idx}",
+                                        onchange: move |e: Event<FormData>| {
+                                            if let Ok(v) = e.value().parse::<usize>() {
+                                                trigger_step_idx.set(v);
+                                            }
+                                        },
+                                        for (i, name) in step_names.iter().enumerate() {
+                                            option { value: "{i}", "{name}" }
+                                        }
+                                    }
+                                }
+                            }
+                            TriggerPanel {
+                                key: "{selected_wf}",
+                                workflow: selected_wf,
+                                az_config: az.clone(),
+                                payloads_dir: dir.clone(),
+                                on_triggered: EventHandler::new({
+                                    let az = az_refresh.clone();
+                                    let steps = steps_refresh.clone();
+                                    let queues = queues_refresh.clone();
+                                    let lbl = chain_label.clone();
+                                    move |_| {
+                                        let az = az.clone();
+                                        let steps = steps.clone();
+                                        let queues = queues.clone();
+                                        let lbl = lbl.clone();
+                                        loading.set(true);
+                                        spawn(async move {
+                                            let mut statuses = HashMap::new();
+                                            let mut runs_map = HashMap::new();
+                                            for wf in &steps {
+                                                let az = az.clone();
+                                                let wf_name = wf.clone();
+                                                let wf_key = wf.clone();
+                                                let result = tokio::task::spawn_blocking(move || {
+                                                    azure::list_runs(&az.subscription, &az.resource_group, &az.app_name, &wf_name, top_refresh)
+                                                }).await;
+                                                let status = match result {
+                                                    Ok(Ok(ref runs)) if !runs.is_empty() => {
+                                                        runs_map.insert(wf_key.clone(), runs.clone());
+                                                        RunStatus {
+                                                            run_id: runs[0].id.clone(),
+                                                            last_status: runs[0].status.clone(),
+                                                            last_time: runs[0].start.clone(),
+                                                        }
+                                                    }
+                                                    _ => RunStatus {
+                                                        run_id: String::new(),
+                                                        last_status: "no runs".into(),
+                                                        last_time: String::new(),
+                                                    },
+                                                };
+                                                statuses.insert(wf_key, status);
+                                            }
+                                            run_statuses.set(statuses);
+                                            all_runs.set(runs_map.clone());
+
+                                            let mut q_statuses = HashMap::new();
+                                            for q in &queues {
+                                                let az = az.clone();
+                                                let q_name = q.clone();
+                                                let q_key = q.clone();
+                                                let result = tokio::task::spawn_blocking(move || {
+                                                    azure::check_queue(&az.sb_namespace, &az.resource_group, &q_name)
+                                                }).await;
+                                                if let Ok(Ok(info)) = result {
+                                                    q_statuses.insert(q_key, QueueStatus {
+                                                        active: info.active,
+                                                        dead_letter: info.dead_letter,
+                                                    });
+                                                }
+                                            }
+                                            queue_statuses.set(q_statuses.clone());
+                                            if let Some(mut health_sig) = chain_health_signal {
+                                                let health = compute_health(&runs_map, &q_statuses);
+                                                let mut map = health_sig.read().clone();
+                                                map.insert(lbl, health);
+                                                health_sig.set(map);
+                                            }
+                                            loading.set(false);
+                                        });
+                                    }
+                                }),
+                            }
+                        }
                     }
                 }
             }
@@ -280,6 +527,39 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                                 div { class: "{streak_class}", "{max_streak}" }
                                 div { class: "kpi-sub",
                                     if total_failed > 0 { "{total_failed} failed total" } else { "all clear" }
+                                }
+                            }
+                            // Stuck runs
+                            {
+                                let total_stuck: usize = workflow_kpis.iter().map(|(_, k)| k.stuck_runs.len()).sum();
+                                let stuck_class = if total_stuck == 0 { "kpi-value kpi-good" } else { "kpi-value kpi-bad" };
+                                rsx! {
+                                    div { class: "kpi-card",
+                                        div { class: "kpi-label", "Stuck Runs" }
+                                        div { class: "{stuck_class}", "{total_stuck}" }
+                                        div { class: "kpi-sub",
+                                            if total_stuck > 0 { "exceeding p95" } else { "none" }
+                                        }
+                                    }
+                                }
+                            }
+                            // Dead letters
+                            {
+                                let qs = queue_statuses.read();
+                                let total_dl: i64 = qs.values().map(|q| q.dead_letter).sum();
+                                let dl_class = if total_dl == 0 { "kpi-value kpi-good" } else { "kpi-value kpi-bad" };
+                                if !qs.is_empty() {
+                                    rsx! {
+                                        div { class: "kpi-card",
+                                            div { class: "kpi-label", "Dead Letters" }
+                                            div { class: "{dl_class}", "{total_dl}" }
+                                            div { class: "kpi-sub",
+                                                if total_dl > 0 { "messages need attention" } else { "all clear" }
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    rsx! {}
                                 }
                             }
                             // Per-workflow breakdown for chains with multiple steps
@@ -498,6 +778,22 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
             }
         }
     }
+}
+
+fn compute_health(
+    runs_map: &HashMap<String, Vec<azure::RunInfo>>,
+    q_statuses: &HashMap<String, QueueStatus>,
+) -> ChainHealth {
+    let all_kpis: Vec<kpi::ChainKpi> = runs_map.values()
+        .map(|runs| kpi::compute_workflow_kpi(runs))
+        .collect();
+    let total: usize = all_kpis.iter().map(|k| k.total_runs).sum();
+    let succeeded: usize = all_kpis.iter().map(|k| k.succeeded).sum();
+    let rate = if total > 0 { Some((succeeded as f64 / total as f64) * 100.0) } else { None };
+    let dl: i64 = q_statuses.values().map(|q| q.dead_letter).sum();
+    let stuck: usize = all_kpis.iter().map(|k| k.stuck_runs.len()).sum();
+    let streak = all_kpis.iter().map(|k| k.failure_streak).max().unwrap_or(0);
+    ChainHealth { success_rate: rate, dead_letters: dl, stuck_count: stuck, failure_streak: streak }
 }
 
 fn format_duration(secs: f64) -> String {
