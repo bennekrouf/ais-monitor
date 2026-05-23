@@ -19,6 +19,90 @@ pub struct AzAccount {
     pub tenant_id: String,
 }
 
+#[derive(Clone, Debug, PartialEq, Deserialize)]
+pub struct AzSubscription {
+    pub id: String,
+    pub name: String,
+}
+
+pub fn list_subscriptions() -> Result<Vec<AzSubscription>, String> {
+    let output = Command::new("az")
+        .args(["account", "list", "--output", "json"])
+        .output()
+        .map_err(|e| format!("az account list failed: {e}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).to_string());
+    }
+    let body = String::from_utf8_lossy(&output.stdout);
+    serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))
+}
+
+pub fn list_resource_groups(sub: &str) -> Result<Vec<String>, String> {
+    let output = Command::new("az")
+        .args(["group", "list", "--subscription", sub, "--output", "json"])
+        .output()
+        .map_err(|e| format!("az group list failed: {e}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).to_string());
+    }
+    let body = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
+    Ok(json.as_array().unwrap_or(&vec![])
+        .iter()
+        .filter_map(|v| v["name"].as_str().map(String::from))
+        .collect())
+}
+
+pub fn list_logic_apps(sub: &str, rg: &str) -> Result<Vec<String>, String> {
+    let output = Command::new("az")
+        .args([
+            "resource", "list",
+            "--subscription", sub,
+            "--resource-group", rg,
+            "--resource-type", "Microsoft.Web/sites",
+            "--output", "json",
+        ])
+        .output()
+        .map_err(|e| format!("az resource list failed: {e}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).to_string());
+    }
+    let body = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
+    Ok(json.as_array().unwrap_or(&vec![])
+        .iter()
+        .filter_map(|v| {
+            let kind = v["kind"].as_str().unwrap_or("");
+            if kind.contains("workflowapp") {
+                v["name"].as_str().map(String::from)
+            } else {
+                None
+            }
+        })
+        .collect())
+}
+
+pub fn list_service_bus_namespaces(sub: &str, rg: &str) -> Result<Vec<String>, String> {
+    let output = Command::new("az")
+        .args([
+            "servicebus", "namespace", "list",
+            "--subscription", sub,
+            "--resource-group", rg,
+            "--output", "json",
+        ])
+        .output()
+        .map_err(|e| format!("az servicebus namespace list failed: {e}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).to_string());
+    }
+    let body = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
+    Ok(json.as_array().unwrap_or(&vec![])
+        .iter()
+        .filter_map(|v| v["name"].as_str().map(String::from))
+        .collect())
+}
+
 /// Check current az login status (blocking — call from spawn_blocking)
 pub fn check_login() -> AzLoginState {
     let output = Command::new("az")

@@ -1,5 +1,5 @@
 use dioxus::prelude::*;
-use crate::services::azure::{self, AzLoginState};
+use crate::services::azure::{self, AzLoginState, AzSubscription};
 use crate::components::chain_detail::AzConfig;
 
 #[derive(Props, Clone, PartialEq)]
@@ -12,7 +12,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
     let mut az_state = use_signal(|| AzLoginState::Checking);
     let mut sub_id = use_signal(|| String::new());
 
-    // Form fields
+    // Form fields (shared between browse and manual modes)
     let mut label_input = use_signal(|| String::new());
     let mut tenant_input = use_signal(|| String::new());
     let mut rg_input = use_signal(|| String::new());
@@ -22,9 +22,17 @@ pub fn Welcome(props: WelcomeProps) -> Element {
     let mut show_form = use_signal(|| false);
     let mut editing_profile = use_signal(|| Option::<usize>::None);
 
+    // Browse mode state
+    let mut subscriptions = use_signal(|| Vec::<AzSubscription>::new());
+    let mut selected_sub = use_signal(|| String::new());
+    let mut resource_groups = use_signal(|| Vec::<String>::new());
+    let mut logic_apps = use_signal(|| Vec::<String>::new());
+    let mut sb_namespaces = use_signal(|| Vec::<String>::new());
+    // "" | "subs" | "rgs" | "apps"
+    let mut browse_loading = use_signal(|| String::new());
+
     let mut profiles = use_signal(|| load_profiles());
 
-    // Check login on mount
     use_effect(move || {
         spawn(async move {
             let state = tokio::task::spawn_blocking(azure::check_login)
@@ -38,6 +46,8 @@ pub fn Welcome(props: WelcomeProps) -> Element {
     });
 
     let is_logged_in = matches!(*az_state.read(), AzLoginState::LoggedIn { .. });
+    // Browse mode: new profile form while logged in
+    let is_browse_mode = *show_form.read() && editing_profile.read().is_none() && is_logged_in;
     let can_connect = !rg_input.read().is_empty() && !app_input.read().is_empty();
 
     rsx! {
@@ -75,7 +85,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                 class: "btn-primary",
                                                 onclick: move |_| {
                                                     let tenant = tenant_input.read().clone();
-                                                    let t = if tenant.is_empty() { None } else { Some(tenant.as_str().to_string()) };
+                                                    let t = if tenant.is_empty() { None } else { Some(tenant.clone()) };
                                                     azure::open_login(t.as_deref());
                                                     az_state.set(AzLoginState::Checking);
                                                     spawn(async move {
@@ -127,22 +137,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                             let on_connect = props.on_connect.clone();
                                             rsx! {
                                                 div { class: "profile-item",
-                                                    div {
-                                                        class: "profile-main",
-                                                        onclick: {
-                                                            let p = p.clone();
-                                                            move |_| {
-                                                                let mut config = p.clone();
-                                                                // Re-login to correct tenant if needed
-                                                                if !config.tenant.is_empty() {
-                                                                    let t = config.tenant.clone();
-                                                                    azure::open_login(Some(&t));
-                                                                    // Use current sub for now; will refresh on main screen
-                                                                }
-                                                                config.subscription = sub_id.read().clone();
-                                                                on_connect.call(config);
-                                                            }
-                                                        },
+                                                    div { class: "profile-main",
                                                         div { class: "profile-label", "{display_label}" }
                                                         if !sub_line.is_empty() {
                                                             div { class: "profile-sub", "{sub_line}" }
@@ -152,6 +147,23 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                         }
                                                     }
                                                     div { class: "profile-actions",
+                                                        button {
+                                                            class: "btn btn-open btn-small",
+                                                            title: "Open this profile",
+                                                            onclick: {
+                                                                let p = p.clone();
+                                                                let on_connect = on_connect.clone();
+                                                                move |_| {
+                                                                    let mut config = p.clone();
+                                                                    if !config.tenant.is_empty() {
+                                                                        azure::open_login(Some(&config.tenant));
+                                                                    }
+                                                                    config.subscription = sub_id.read().clone();
+                                                                    on_connect.call(config);
+                                                                }
+                                                            },
+                                                            "Open →"
+                                                        }
                                                         button {
                                                             class: "btn btn-small",
                                                             title: "Edit",
@@ -176,7 +188,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                                 save_profiles(&saved);
                                                                 profiles.set(saved);
                                                             },
-                                                            "X"
+                                                            "×"
                                                         }
                                                     }
                                                 }
@@ -190,7 +202,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                         }
                     }
 
-                    // New / Edit form toggle
+                    // "+ New Profile" button
                     if !*show_form.read() {
                         div { class: "az-form",
                             button {
@@ -201,16 +213,249 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                     rg_input.set(String::new());
                                     app_input.set(String::new());
                                     sb_input.set(String::new());
+                                    subscriptions.set(vec![]);
+                                    selected_sub.set(String::new());
+                                    resource_groups.set(vec![]);
+                                    logic_apps.set(vec![]);
+                                    sb_namespaces.set(vec![]);
+                                    browse_loading.set(String::new());
                                     editing_profile.set(None);
                                     show_form.set(true);
+                                    if is_logged_in {
+                                        browse_loading.set("subs".into());
+                                        spawn(async move {
+                                            let subs = tokio::task::spawn_blocking(azure::list_subscriptions)
+                                                .await
+                                                .unwrap_or(Ok(vec![]))
+                                                .unwrap_or_default();
+                                            // Auto-select single subscription and immediately load RGs
+                                            if subs.len() == 1 {
+                                                let sid = subs[0].id.clone();
+                                                selected_sub.set(sid.clone());
+                                                subscriptions.set(subs);
+                                                browse_loading.set("rgs".into());
+                                                let rgs = tokio::task::spawn_blocking(move || azure::list_resource_groups(&sid))
+                                                    .await.unwrap_or(Ok(vec![])).unwrap_or_default();
+                                                resource_groups.set(rgs);
+                                            } else {
+                                                subscriptions.set(subs);
+                                            }
+                                            browse_loading.set(String::new());
+                                        });
+                                    }
                                 },
                                 "+ New Profile"
                             }
                         }
                     }
 
-                    // Connection form
-                    if *show_form.read() {
+                    // Browse form — new profile while logged in
+                    if is_browse_mode {
+                        div { class: "az-form",
+                            h3 { "New Profile" }
+
+                            div { class: "az-field",
+                                label { "Profile Name (optional)" }
+                                input {
+                                    r#type: "text",
+                                    placeholder: "Acme Corp — PRD",
+                                    value: "{label_input.read()}",
+                                    oninput: move |e| label_input.set(e.value().clone()),
+                                }
+                            }
+
+                            div { class: "az-field",
+                                label { "Subscription" }
+                                if browse_loading.read().as_str() == "subs" {
+                                    div { class: "az-loading", "Loading subscriptions..." }
+                                } else {
+                                    select {
+                                        onchange: move |e| {
+                                            let val = e.value();
+                                            selected_sub.set(val.clone());
+                                            resource_groups.set(vec![]);
+                                            rg_input.set(String::new());
+                                            logic_apps.set(vec![]);
+                                            app_input.set(String::new());
+                                            sb_namespaces.set(vec![]);
+                                            sb_input.set(String::new());
+                                            browse_loading.set("rgs".into());
+                                            spawn(async move {
+                                                let rgs = tokio::task::spawn_blocking(move || azure::list_resource_groups(&val))
+                                                    .await.unwrap_or(Ok(vec![])).unwrap_or_default();
+                                                resource_groups.set(rgs);
+                                                browse_loading.set(String::new());
+                                            });
+                                        },
+                                        if selected_sub.read().is_empty() {
+                                            option { value: "", "Select subscription..." }
+                                        }
+                                        for sub in subscriptions.read().iter() {
+                                            {
+                                                let is_selected = sub.id == *selected_sub.read();
+                                                rsx! {
+                                                    option {
+                                                        value: "{sub.id}",
+                                                        selected: is_selected,
+                                                        "{sub.name}"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            if !selected_sub.read().is_empty() {
+                                div { class: "az-field",
+                                    label { "Resource Group" }
+                                    if browse_loading.read().as_str() == "rgs" {
+                                        div { class: "az-loading", "Loading resource groups..." }
+                                    } else {
+                                        select {
+                                            onchange: move |e| {
+                                                let val = e.value();
+                                                rg_input.set(val.clone());
+                                                logic_apps.set(vec![]);
+                                                app_input.set(String::new());
+                                                sb_namespaces.set(vec![]);
+                                                sb_input.set(String::new());
+                                                browse_loading.set("apps".into());
+                                                let sub = selected_sub.read().clone();
+                                                spawn(async move {
+                                                    let sub_a = sub.clone();
+                                                    let rg_a = val.clone();
+                                                    let sub_b = sub.clone();
+                                                    let rg_b = val.clone();
+                                                    let (apps_res, sbs_res) = tokio::join!(
+                                                        tokio::task::spawn_blocking(move || azure::list_logic_apps(&sub_a, &rg_a)),
+                                                        tokio::task::spawn_blocking(move || azure::list_service_bus_namespaces(&sub_b, &rg_b)),
+                                                    );
+                                                    logic_apps.set(apps_res.unwrap_or(Ok(vec![])).unwrap_or_default());
+                                                    sb_namespaces.set(sbs_res.unwrap_or(Ok(vec![])).unwrap_or_default());
+                                                    browse_loading.set(String::new());
+                                                });
+                                            },
+                                            if rg_input.read().is_empty() {
+                                                option { value: "", "Select resource group..." }
+                                            }
+                                            for rg in resource_groups.read().iter() {
+                                                {
+                                                    let is_selected = rg == &*rg_input.read();
+                                                    rsx! {
+                                                        option {
+                                                            value: "{rg}",
+                                                            selected: is_selected,
+                                                            "{rg}"
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            if !rg_input.read().is_empty() {
+                                div { class: "az-field",
+                                    label { "Logic App" }
+                                    if browse_loading.read().as_str() == "apps" {
+                                        div { class: "az-loading", "Loading Logic Apps..." }
+                                    } else if logic_apps.read().is_empty() {
+                                        div { class: "az-hint", "No Logic Apps (Standard) found in this resource group" }
+                                    } else {
+                                        select {
+                                            onchange: move |e| app_input.set(e.value()),
+                                            if app_input.read().is_empty() {
+                                                option { value: "", "Select Logic App..." }
+                                            }
+                                            for app in logic_apps.read().iter() {
+                                                {
+                                                    let is_selected = app == &*app_input.read();
+                                                    rsx! {
+                                                        option {
+                                                            value: "{app}",
+                                                            selected: is_selected,
+                                                            "{app}"
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            if !rg_input.read().is_empty() && !sb_namespaces.read().is_empty() {
+                                div { class: "az-field",
+                                    label { "Service Bus Namespace (optional)" }
+                                    select {
+                                        onchange: move |e| sb_input.set(e.value()),
+                                        option { value: "", "None" }
+                                        for ns in sb_namespaces.read().iter() {
+                                            {
+                                                let is_selected = ns == &*sb_input.read();
+                                                rsx! {
+                                                    option {
+                                                        value: "{ns}",
+                                                        selected: is_selected,
+                                                        "{ns}"
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+
+                            {
+                                let err = error_msg.read().clone();
+                                if let Some(msg) = err {
+                                    rsx! { div { class: "az-error", "{msg}" } }
+                                } else {
+                                    rsx! {}
+                                }
+                            }
+
+                            div { class: "az-form-actions",
+                                button {
+                                    class: "btn-primary",
+                                    disabled: !can_connect,
+                                    onclick: {
+                                        let on_connect = props.on_connect.clone();
+                                        move |_| {
+                                            let config = AzConfig {
+                                                subscription: selected_sub.read().clone(),
+                                                resource_group: rg_input.read().trim().to_string(),
+                                                app_name: app_input.read().trim().to_string(),
+                                                sb_namespace: sb_input.read().trim().to_string(),
+                                                tenant: tenant_input.read().trim().to_string(),
+                                                label: label_input.read().trim().to_string(),
+                                            };
+                                            let mut saved = profiles.read().clone();
+                                            saved.insert(0, config.clone());
+                                            save_profiles(&saved);
+                                            profiles.set(saved);
+                                            show_form.set(false);
+                                            error_msg.set(None);
+                                            on_connect.call(config);
+                                        }
+                                    },
+                                    "Save & Connect"
+                                }
+                                button {
+                                    class: "btn",
+                                    onclick: move |_| {
+                                        show_form.set(false);
+                                        editing_profile.set(None);
+                                    },
+                                    "Cancel"
+                                }
+                            }
+                        }
+                    }
+                    // Manual form — edit profile or not yet logged in
+                    else if *show_form.read() {
                         div { class: "az-form",
                             h3 {
                                 if editing_profile.read().is_some() { "Edit Profile" } else { "New Profile" }

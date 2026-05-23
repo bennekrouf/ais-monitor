@@ -138,7 +138,8 @@ body {
     text-transform: uppercase;
     letter-spacing: 0.06em;
 }
-.az-field input {
+.az-field input,
+.az-field select {
     font-family: inherit;
     font-size: 13px;
     padding: 8px 12px;
@@ -146,13 +147,40 @@ body {
     color: var(--text1);
     border: 1px solid var(--border);
     border-radius: 6px;
+    width: 100%;
 }
-.az-field input:focus {
+.az-field input:focus,
+.az-field select:focus {
     outline: none;
     border-color: var(--blue);
 }
 .az-field input::placeholder {
     color: var(--text3);
+}
+.az-field select {
+    cursor: pointer;
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%238b949e' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 10px center;
+    padding-right: 28px;
+}
+.az-field select option {
+    background: var(--bg1);
+}
+.az-loading {
+    font-size: 12px;
+    color: var(--text3);
+    padding: 8px 0;
+    font-style: italic;
+}
+.az-hint {
+    font-size: 12px;
+    color: var(--yellow);
+    padding: 6px 10px;
+    background: rgba(210,153,34,0.08);
+    border-radius: 6px;
 }
 
 .az-error {
@@ -265,6 +293,17 @@ body {
 .btn-small {
     font-size: 12px;
     padding: 3px 10px;
+}
+
+.btn-open {
+    color: var(--blue);
+    border-color: var(--blue-dark);
+    font-weight: 600;
+}
+.btn-open:hover {
+    background: var(--blue-dark);
+    color: #fff;
+    border-color: var(--blue-dark);
 }
 
 .btn-back {
