@@ -279,20 +279,60 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                     // Browse form — new profile while logged in
                     if is_browse_mode {
                         div { class: "az-form",
-                            h3 { "New Profile" }
+                            // Heading: simpler when auto-opened with no profiles
+                            if profiles.read().is_empty() {
+                                h3 { "Select a Logic App" }
+                            } else {
+                                h3 { "New Profile" }
+                            }
 
                             div { class: "az-field",
                                 label { "Profile Name (optional)" }
                                 input {
                                     r#type: "text",
-                                    placeholder: "Acme Corp — PRD",
+                                    placeholder: "e.g. Production, Acme Corp…",
                                     value: "{label_input.read()}",
                                     oninput: move |e| label_input.set(e.value().clone()),
                                 }
                             }
 
                             div { class: "az-field",
-                                label { "Subscription" }
+                                // Label row with ↻ Refresh button for post-PIM reload
+                                div { style: "display:flex; align-items:center; justify-content:space-between; margin-bottom:4px;",
+                                    label { style: "margin:0;", "Subscription" }
+                                    button {
+                                        style: "font-size:11px; background:none; border:none; cursor:pointer; opacity:0.6; padding:0; font-family:inherit;",
+                                        title: "Refresh — use after PIM activation",
+                                        disabled: browse_loading.read().as_str() == "subs",
+                                        onclick: move |_| {
+                                            selected_sub.set(String::new());
+                                            resource_groups.set(vec![]);
+                                            rg_input.set(String::new());
+                                            logic_apps.set(vec![]);
+                                            app_input.set(String::new());
+                                            sb_namespaces.set(vec![]);
+                                            sb_input.set(String::new());
+                                            browse_loading.set("subs".into());
+                                            spawn(async move {
+                                                let subs = tokio::task::spawn_blocking(azure::list_subscriptions)
+                                                    .await.unwrap_or(Ok(vec![])).unwrap_or_default();
+                                                if subs.len() == 1 {
+                                                    let sid = subs[0].id.clone();
+                                                    selected_sub.set(sid.clone());
+                                                    subscriptions.set(subs);
+                                                    browse_loading.set("rgs".into());
+                                                    let rgs = tokio::task::spawn_blocking(move || azure::list_resource_groups(&sid))
+                                                        .await.unwrap_or(Ok(vec![])).unwrap_or_default();
+                                                    resource_groups.set(rgs);
+                                                } else {
+                                                    subscriptions.set(subs);
+                                                }
+                                                browse_loading.set(String::new());
+                                            });
+                                        },
+                                        "↻ Refresh"
+                                    }
+                                }
                                 if browse_loading.read().as_str() == "subs" {
                                     div { class: "az-loading", "Loading subscriptions..." }
                                 } else {
@@ -335,7 +375,29 @@ pub fn Welcome(props: WelcomeProps) -> Element {
 
                             if !selected_sub.read().is_empty() {
                                 div { class: "az-field",
-                                    label { "Resource Group" }
+                                    div { style: "display:flex; align-items:center; justify-content:space-between; margin-bottom:4px;",
+                                        label { style: "margin:0;", "Resource Group" }
+                                        if resource_groups.read().is_empty() && browse_loading.read().as_str() != "rgs" {
+                                            button {
+                                                style: "font-size:11px; background:none; border:none; cursor:pointer; opacity:0.6; padding:0; font-family:inherit;",
+                                                title: "Retry loading resource groups — activate PIM first then refresh",
+                                                onclick: {
+                                                    let sub = selected_sub.read().clone();
+                                                    move |_| {
+                                                        browse_loading.set("rgs".into());
+                                                        let sid = sub.clone();
+                                                        spawn(async move {
+                                                            let rgs = tokio::task::spawn_blocking(move || azure::list_resource_groups(&sid))
+                                                                .await.unwrap_or(Ok(vec![])).unwrap_or_default();
+                                                            resource_groups.set(rgs);
+                                                            browse_loading.set(String::new());
+                                                        });
+                                                    }
+                                                },
+                                                "↻ Retry"
+                                            }
+                                        }
+                                    }
                                     if browse_loading.read().as_str() == "rgs" {
                                         div { class: "az-loading", "Loading resource groups..." }
                                     } else {
