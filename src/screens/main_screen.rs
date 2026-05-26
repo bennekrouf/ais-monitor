@@ -112,6 +112,23 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
 
     let app_label = format!("{} / {}", az.resource_group, az.app_name);
 
+    // Derive an environment colour from the label or resource/app names
+    let env_source = if !az.label.is_empty() { az.label.to_lowercase() }
+                     else { format!("{} {}", az.resource_group, az.app_name).to_lowercase() };
+    let (env_label, env_color) = if env_source.contains("prod") {
+        (if !az.label.is_empty() { az.label.clone() } else { "PROD".into() }, "#e07070")
+    } else if env_source.contains("stg") || env_source.contains("staging") {
+        (if !az.label.is_empty() { az.label.clone() } else { "STG".into()  }, "#d29922")
+    } else if env_source.contains("dev") {
+        (if !az.label.is_empty() { az.label.clone() } else { "DEV".into()  }, "#3fb950")
+    } else if env_source.contains("uat") || env_source.contains("test") {
+        (if !az.label.is_empty() { az.label.clone() } else { "UAT".into()  }, "#bc8cff")
+    } else if !az.label.is_empty() {
+        (az.label.clone(), "#58a6ff")   // custom label, blue
+    } else {
+        (String::new(), "")             // no label, no badge
+    };
+
     rsx! {
         div { class: "app",
             // ── Top bar ──────────────────────────────────────────────
@@ -120,6 +137,15 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                     class: "btn btn-back",
                     onclick: move |_| props.on_back.call(()),
                     "‹ Back"
+                }
+                // Environment badge — colour-coded by profile label or resource name
+                if !env_label.is_empty() {
+                    span {
+                        style: "padding:2px 9px; border-radius:10px; font-size:11px; font-weight:700; \
+                                letter-spacing:.05em; color:#0d1117; background:{env_color}; \
+                                flex-shrink:0; white-space:nowrap;",
+                        "{env_label}"
+                    }
                 }
                 span { class: "topbar-dir", title: "{app_label}", "{app_label}" }
                 {
