@@ -176,7 +176,8 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                     div { class: "profile-actions",
                                                         button {
                                                             class: "btn btn-open btn-small",
-                                                            title: "Open this profile",
+                                                            title: if is_logged_in { "Open this profile" } else { "Log in first" },
+                                                            disabled: !is_logged_in,
                                                             onclick: {
                                                                 let p = p.clone();
                                                                 let on_connect = on_connect.clone();

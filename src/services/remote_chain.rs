@@ -145,6 +145,7 @@ pub fn discover_chains_remote(
                 label: c.steps[0].workflow.clone(),
                 steps,
                 queues: queue_list,
+                parallel_entries: c.parallel_entries.clone(),
             }
         })
         .collect();

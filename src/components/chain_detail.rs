@@ -808,6 +808,16 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                 }
             }
 
+            // Parallel entries
+            if !chain.parallel_entries.is_empty() {
+                div { class: "parallel-section",
+                    span { class: "parallel-label", "↳ also fed by" }
+                    for entry in chain.parallel_entries.iter() {
+                        span { class: "parallel-entry", "{entry}" }
+                    }
+                }
+            }
+
             // Queue status
             if !chain.queues.is_empty() {
                 div { class: "queue-section",

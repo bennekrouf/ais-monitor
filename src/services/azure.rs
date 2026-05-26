@@ -122,24 +122,38 @@ pub fn list_service_bus_namespaces(sub: &str, rg: &str) -> Result<Vec<String>, S
 
 /// Check current az login status (blocking — call from spawn_blocking)
 pub fn check_login() -> AzLoginState {
-    let output = Command::new("az")
+    // Step 1: get account metadata from local cache
+    let account_out = Command::new("az")
         .args(["account", "show", "--output", "json"])
         .output();
 
-    match output {
+    let acc = match account_out {
         Ok(out) if out.status.success() => {
             let body = String::from_utf8_lossy(&out.stdout);
             match serde_json::from_str::<AzAccount>(&body) {
-                Ok(acc) => AzLoginState::LoggedIn {
-                    account: acc.name,
-                    subscription_id: acc.id,
-                },
-                Err(_) => AzLoginState::NotLoggedIn,
+                Ok(a) => a,
+                Err(_) => return AzLoginState::NotLoggedIn,
             }
         }
+        _ => return AzLoginState::NotLoggedIn,
+    };
+
+    // Step 2: validate the token is actually fresh by requesting a new one.
+    // `az account show` reads local cache and succeeds even after AADSTS70043 expiry.
+    // `az account get-access-token` calls the identity endpoint and fails when the
+    // refresh token has expired (conditional access, sign-in frequency policy, etc.).
+    let token_out = Command::new("az")
+        .args(["account", "get-access-token", "--output", "none"])
+        .output();
+
+    match token_out {
+        Ok(out) if out.status.success() => AzLoginState::LoggedIn {
+            account: acc.name,
+            subscription_id: acc.id,
+        },
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr);
-            if stderr.contains("AADSTS70043") || stderr.contains("expired") {
+            if stderr.contains("AADSTS") || stderr.contains("expired") || stderr.contains("refresh token") {
                 AzLoginState::Expired
             } else {
                 AzLoginState::NotLoggedIn
