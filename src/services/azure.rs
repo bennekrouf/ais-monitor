@@ -37,20 +37,37 @@ pub fn list_subscriptions() -> Result<Vec<AzSubscription>, String> {
     serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))
 }
 
-pub fn list_resource_groups(sub: &str) -> Result<Vec<String>, String> {
+/// A Logic App site discovered directly — includes its resource group.
+#[derive(Clone, Debug, PartialEq, serde::Deserialize)]
+pub struct LogicAppSite {
+    pub name:           String,
+    pub resource_group: String,
+}
+
+/// List all Logic Apps Standard sites in a subscription directly, without
+/// enumerating resource groups first.
+///
+/// Uses `az resource list --resource-type Microsoft.Web/sites
+///   --query "[?contains(kind,'workflowapp')]"`
+///
+/// This works even with PIM access that only covers specific resource groups
+/// (unlike `az group list` which requires subscription-level read access).
+pub fn list_logic_app_sites(sub: &str) -> Result<Vec<LogicAppSite>, String> {
     let output = Command::new("az")
-        .args(["group", "list", "--subscription", sub, "--output", "json"])
+        .args([
+            "resource", "list",
+            "--subscription", sub,
+            "--resource-type", "Microsoft.Web/sites",
+            "--query", "[?contains(kind, 'workflowapp')].{name:name,resource_group:resourceGroup}",
+            "--output", "json",
+        ])
         .output()
-        .map_err(|e| format!("az group list failed: {e}"))?;
+        .map_err(|e| format!("az resource list failed: {e}"))?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).to_string());
     }
     let body = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
-    Ok(json.as_array().unwrap_or(&vec![])
-        .iter()
-        .filter_map(|v| v["name"].as_str().map(String::from))
-        .collect())
+    serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))
 }
 
 pub fn list_logic_apps(sub: &str, rg: &str) -> Result<Vec<String>, String> {

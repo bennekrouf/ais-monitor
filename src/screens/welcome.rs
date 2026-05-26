@@ -1,5 +1,5 @@
 use dioxus::prelude::*;
-use crate::services::azure::{self, AzLoginState, AzSubscription};
+use crate::services::azure::{self, AzLoginState, AzSubscription, LogicAppSite};
 use crate::components::chain_detail::AzConfig;
 
 #[derive(Props, Clone, PartialEq)]
@@ -23,13 +23,13 @@ pub fn Welcome(props: WelcomeProps) -> Element {
     let mut editing_profile = use_signal(|| Option::<usize>::None);
 
     // Browse mode state
-    let mut subscriptions = use_signal(|| Vec::<AzSubscription>::new());
-    let mut selected_sub = use_signal(|| String::new());
-    let mut resource_groups = use_signal(|| Vec::<String>::new());
-    let mut logic_apps = use_signal(|| Vec::<String>::new());
-    let mut sb_namespaces = use_signal(|| Vec::<String>::new());
-    // "" | "subs" | "rgs" | "apps"
-    let mut browse_loading = use_signal(|| String::new());
+    let mut subscriptions    = use_signal(|| Vec::<AzSubscription>::new());
+    let mut selected_sub     = use_signal(|| String::new());
+    // Logic App sites loaded directly (no resource-group step)
+    let mut logic_app_sites  = use_signal(|| Vec::<LogicAppSite>::new());
+    let mut sb_namespaces    = use_signal(|| Vec::<String>::new());
+    // "" | "subs" | "apps"
+    let mut browse_loading   = use_signal(|| String::new());
 
     let mut profiles = use_signal(|| load_profiles());
 
@@ -43,20 +43,17 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                 // Auto-open profile creation when logged in with no saved profiles
                 if profiles.read().is_empty() {
                     show_form.set(true);
-                    // Also kick off subscription loading for browse mode
                     browse_loading.set("subs".into());
                     let subs = tokio::task::spawn_blocking(azure::list_subscriptions)
-                        .await
-                        .unwrap_or(Ok(vec![]))
-                        .unwrap_or_default();
+                        .await.unwrap_or(Ok(vec![])).unwrap_or_default();
                     if subs.len() == 1 {
                         let sid = subs[0].id.clone();
                         selected_sub.set(sid.clone());
                         subscriptions.set(subs);
-                        browse_loading.set("rgs".into());
-                        let rgs = tokio::task::spawn_blocking(move || azure::list_resource_groups(&sid))
+                        browse_loading.set("apps".into());
+                        let sites = tokio::task::spawn_blocking(move || azure::list_logic_app_sites(&sid))
                             .await.unwrap_or(Ok(vec![])).unwrap_or_default();
-                        resource_groups.set(rgs);
+                        logic_app_sites.set(sites);
                     } else {
                         subscriptions.set(subs);
                     }
@@ -70,7 +67,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
     let is_logged_in = matches!(*az_state.read(), AzLoginState::LoggedIn { .. });
     // Browse mode: new profile form while logged in
     let is_browse_mode = *show_form.read() && editing_profile.read().is_none() && is_logged_in;
-    let can_connect = !rg_input.read().is_empty() && !app_input.read().is_empty();
+    let can_connect = !app_input.read().is_empty();
 
     rsx! {
         div { class: "welcome",
@@ -242,8 +239,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                     sb_input.set(String::new());
                                     subscriptions.set(vec![]);
                                     selected_sub.set(String::new());
-                                    resource_groups.set(vec![]);
-                                    logic_apps.set(vec![]);
+                                    logic_app_sites.set(vec![]);
                                     sb_namespaces.set(vec![]);
                                     browse_loading.set(String::new());
                                     editing_profile.set(None);
@@ -252,18 +248,15 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                         browse_loading.set("subs".into());
                                         spawn(async move {
                                             let subs = tokio::task::spawn_blocking(azure::list_subscriptions)
-                                                .await
-                                                .unwrap_or(Ok(vec![]))
-                                                .unwrap_or_default();
-                                            // Auto-select single subscription and immediately load RGs
+                                                .await.unwrap_or(Ok(vec![])).unwrap_or_default();
                                             if subs.len() == 1 {
                                                 let sid = subs[0].id.clone();
                                                 selected_sub.set(sid.clone());
                                                 subscriptions.set(subs);
-                                                browse_loading.set("rgs".into());
-                                                let rgs = tokio::task::spawn_blocking(move || azure::list_resource_groups(&sid))
+                                                browse_loading.set("apps".into());
+                                                let sites = tokio::task::spawn_blocking(move || azure::list_logic_app_sites(&sid))
                                                     .await.unwrap_or(Ok(vec![])).unwrap_or_default();
-                                                resource_groups.set(rgs);
+                                                logic_app_sites.set(sites);
                                             } else {
                                                 subscriptions.set(subs);
                                             }
@@ -296,20 +289,19 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                 }
                             }
 
+                            // ── Subscription (with ↻ Refresh for post-PIM) ───────
                             div { class: "az-field",
-                                // Label row with ↻ Refresh button for post-PIM reload
                                 div { style: "display:flex; align-items:center; justify-content:space-between; margin-bottom:4px;",
                                     label { style: "margin:0;", "Subscription" }
                                     button {
                                         style: "font-size:11px; background:none; border:none; cursor:pointer; opacity:0.6; padding:0; font-family:inherit;",
-                                        title: "Refresh — use after PIM activation",
+                                        title: "Refresh after PIM activation",
                                         disabled: browse_loading.read().as_str() == "subs",
                                         onclick: move |_| {
                                             selected_sub.set(String::new());
-                                            resource_groups.set(vec![]);
-                                            rg_input.set(String::new());
-                                            logic_apps.set(vec![]);
+                                            logic_app_sites.set(vec![]);
                                             app_input.set(String::new());
+                                            rg_input.set(String::new());
                                             sb_namespaces.set(vec![]);
                                             sb_input.set(String::new());
                                             browse_loading.set("subs".into());
@@ -320,10 +312,10 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                     let sid = subs[0].id.clone();
                                                     selected_sub.set(sid.clone());
                                                     subscriptions.set(subs);
-                                                    browse_loading.set("rgs".into());
-                                                    let rgs = tokio::task::spawn_blocking(move || azure::list_resource_groups(&sid))
+                                                    browse_loading.set("apps".into());
+                                                    let sites = tokio::task::spawn_blocking(move || azure::list_logic_app_sites(&sid))
                                                         .await.unwrap_or(Ok(vec![])).unwrap_or_default();
-                                                    resource_groups.set(rgs);
+                                                    logic_app_sites.set(sites);
                                                 } else {
                                                     subscriptions.set(subs);
                                                 }
@@ -340,17 +332,16 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                         onchange: move |e| {
                                             let val = e.value();
                                             selected_sub.set(val.clone());
-                                            resource_groups.set(vec![]);
-                                            rg_input.set(String::new());
-                                            logic_apps.set(vec![]);
+                                            logic_app_sites.set(vec![]);
                                             app_input.set(String::new());
+                                            rg_input.set(String::new());
                                             sb_namespaces.set(vec![]);
                                             sb_input.set(String::new());
-                                            browse_loading.set("rgs".into());
+                                            browse_loading.set("apps".into());
                                             spawn(async move {
-                                                let rgs = tokio::task::spawn_blocking(move || azure::list_resource_groups(&val))
+                                                let sites = tokio::task::spawn_blocking(move || azure::list_logic_app_sites(&val))
                                                     .await.unwrap_or(Ok(vec![])).unwrap_or_default();
-                                                resource_groups.set(rgs);
+                                                logic_app_sites.set(sites);
                                                 browse_loading.set(String::new());
                                             });
                                         },
@@ -373,23 +364,24 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                 }
                             }
 
+                            // ── Logic App (directly, no resource group step) ──────
                             if !selected_sub.read().is_empty() {
                                 div { class: "az-field",
                                     div { style: "display:flex; align-items:center; justify-content:space-between; margin-bottom:4px;",
-                                        label { style: "margin:0;", "Resource Group" }
-                                        if resource_groups.read().is_empty() && browse_loading.read().as_str() != "rgs" {
+                                        label { style: "margin:0;", "Logic App" }
+                                        if logic_app_sites.read().is_empty() && browse_loading.read().as_str() != "apps" {
                                             button {
                                                 style: "font-size:11px; background:none; border:none; cursor:pointer; opacity:0.6; padding:0; font-family:inherit;",
-                                                title: "Retry loading resource groups — activate PIM first then refresh",
+                                                title: "Retry — activate PIM then click Refresh above",
                                                 onclick: {
                                                     let sub = selected_sub.read().clone();
                                                     move |_| {
-                                                        browse_loading.set("rgs".into());
+                                                        browse_loading.set("apps".into());
                                                         let sid = sub.clone();
                                                         spawn(async move {
-                                                            let rgs = tokio::task::spawn_blocking(move || azure::list_resource_groups(&sid))
+                                                            let sites = tokio::task::spawn_blocking(move || azure::list_logic_app_sites(&sid))
                                                                 .await.unwrap_or(Ok(vec![])).unwrap_or_default();
-                                                            resource_groups.set(rgs);
+                                                            logic_app_sites.set(sites);
                                                             browse_loading.set(String::new());
                                                         });
                                                     }
@@ -398,74 +390,36 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                             }
                                         }
                                     }
-                                    if browse_loading.read().as_str() == "rgs" {
-                                        div { class: "az-loading", "Loading resource groups..." }
+                                    if browse_loading.read().as_str() == "apps" {
+                                        div { class: "az-loading", "Loading Logic Apps..." }
+                                    } else if logic_app_sites.read().is_empty() {
+                                        div { class: "az-hint",
+                                            "No Logic Apps (Standard) found — activate PIM then click ↻ Refresh"
+                                        }
                                     } else {
                                         select {
                                             onchange: move |e| {
                                                 let val = e.value();
-                                                rg_input.set(val.clone());
-                                                logic_apps.set(vec![]);
-                                                app_input.set(String::new());
-                                                sb_namespaces.set(vec![]);
-                                                sb_input.set(String::new());
-                                                browse_loading.set("apps".into());
-                                                let sub = selected_sub.read().clone();
-                                                spawn(async move {
-                                                    let sub_a = sub.clone();
-                                                    let rg_a = val.clone();
-                                                    let sub_b = sub.clone();
-                                                    let rg_b = val.clone();
-                                                    let (apps_res, sbs_res) = tokio::join!(
-                                                        tokio::task::spawn_blocking(move || azure::list_logic_apps(&sub_a, &rg_a)),
-                                                        tokio::task::spawn_blocking(move || azure::list_service_bus_namespaces(&sub_b, &rg_b)),
-                                                    );
-                                                    logic_apps.set(apps_res.unwrap_or(Ok(vec![])).unwrap_or_default());
-                                                    sb_namespaces.set(sbs_res.unwrap_or(Ok(vec![])).unwrap_or_default());
-                                                    browse_loading.set(String::new());
-                                                });
+                                                // val = "name||rg"
+                                                let mut parts = val.splitn(2, "||");
+                                                let name = parts.next().unwrap_or("").to_string();
+                                                let rg   = parts.next().unwrap_or("").to_string();
+                                                app_input.set(name);
+                                                rg_input.set(rg);
                                             },
-                                            if rg_input.read().is_empty() {
-                                                option { value: "", "Select resource group..." }
-                                            }
-                                            for rg in resource_groups.read().iter() {
-                                                {
-                                                    let is_selected = rg == &*rg_input.read();
-                                                    rsx! {
-                                                        option {
-                                                            value: "{rg}",
-                                                            selected: is_selected,
-                                                            "{rg}"
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            if !rg_input.read().is_empty() {
-                                div { class: "az-field",
-                                    label { "Logic App" }
-                                    if browse_loading.read().as_str() == "apps" {
-                                        div { class: "az-loading", "Loading Logic Apps..." }
-                                    } else if logic_apps.read().is_empty() {
-                                        div { class: "az-hint", "No Logic Apps (Standard) found in this resource group" }
-                                    } else {
-                                        select {
-                                            onchange: move |e| app_input.set(e.value()),
                                             if app_input.read().is_empty() {
                                                 option { value: "", "Select Logic App..." }
                                             }
-                                            for app in logic_apps.read().iter() {
+                                            for site in logic_app_sites.read().iter() {
                                                 {
-                                                    let is_selected = app == &*app_input.read();
+                                                    let val = format!("{}||{}", site.name, site.resource_group);
+                                                    let selected = *app_input.read() == site.name;
+                                                    let label = format!("{} ({})", site.name, site.resource_group);
                                                     rsx! {
                                                         option {
-                                                            value: "{app}",
-                                                            selected: is_selected,
-                                                            "{app}"
+                                                            value: "{val}",
+                                                            selected: selected,
+                                                            "{label}"
                                                         }
                                                     }
                                                 }
@@ -475,7 +429,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                 }
                             }
 
-                            if !rg_input.read().is_empty() && !sb_namespaces.read().is_empty() {
+                            if !app_input.read().is_empty() && !sb_namespaces.read().is_empty() {
                                 div { class: "az-field",
                                     label { "Service Bus Namespace (optional)" }
                                     select {
