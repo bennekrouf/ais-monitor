@@ -15,10 +15,17 @@ pub fn discover_chains_remote(
     // Fetch deployed workflow list
     let deployed = azure::list_deployed_workflows(sub, rg, app)?;
     if deployed.is_empty() {
-        return Ok(Vec::new());
+        return Err(format!(
+            "No workflows found in Logic App '{app}'.\n\
+             Check that the app is running and you have access."
+        ));
     }
 
+    // Fetch app settings to resolve @appsetting('VAR') references in queue names
+    let app_settings = azure::get_app_settings(sub, rg, app).unwrap_or_default();
+
     let mut workflows = Vec::new();
+    let mut fetch_errors: Vec<String> = Vec::new();
 
     for wf_info in &deployed {
         let name = &wf_info.name;
@@ -37,31 +44,62 @@ pub fn discover_chains_remote(
                 save_cached_definition(&cache_dir, name, &def);
                 if let Some(wf) = ais_chain::parser::parse_workflow_json(name, &def) {
                     workflows.push(wf);
+                } else {
+                    fetch_errors.push(format!("{name}: could not parse definition"));
                 }
             }
             Err(e) => {
-                eprintln!("Failed to fetch definition for {name}: {e}");
+                fetch_errors.push(format!("{name}: {e}"));
             }
         }
     }
 
     if workflows.is_empty() {
-        return Ok(Vec::new());
+        return Err(format!(
+            "Fetched {} workflow(s) but none could be parsed.\nErrors:\n{}",
+            deployed.len(),
+            fetch_errors.join("\n")
+        ));
     }
 
-    let graph = ais_chain::graph::build(&workflows, &[]);
+    // Resolve @appsetting('VAR') references so queue names match across workflows
+    let mut resolved_workflows = workflows;
+    for wf in &mut resolved_workflows {
+        for link in wf.triggers.iter_mut().chain(wf.sends.iter_mut()) {
+            link.target = resolve_appsetting(&link.target, &app_settings);
+        }
+    }
+
+    let graph = ais_chain::graph::build(&resolved_workflows, &[]);
     let raw_chains = graph.find_chains();
 
-    let chains = raw_chains
+    // If no multi-step chains, surface a diagnostic instead of silently returning empty
+    let multi_step: Vec<_> = raw_chains.iter().filter(|c| c.steps.len() > 1).collect();
+    if multi_step.is_empty() && !raw_chains.is_empty() {
+        // There are workflows but no connections detected — useful diagnostic
+        let wf_names: Vec<_> = resolved_workflows.iter().map(|w| {
+            let triggers: Vec<_> = w.triggers.iter().map(|t| format!("{}:{}", t.kind, t.target)).collect();
+            let sends: Vec<_> = w.sends.iter().map(|s| format!("{}:{}", s.kind, s.target)).collect();
+            format!("  {} → triggers:[{}] sends:[{}]", w.name, triggers.join(","), sends.join(","))
+        }).collect();
+        return Err(format!(
+            "{} workflow(s) parsed but no chains found (no matching queue sender→receiver).\n\
+             Workflow graph:\n{}\n\
+             Tip: queue names using @appsetting('VAR') must resolve to the same value on sender and receiver.",
+            resolved_workflows.len(),
+            wf_names.join("\n")
+        ));
+    }
+
+    let chains = multi_step
         .iter()
-        .filter(|c| c.steps.len() > 1)
         .map(|c| {
             let mut queues = HashSet::new();
             let steps: Vec<StepDetail> = c.steps.iter().map(|s| {
                 if s.link_type.starts_with("queue:") {
                     queues.insert(s.link_type.strip_prefix("queue:").unwrap().to_string());
                 }
-                let trigger_info = workflows.iter()
+                let trigger_info = resolved_workflows.iter()
                     .find(|w| w.name == s.workflow)
                     .map(|w| {
                         w.triggers.iter()
@@ -90,6 +128,28 @@ pub fn discover_chains_remote(
         .collect();
 
     Ok(chains)
+}
+
+/// Resolve `@appsetting('VAR')` and `@appsetting(VAR)` references using
+/// the app's published configuration. Returns the original string unchanged
+/// if the pattern is not found or the setting key is missing.
+fn resolve_appsetting(s: &str, settings: &std::collections::HashMap<String, String>) -> String {
+    // Match @{appsetting('KEY')} or @appsetting('KEY') or @appsetting(KEY)
+    let patterns: &[(&str, &str, &str)] = &[
+        ("@{appsetting('", "')}", ""),
+        ("@appsetting('",  "')", ""),
+        ("@{appsetting(\"","\")}",""),
+        ("@appsetting(\"", "\")", ""),
+    ];
+    for (prefix, suffix, _) in patterns {
+        if s.starts_with(prefix) && s.ends_with(suffix) {
+            let key = &s[prefix.len()..s.len() - suffix.len()];
+            if let Some(val) = settings.get(key) {
+                return val.clone();
+            }
+        }
+    }
+    s.to_string()
 }
 
 /// Invalidate the cache for a specific app, forcing a fresh fetch next time.

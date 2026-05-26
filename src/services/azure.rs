@@ -396,6 +396,31 @@ pub struct TriggerResult {
     pub body: String,
 }
 
+/// Fetch the app's published configuration as a key→value map (blocking).
+/// Used to resolve @appsetting('VAR') references in queue names.
+pub fn get_app_settings(sub: &str, rg: &str, app: &str) -> Result<std::collections::HashMap<String, String>, String> {
+    let output = Command::new("az")
+        .args([
+            "webapp", "config", "appsettings", "list",
+            "--subscription", sub,
+            "--resource-group", rg,
+            "--name", app,
+            "--output", "json",
+        ])
+        .output()
+        .map_err(|e| format!("az appsettings failed: {e}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).to_string());
+    }
+    let body = String::from_utf8_lossy(&output.stdout);
+    let arr: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap_or_default();
+    Ok(arr.iter().filter_map(|v| {
+        let k = v["name"].as_str()?.to_string();
+        let val = v["value"].as_str().unwrap_or("").to_string();
+        Some((k, val))
+    }).collect())
+}
+
 /// Fetch the full workflow definition (blocking)
 pub fn get_workflow_definition(sub: &str, rg: &str, app: &str, workflow: &str) -> Result<serde_json::Value, String> {
     let url = format!(
