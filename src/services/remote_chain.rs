@@ -36,20 +36,42 @@ pub fn discover_chains_remote(
                 workflows.push(wf);
                 continue;
             }
+            // Cached data is present but unparseable — fall through to re-fetch
         }
 
-        // Fetch from Azure
-        match azure::get_workflow_definition(sub, rg, app, name) {
+        // Fetch full definition from ARM
+        let parsed = match azure::get_workflow_definition(sub, rg, app, name) {
             Ok(def) => {
                 save_cached_definition(&cache_dir, name, &def);
-                if let Some(wf) = ais_chain::parser::parse_workflow_json(name, &def) {
-                    workflows.push(wf);
-                } else {
-                    fetch_errors.push(format!("{name}: could not parse definition"));
-                }
+                ais_chain::parser::parse_workflow_json(name, &def)
             }
-            Err(e) => {
-                fetch_errors.push(format!("{name}: {e}"));
+            Err(_) => None,
+        };
+
+        if let Some(wf) = parsed {
+            workflows.push(wf);
+        } else {
+            // Fallback: extract the trigger queue from the trigger name convention.
+            // Azure names Service Bus triggers:
+            //   "When_messages_are_available_in_{queue_name}_(peek-lock)"
+            // This covers the ~36 workflows whose ARM definition endpoint returns
+            // no parseable files but whose queue name is visible in the metadata.
+            let fallback_triggers: Vec<ais_chain::parser::Link> = wf_info
+                .trigger_names
+                .iter()
+                .filter_map(|t| parse_queue_from_trigger_name(t))
+                .map(|q| ais_chain::parser::Link { kind: "queue".into(), target: q })
+                .collect();
+
+            if !fallback_triggers.is_empty() {
+                workflows.push(ais_chain::parser::Workflow {
+                    name: name.clone(),
+                    triggers: fallback_triggers,
+                    sends: Vec::new(),
+                    calls: Vec::new(),
+                });
+            } else {
+                fetch_errors.push(format!("{name}: no definition and no trigger name pattern"));
             }
         }
     }
@@ -128,6 +150,24 @@ pub fn discover_chains_remote(
         .collect();
 
     Ok(chains)
+}
+
+/// Extract the Service Bus queue name encoded in an Azure trigger name.
+///
+/// Azure auto-names peek-lock triggers using the pattern:
+///   `When_messages_are_available_in_{queue_name}_(peek-lock)`
+/// or without the suffix:
+///   `When_messages_are_available_in_{queue_name}`
+///
+/// Returns `None` for triggers that don't follow this pattern (HTTP, Recurrence, …).
+fn parse_queue_from_trigger_name(trigger_name: &str) -> Option<String> {
+    const PREFIX: &str = "When_messages_are_available_in_";
+    let rest = trigger_name.strip_prefix(PREFIX)?;
+    let queue = rest
+        .strip_suffix("_(peek-lock)")
+        .or_else(|| rest.strip_suffix("_(receive-and-delete)"))
+        .unwrap_or(rest);
+    if queue.is_empty() { None } else { Some(queue.to_string()) }
 }
 
 /// Resolve `@appsetting('VAR')` and `@appsetting(VAR)` references using

@@ -166,6 +166,11 @@ pub struct WorkflowInfo {
     pub name: String,
     #[serde(default)]
     pub state: Option<String>,
+    /// Trigger names from hostruntime metadata, e.g.
+    /// "When_messages_are_available_in_ais.foo_(peek-lock)".
+    /// Used as a fallback when the ARM definition fetch fails.
+    #[serde(skip)]
+    pub trigger_names: Vec<String>,
 }
 
 /// List workflows deployed on a Logic App (blocking)
@@ -201,7 +206,14 @@ pub fn list_deployed_workflows(sub: &str, rg: &str, app: &str) -> Result<Vec<Wor
         .filter_map(|v| {
             let name = v["name"].as_str()?.to_string();
             let state = v["properties"]["state"].as_str().map(String::from);
-            Some(WorkflowInfo { name, state })
+            // Extract trigger names — the keys of the "triggers" object.
+            // These encode queue names in the format:
+            //   "When_messages_are_available_in_{queue}_(peek-lock)"
+            let trigger_names = v["properties"]["triggers"]
+                .as_object()
+                .map(|t| t.keys().cloned().collect::<Vec<_>>())
+                .unwrap_or_default();
+            Some(WorkflowInfo { name, state, trigger_names })
         })
         .collect();
 
