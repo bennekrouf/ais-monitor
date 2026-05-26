@@ -243,7 +243,17 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                         }
                     }
                 }
-                span { class: "detail-subtitle", "{chain.steps.len()} workflows · {chain.queues.len()} queues" }
+                span { class: "detail-subtitle",
+                    {
+                        let s = chain.steps.len();
+                        let q = chain.queues.len();
+                        let steps_str  = if s == 1 { "1 workflow".to_string()  } else { format!("{s} workflows") };
+                        let queues_str = if q == 0 { String::new() }
+                                         else if q == 1 { " · 1 queue".to_string() }
+                                         else { format!(" · {q} queues") };
+                        format!("{steps_str}{queues_str}")
+                    }
+                }
                 if az.is_some() {
                     button {
                         class: "btn",

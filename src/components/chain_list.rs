@@ -26,7 +26,12 @@ pub fn ChainList(props: ChainListProps) -> Element {
 
     rsx! {
         div { class: "chain-list",
-            h3 { "Chains ({props.chains.len()})" }
+            h3 {
+                {
+                    let n = props.chains.len();
+                    if n == 1 { "1 chain".to_string() } else { format!("{n} chains") }
+                }
+            }
             for chain in props.chains.iter() {
                 {
                     let label = chain.label.clone();
@@ -66,9 +71,13 @@ pub fn ChainList(props: ChainListProps) -> Element {
                                     }
                                 }
                                 span { class: "chain-name", "{display_name}" }
-                                span { class: "chain-badge", "{steps} steps" }
+                                span { class: "chain-badge",
+                                    if steps == 1 { "1 step" } else { "{steps} steps" }
+                                }
                                 if queues > 0 {
-                                    span { class: "chain-badge queue-badge", "{queues} queues" }
+                                    span { class: "chain-badge queue-badge",
+                                        if queues == 1 { "1 queue" } else { "{queues} queues" }
+                                    }
                                 }
                             }
                             if let Some(ref h) = health {
