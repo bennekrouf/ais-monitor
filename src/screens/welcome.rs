@@ -27,6 +27,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
     let mut selected_sub     = use_signal(|| String::new());
     // Logic App sites loaded directly (no resource-group step)
     let mut logic_app_sites  = use_signal(|| Vec::<LogicAppSite>::new());
+    let mut sites_error      = use_signal(|| Option::<String>::None);
     let mut sb_namespaces    = use_signal(|| Vec::<String>::new());
     // "" | "subs" | "apps"
     let mut browse_loading   = use_signal(|| String::new());
@@ -51,9 +52,11 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                         selected_sub.set(sid.clone());
                         subscriptions.set(subs);
                         browse_loading.set("apps".into());
-                        let sites = tokio::task::spawn_blocking(move || azure::list_logic_app_sites(&sid))
-                            .await.unwrap_or(Ok(vec![])).unwrap_or_default();
-                        logic_app_sites.set(sites);
+                        match tokio::task::spawn_blocking(move || azure::list_logic_app_sites(&sid)).await {
+                            Ok(Ok(sites)) => { logic_app_sites.set(sites); sites_error.set(None); }
+                            Ok(Err(e))    => { logic_app_sites.set(vec![]); sites_error.set(Some(e)); }
+                            Err(e)        => { logic_app_sites.set(vec![]); sites_error.set(Some(e.to_string())); }
+                        }
                     } else {
                         subscriptions.set(subs);
                     }
@@ -254,9 +257,11 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                 selected_sub.set(sid.clone());
                                                 subscriptions.set(subs);
                                                 browse_loading.set("apps".into());
-                                                let sites = tokio::task::spawn_blocking(move || azure::list_logic_app_sites(&sid))
-                                                    .await.unwrap_or(Ok(vec![])).unwrap_or_default();
-                                                logic_app_sites.set(sites);
+                                                match tokio::task::spawn_blocking(move || azure::list_logic_app_sites(&sid)).await {
+                                                    Ok(Ok(s)) => { logic_app_sites.set(s); sites_error.set(None); }
+                                                    Ok(Err(e)) => { logic_app_sites.set(vec![]); sites_error.set(Some(e)); }
+                                                    Err(e)    => { logic_app_sites.set(vec![]); sites_error.set(Some(e.to_string())); }
+                                                }
                                             } else {
                                                 subscriptions.set(subs);
                                             }
@@ -313,9 +318,11 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                     selected_sub.set(sid.clone());
                                                     subscriptions.set(subs);
                                                     browse_loading.set("apps".into());
-                                                    let sites = tokio::task::spawn_blocking(move || azure::list_logic_app_sites(&sid))
-                                                        .await.unwrap_or(Ok(vec![])).unwrap_or_default();
-                                                    logic_app_sites.set(sites);
+                                                    match tokio::task::spawn_blocking(move || azure::list_logic_app_sites(&sid)).await {
+                                                        Ok(Ok(s)) => { logic_app_sites.set(s); sites_error.set(None); }
+                                                        Ok(Err(e)) => { logic_app_sites.set(vec![]); sites_error.set(Some(e)); }
+                                                        Err(e)    => { logic_app_sites.set(vec![]); sites_error.set(Some(e.to_string())); }
+                                                    }
                                                 } else {
                                                     subscriptions.set(subs);
                                                 }
@@ -339,9 +346,11 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                             sb_input.set(String::new());
                                             browse_loading.set("apps".into());
                                             spawn(async move {
-                                                let sites = tokio::task::spawn_blocking(move || azure::list_logic_app_sites(&val))
-                                                    .await.unwrap_or(Ok(vec![])).unwrap_or_default();
-                                                logic_app_sites.set(sites);
+                                                match tokio::task::spawn_blocking(move || azure::list_logic_app_sites(&val)).await {
+                                                    Ok(Ok(s)) => { logic_app_sites.set(s); sites_error.set(None); }
+                                                    Ok(Err(e)) => { logic_app_sites.set(vec![]); sites_error.set(Some(e)); }
+                                                    Err(e)    => { logic_app_sites.set(vec![]); sites_error.set(Some(e.to_string())); }
+                                                }
                                                 browse_loading.set(String::new());
                                             });
                                         },
@@ -379,9 +388,11 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                         browse_loading.set("apps".into());
                                                         let sid = sub.clone();
                                                         spawn(async move {
-                                                            let sites = tokio::task::spawn_blocking(move || azure::list_logic_app_sites(&sid))
-                                                                .await.unwrap_or(Ok(vec![])).unwrap_or_default();
-                                                            logic_app_sites.set(sites);
+                                                            match tokio::task::spawn_blocking(move || azure::list_logic_app_sites(&sid)).await {
+                                                                Ok(Ok(s)) => { logic_app_sites.set(s); sites_error.set(None); }
+                                                                Ok(Err(e)) => { logic_app_sites.set(vec![]); sites_error.set(Some(e)); }
+                                                                Err(e)    => { logic_app_sites.set(vec![]); sites_error.set(Some(e.to_string())); }
+                                                            }
                                                             browse_loading.set(String::new());
                                                         });
                                                     }
@@ -392,9 +403,35 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                     }
                                     if browse_loading.read().as_str() == "apps" {
                                         div { class: "az-loading", "Loading Logic Apps..." }
+                                    } else if let Some(err) = sites_error.read().clone() {
+                                        // Distinguish auth errors from permission errors
+                                        {
+                                            let is_auth = err.contains("AADSTS")
+                                                || err.contains("az login")
+                                                || err.contains("refresh token")
+                                                || err.contains("Please run");
+                                            rsx! {
+                                                div { class: "az-error",
+                                                    if is_auth {
+                                                        span { "Session expired — " }
+                                                        button {
+                                                            class: "btn-primary",
+                                                            style: "display:inline; padding:2px 10px; font-size:12px;",
+                                                            onclick: move |_| {
+                                                                azure::open_login(None);
+                                                                az_state.set(AzLoginState::Checking);
+                                                            },
+                                                            "Log in again"
+                                                        }
+                                                    } else {
+                                                        span { "No Logic Apps found — activate PIM then click ↻ Refresh" }
+                                                    }
+                                                }
+                                            }
+                                        }
                                     } else if logic_app_sites.read().is_empty() {
                                         div { class: "az-hint",
-                                            "No Logic Apps (Standard) found — activate PIM then click ↻ Refresh"
+                                            "No Logic Apps (Standard) in this subscription"
                                         }
                                     } else {
                                         select {
