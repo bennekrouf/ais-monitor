@@ -587,7 +587,53 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                         }
                     }
                 } else {
-                    rsx! {}
+                    // No fresh data yet — show pre-computed health from "Check all" if available
+                    let cached_health = chain_health_signal
+                        .and_then(|sig| sig.read().get(&chain_label).cloned());
+                    if let Some(h) = cached_health {
+                        let rate_val = h.success_rate.unwrap_or(0.0);
+                        let rate_class = if rate_val >= 95.0 { "kpi-value kpi-good" }
+                            else if rate_val >= 80.0 { "kpi-value kpi-warn" }
+                            else { "kpi-value kpi-bad" };
+                        let streak_class = if h.failure_streak == 0 { "kpi-value kpi-good" }
+                            else if h.failure_streak <= 2 { "kpi-value kpi-warn" }
+                            else { "kpi-value kpi-bad" };
+                        rsx! {
+                            div { class: "kpi-banner",
+                                // Faint "cached" indicator
+                                div { style: "width:100%; font-size:10px; opacity:0.45; padding:0 4px 4px; font-style:italic;",
+                                    "from last check — loading fresh data…"
+                                }
+                                div { class: "kpi-card",
+                                    div { class: "kpi-label", "Success Rate" }
+                                    if let Some(rate) = h.success_rate {
+                                        div { class: "{rate_class}", "{rate:.1}%" }
+                                    } else {
+                                        div { class: "kpi-value", "—" }
+                                    }
+                                }
+                                div { class: "kpi-card",
+                                    div { class: "kpi-label", "Dead Letters" }
+                                    {
+                                        let dl_class = if h.dead_letters > 0 { "kpi-value kpi-bad" } else { "kpi-value kpi-good" };
+                                        rsx! { div { class: "{dl_class}", "{h.dead_letters}" } }
+                                    }
+                                }
+                                div { class: "kpi-card",
+                                    div { class: "kpi-label", "Failure Streak" }
+                                    div { class: "{streak_class}", "{h.failure_streak}" }
+                                }
+                                if h.stuck_count > 0 {
+                                    div { class: "kpi-card",
+                                        div { class: "kpi-label", "Stuck" }
+                                        div { class: "kpi-value kpi-bad", "{h.stuck_count}" }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        rsx! {}
+                    }
                 }
             }
 
