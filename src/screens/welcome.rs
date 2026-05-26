@@ -40,6 +40,28 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                 .unwrap_or(AzLoginState::NotLoggedIn);
             if let AzLoginState::LoggedIn { ref subscription_id, .. } = state {
                 sub_id.set(subscription_id.clone());
+                // Auto-open profile creation when logged in with no saved profiles
+                if profiles.read().is_empty() {
+                    show_form.set(true);
+                    // Also kick off subscription loading for browse mode
+                    browse_loading.set("subs".into());
+                    let subs = tokio::task::spawn_blocking(azure::list_subscriptions)
+                        .await
+                        .unwrap_or(Ok(vec![]))
+                        .unwrap_or_default();
+                    if subs.len() == 1 {
+                        let sid = subs[0].id.clone();
+                        selected_sub.set(sid.clone());
+                        subscriptions.set(subs);
+                        browse_loading.set("rgs".into());
+                        let rgs = tokio::task::spawn_blocking(move || azure::list_resource_groups(&sid))
+                            .await.unwrap_or(Ok(vec![])).unwrap_or_default();
+                        resource_groups.set(rgs);
+                    } else {
+                        subscriptions.set(subs);
+                    }
+                    browse_loading.set(String::new());
+                }
             }
             az_state.set(state);
         });
@@ -72,6 +94,11 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                     div { class: "az-status",
                                         span { class: "dot ok" }
                                         span { "Connected: {account}" }
+                                    }
+                                    if profiles.read().is_empty() {
+                                        p { style: "margin:8px 0 0; font-size:12px; opacity:0.65;",
+                                            "Select a Logic App below to start monitoring."
+                                        }
                                     }
                                 },
                                 AzLoginState::Expired | AzLoginState::NotLoggedIn => {
