@@ -4,7 +4,7 @@ use crate::components::{
     chain_detail::{AzConfig, ChainDetailView, ChainHealth},
     eventgrid_panel::EventGridPanel,
 };
-use crate::services::{chain, remote_chain};
+use crate::services::{azure, chain, kpi, remote_chain};
 use std::collections::HashMap;
 
 #[derive(Props, Clone, PartialEq)]
@@ -26,10 +26,12 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     let mut selected_chain = use_signal(|| Option::<String>::None);
     let mut deployed_workflows = use_signal(|| Vec::<String>::new());
     let chain_names = use_signal(|| HashMap::<String, String>::new());
-    let chain_health = use_signal(|| HashMap::<String, ChainHealth>::new());
+    let mut chain_health = use_signal(|| HashMap::<String, ChainHealth>::new());
     let mut view_mode = use_signal(|| ViewMode::Chains);
     let mut loading_chains = use_signal(|| true);
-    let mut load_error = use_signal(|| Option::<String>::None);
+    let mut load_error     = use_signal(|| Option::<String>::None);
+    let mut checking_all   = use_signal(|| false);
+    let mut check_progress = use_signal(|| (0usize, 0usize)); // (done, total)
 
     // ── Resize handle script ────────────────────────────────────────────
     use_effect(move || {
@@ -177,6 +179,84 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                     },
                     if *loading_chains.read() { "Refreshing…" } else { "Refresh" }
                 }
+
+                // ── Check all chains ─────────────────────────────────
+                {
+                    let is_busy = *checking_all.read() || *loading_chains.read();
+                    let (done, total) = *check_progress.read();
+                    let az2 = az.clone();
+                    rsx! {
+                        button {
+                            class: "btn btn-small",
+                            disabled: is_busy || chains.read().is_empty(),
+                            title: "Run health checks on all chains (success rate, dead letters, stuck runs)",
+                            onclick: move |_| {
+                                let az      = az2.clone();
+                                let all     = chains.read().clone();
+                                let total_n = all.len();
+                                checking_all.set(true);
+                                check_progress.set((0, total_n));
+
+                                spawn(async move {
+                                    // Check each chain sequentially to avoid hammering the API
+                                    for (idx, ch) in all.iter().enumerate() {
+                                        let sub  = az.subscription.clone();
+                                        let rg   = az.resource_group.clone();
+                                        let app  = az.app_name.clone();
+                                        let ns   = az.sb_namespace.clone();
+                                        let steps  = ch.steps.iter().map(|s| s.workflow.clone()).collect::<Vec<_>>();
+                                        let queues = ch.queues.clone();
+                                        let label  = ch.label.clone();
+
+                                        let health = tokio::task::spawn_blocking(move || {
+                                            // Run history for each workflow step
+                                            let mut runs_map: HashMap<String, Vec<azure::RunInfo>> = HashMap::new();
+                                            for wf in &steps {
+                                                if let Ok(runs) = azure::list_runs(&sub, &rg, &app, wf, 20) {
+                                                    runs_map.insert(wf.clone(), runs);
+                                                }
+                                            }
+                                            // Queue dead-letter counts
+                                            let mut dl_total: i64 = 0;
+                                            if !ns.is_empty() {
+                                                for q in &queues {
+                                                    if let Ok(qi) = azure::check_queue(&ns, &rg, q) {
+                                                        dl_total += qi.dead_letter;
+                                                    }
+                                                }
+                                            }
+                                            // Compute KPIs
+                                            let all_kpis: Vec<kpi::ChainKpi> = runs_map.values()
+                                                .map(|r| kpi::compute_workflow_kpi(r))
+                                                .collect();
+                                            let total_runs: usize = all_kpis.iter().map(|k| k.total_runs).sum();
+                                            let succeeded:  usize = all_kpis.iter().map(|k| k.succeeded).sum();
+                                            let rate = if total_runs > 0 {
+                                                Some((succeeded as f64 / total_runs as f64) * 100.0)
+                                            } else { None };
+                                            let stuck   = all_kpis.iter().map(|k| k.stuck_runs.len()).sum();
+                                            let streak  = all_kpis.iter().map(|k| k.failure_streak).max().unwrap_or(0);
+                                            ChainHealth { success_rate: rate, dead_letters: dl_total, stuck_count: stuck, failure_streak: streak }
+                                        }).await.unwrap_or_default();
+
+                                        // Write result into the shared health map
+                                        let mut map = chain_health.read().clone();
+                                        map.insert(label, health);
+                                        chain_health.set(map);
+                                        check_progress.set((idx + 1, total_n));
+                                    }
+                                    checking_all.set(false);
+                                });
+                            },
+                            if *checking_all.read() {
+                                "Checking {done}/{total}…"
+                            } else {
+                                "⚡ Check all"
+                            }
+                        }
+                    }
+                }
+
                 div { class: "topbar-spacer" }
                 button {
                     class: "btn-theme",
