@@ -10,7 +10,8 @@ use std::collections::HashMap;
 #[derive(Props, Clone, PartialEq)]
 pub struct MainScreenProps {
     pub az_config: AzConfig,
-    pub on_back: EventHandler<()>,
+    pub is_light:  Signal<bool>,
+    pub on_back:   EventHandler<()>,
 }
 
 #[component]
@@ -18,7 +19,9 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     let az = props.az_config.clone();
 
     // ── Signals ──────────────────────────────────────────────────────────
-    let mut is_light = use_signal(|| dark_light::detect() != dark_light::Mode::Dark);
+    // is_light is owned by the root App so theme applies to Welcome too.
+    // The ☀️/🌙 button writes back into this same signal.
+    let mut is_light = props.is_light;
     let mut chains = use_signal(|| Vec::<chain::ChainDetail>::new());
     let mut selected_chain = use_signal(|| Option::<String>::None);
     let mut deployed_workflows = use_signal(|| Vec::<String>::new());
@@ -27,30 +30,6 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     let mut view_mode = use_signal(|| ViewMode::Chains);
     let mut loading_chains = use_signal(|| true);
     let mut load_error = use_signal(|| Option::<String>::None);
-
-    // ── Apply initial theme class ────────────────────────────────────────
-    use_effect(move || {
-        let cls = if *is_light.read() { "document.body.classList.add('light')" }
-                  else                { "document.body.classList.remove('light')" };
-        document::eval(cls);
-    });
-
-    // ── Follow system theme (polls every 2 s) ────────────────────────────
-    // User can still override via the ☀️/🌙 button; we only sync while the
-    // button hasn't been touched (no separate "overridden" flag needed here —
-    // the button already writes is_light, so after a manual toggle the signal
-    // stays at the user's choice until the next system change overtakes it).
-    use_coroutine(move |_rx: UnboundedReceiver<()>| async move {
-        loop {
-            tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
-            let system_light = tokio::task::spawn_blocking(|| {
-                dark_light::detect() != dark_light::Mode::Dark
-            }).await.unwrap_or(*is_light.read());
-            if system_light != *is_light.read() {
-                is_light.set(system_light);
-            }
-        }
-    });
 
     // ── Resize handle script ────────────────────────────────────────────
     use_effect(move || {

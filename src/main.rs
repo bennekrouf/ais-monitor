@@ -110,6 +110,30 @@ fn is_monitor_shape(x: u32, y: u32, size: u32) -> bool {
 #[component]
 fn App() -> Element {
     let mut az_config = use_signal(|| Option::<AzConfig>::None);
+
+    // ── System theme — applies to both Welcome and MainScreen ────────────
+    let mut is_light = use_signal(|| dark_light::detect() != dark_light::Mode::Dark);
+
+    // Apply CSS class whenever theme changes
+    use_effect(move || {
+        let cls = if *is_light.read() { "document.body.classList.add('light')" }
+                  else                { "document.body.classList.remove('light')" };
+        document::eval(cls);
+    });
+
+    // Poll system preference every 2 s
+    use_coroutine(move |_rx: dioxus::prelude::UnboundedReceiver<()>| async move {
+        loop {
+            tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+            let system_light = tokio::task::spawn_blocking(|| {
+                dark_light::detect() != dark_light::Mode::Dark
+            }).await.unwrap_or(*is_light.read());
+            if system_light != *is_light.read() {
+                is_light.set(system_light);
+            }
+        }
+    });
+
     let config_val = az_config.read().clone();
 
     match config_val {
@@ -123,6 +147,7 @@ fn App() -> Element {
             document::Style { "{MAIN_CSS}" }
             MainScreen {
                 az_config: config,
+                is_light,
                 on_back: move |_| az_config.set(None),
             }
         },
