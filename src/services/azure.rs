@@ -421,14 +421,22 @@ pub fn get_app_settings(sub: &str, rg: &str, app: &str) -> Result<std::collectio
     }).collect())
 }
 
-/// Fetch the full workflow definition (blocking)
+/// Fetch the full workflow definition (blocking).
+///
+/// Uses the ARM `Microsoft.Web/sites/workflows` resource endpoint which returns
+/// `{ "properties": { "files": { "workflow.json": { "definition": {...}, "kind": "..." } } } }`.
+///
+/// NOTE: the hostruntime management endpoint returns only METADATA (trigger names
+/// but no parameters), so we use the ARM resource endpoint instead.
 pub fn get_workflow_definition(sub: &str, rg: &str, app: &str, workflow: &str) -> Result<serde_json::Value, String> {
-    let url = format!(
-        "https://management.azure.com/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.Web/sites/{app}/hostruntime/runtime/webhooks/workflow/api/management/workflows/{workflow}?api-version=2024-04-01"
+    // ARM resource endpoint — returns the files including workflow.json content
+    let uri = format!(
+        "https://management.azure.com/subscriptions/{sub}/resourceGroups/{rg}\
+         /providers/Microsoft.Web/sites/{app}/workflows/{workflow}?api-version=2023-12-01"
     );
 
     let output = Command::new("az")
-        .args(["rest", "--method", "GET", "--url", &url, "--output", "json"])
+        .args(["rest", "--method", "GET", "--uri", &uri, "--output", "json"])
         .output()
         .map_err(|e| format!("az rest failed: {e}"))?;
 
@@ -437,7 +445,19 @@ pub fn get_workflow_definition(sub: &str, rg: &str, app: &str, workflow: &str) -
     }
 
     let body = String::from_utf8_lossy(&output.stdout);
-    serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))
+    let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
+
+    // Extract the workflow.json content from properties.files["workflow.json"]
+    // That value IS the workflow.json file (has "definition" key at root)
+    if let Some(wf) = json.get("properties")
+        .and_then(|p| p.get("files"))
+        .and_then(|f| f.get("workflow.json"))
+    {
+        return Ok(wf.clone());
+    }
+
+    // Fallback: return the whole response and let parse_workflow_json handle it
+    Ok(json)
 }
 
 /// Get queue message counts (blocking)
