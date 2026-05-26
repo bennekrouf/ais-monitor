@@ -235,11 +235,22 @@ pub fn TriggerPanel(props: TriggerPanelProps) -> Element {
                         else { "trigger-status warn" };
                     let status_text = format!("{}", result.status);
                     let body_text = format_response(&result.body);
+                    let copy_text = body_text.clone();
                     rsx! {
                         div { class: "trigger-response",
                             div { class: "trigger-response-header",
                                 span { class: "trigger-label", "Response" }
                                 span { class: "{status_class}", "{status_text}" }
+                                button {
+                                    class: "btn btn-small",
+                                    title: "Copy response to clipboard",
+                                    onclick: move |_| {
+                                        if let Ok(mut cb) = arboard::Clipboard::new() {
+                                            let _ = cb.set_text(copy_text.clone());
+                                        }
+                                    },
+                                    "⎘ Copy"
+                                }
                             }
                             pre { class: "trigger-response-body", "{body_text}" }
                         }

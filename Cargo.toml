@@ -15,3 +15,4 @@ ais-chain = { git = "https://github.com/Bennekrouf/ais-chain" }
 dirs = "5"
 rfd = "0.15"
 dark-light = "1"
+arboard = "3"
