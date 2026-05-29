@@ -62,10 +62,11 @@ Filename: "powershell.exe"; \
   StatusMsg: "Installing runtime dependencies (Node, Azure CLI, func, azurite)..."; \
   Flags: waituntilterminated runhidden
 
-; Offer to launch the app on the Finish page
+; Launch as the original (non-elevated) user — WebView2 refuses to render
+; when the host process has admin privileges (shows black screen).
 Filename: "{app}\{#MyAppExeName}"; \
   Description: "Launch {#MyAppName}"; \
-  Flags: nowait postinstall skipifsilent
+  Flags: nowait postinstall skipifsilent runascurrentuser
 
 ; ── Upgrade detection ─────────────────────────────────────────────────────────
 [Code]
