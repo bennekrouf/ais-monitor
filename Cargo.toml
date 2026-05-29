@@ -11,7 +11,7 @@ reqwest = { version = "0.12", features = ["json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }
-ais-chain = { path = "../ais-chain" }
+ais-chain = { git = "https://github.com/Bennekrouf/ais-chain" }
 dirs = "5"
 rfd = "0.15"
 dark-light = "1"
