@@ -1,6 +1,6 @@
 use dioxus::prelude::*;
 use crate::services::chain::ChainDetail;
-use crate::services::{azure, kpi, names};
+use crate::services::{azure, azure::EgLink, kpi, names};
 use crate::components::trigger_panel::TriggerPanel;
 use std::collections::HashMap;
 
@@ -21,6 +21,9 @@ pub struct ChainDetailProps {
     pub chain_names: Signal<HashMap<String, String>>,
     #[props(default)]
     pub chain_health: Option<Signal<HashMap<String, ChainHealth>>>,
+    /// Event Grid links: queue name → EG topic/subscription info
+    #[props(default)]
+    pub eg_links: Signal<HashMap<String, EgLink>>,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -752,6 +755,24 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                                     "{step.workflow}"
                                 }
                                 span { class: "col col-link {link_class}", "{link_display}" }
+                                {
+                                    // Show EG source if this step's trigger queue is fed by Event Grid
+                                    let eg_info = step.trigger_info.split(", ")
+                                        .filter_map(|t| t.strip_prefix("ServiceBus:"))
+                                        .find_map(|q| props.eg_links.read().get(q).cloned());
+                                    if let Some(eg) = eg_info {
+                                        let filter_summary: String = eg.filters.iter()
+                                            .map(|f| format!("{} {} {}", f.key, f.operator, f.values.join(",")))
+                                            .collect::<Vec<_>>()
+                                            .join(" · ");
+                                        rsx! {
+                                            span { class: "col col-eg",
+                                                title: "Fed by Event Grid: {eg.topic_name} → {eg.subscription_name}\n{filter_summary}",
+                                                "⚡ {eg.topic_name}"
+                                            }
+                                        }
+                                    } else { rsx! {} }
+                                }
                                 span {
                                     class: if is_deployed { "col col-deployed deployed-yes" } else { "col col-deployed deployed-no" },
                                     if is_deployed { "✓" } else { "✗" }

@@ -136,20 +136,21 @@ fn App() -> Element {
 
     let config_val = az_config.read().clone();
 
-    match config_val {
-        None => rsx! {
-            document::Style { "{MAIN_CSS}" }
-            Welcome {
-                on_connect: move |config: AzConfig| az_config.set(Some(config)),
-            }
-        },
-        Some(config) => rsx! {
-            document::Style { "{MAIN_CSS}" }
-            MainScreen {
-                az_config: config,
-                is_light,
-                on_back: move |_| az_config.set(None),
-            }
-        },
+    rsx! {
+        document::Style { "{MAIN_CSS}" }
+        match config_val {
+            None => rsx! {
+                Welcome {
+                    on_connect: move |config: AzConfig| az_config.set(Some(config)),
+                }
+            },
+            Some(config) => rsx! {
+                MainScreen {
+                    az_config: config,
+                    is_light,
+                    on_back: move |_| az_config.set(None),
+                }
+            },
+        }
     }
 }

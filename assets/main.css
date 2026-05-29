@@ -1191,6 +1191,63 @@ body {
     color: var(--blue);
     word-break: break-all;
 }
+.eg-section-label {
+    font-weight: 600;
+    color: var(--text1);
+    font-size: 14px;
+    margin: 8px 0 6px;
+    padding: 0 4px;
+}
+.eg-count {
+    color: var(--text3);
+    font-weight: 400;
+    font-size: 12px;
+}
+.eg-topic-endpoint {
+    color: var(--blue);
+    font-size: 11px;
+    padding: 0 12px 4px 32px;
+    word-break: break-all;
+}
+.eg-topic-source {
+    color: var(--text3);
+    font-size: 11px;
+    padding: 0 12px 4px 32px;
+}
+.eg-env-label {
+    font-weight: 600;
+    color: var(--cyan);
+    font-size: 13px;
+    margin: 6px 0;
+}
+.eg-compare {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+}
+.eg-compare-col {
+    min-width: 0;
+    overflow-x: auto;
+}
+/* Event Grid link badge in chain step rows */
+.col-eg {
+    font-size: 11px;
+    color: var(--cyan);
+    background: color-mix(in srgb, var(--cyan) 12%, transparent);
+    padding: 1px 7px;
+    border-radius: 4px;
+    white-space: nowrap;
+    cursor: help;
+    margin-left: 4px;
+}
+.eg-topic-type-badge {
+    font-size: 10px;
+    color: var(--text3);
+    background: var(--bg3);
+    padding: 1px 6px;
+    border-radius: 4px;
+    margin-left: 6px;
+}
 
 /* ══════════════════════════════════════════════
    SCROLLBAR (matches ais-runner)

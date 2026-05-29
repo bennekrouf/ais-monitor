@@ -1,4 +1,5 @@
 use serde::Deserialize;
+use std::collections::HashMap;
 use std::process::Command;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -525,6 +526,137 @@ pub struct EventGridTopic {
     pub endpoint: String,
 }
 
+// ── System Topics ────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct EventGridSystemTopic {
+    pub name: String,
+    pub id: String,
+    pub source: String,
+    pub topic_type: String,
+}
+
+/// List EventGrid system topics in a resource group (blocking)
+pub fn list_eventgrid_system_topics(rg: &str) -> Result<Vec<EventGridSystemTopic>, String> {
+    let output = Command::new("az")
+        .args([
+            "eventgrid", "system-topic", "list",
+            "--resource-group", rg,
+            "--output", "json",
+        ])
+        .output()
+        .map_err(|e| format!("az eventgrid failed: {e}"))?;
+
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).to_string());
+    }
+
+    let body = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|e| format!("parse: {e}"))?;
+
+    let arr = if json.is_array() { json.as_array() } else { json["value"].as_array() };
+
+    let topics = arr
+        .unwrap_or(&vec![])
+        .iter()
+        .filter_map(|v| {
+            Some(EventGridSystemTopic {
+                name: v["name"].as_str()?.to_string(),
+                id: v["id"].as_str()?.to_string(),
+                source: v["source"].as_str().unwrap_or("").to_string(),
+                topic_type: v["topicType"].as_str().unwrap_or("").to_string(),
+            })
+        })
+        .collect();
+
+    Ok(topics)
+}
+
+/// List event subscriptions under a system topic (blocking)
+pub fn list_eventgrid_system_topic_subscriptions(rg: &str, topic_name: &str) -> Result<Vec<EventGridSubscription>, String> {
+    let output = Command::new("az")
+        .args([
+            "eventgrid", "system-topic", "event-subscription", "list",
+            "--resource-group", rg,
+            "--system-topic-name", topic_name,
+            "--output", "json",
+        ])
+        .output()
+        .map_err(|e| format!("az eventgrid failed: {e}"))?;
+
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).to_string());
+    }
+
+    let body = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|e| format!("parse: {e}"))?;
+
+    let arr = if json.is_array() { json.as_array() } else { json["value"].as_array() };
+
+    let subs = arr
+        .unwrap_or(&vec![])
+        .iter()
+        .filter_map(|v| {
+            let name = v["name"].as_str()?.to_string();
+            let dest = &v["destination"];
+            let dest_type = dest["endpointType"].as_str().unwrap_or("").to_string();
+            let dest_queue = dest["properties"]["resourceId"]
+                .as_str()
+                .and_then(|rid| rid.rsplit('/').next())
+                .or_else(|| dest["properties"]["endpointUrl"].as_str())
+                .unwrap_or("")
+                .to_string();
+
+            let mut filters = Vec::new();
+            if let Some(filter) = v["filter"].as_object() {
+                // Subject filters
+                if let Some(s) = filter.get("subjectBeginsWith").and_then(|v| v.as_str()) {
+                    if !s.is_empty() {
+                        filters.push(EventGridFilter {
+                            key: "Subject".into(),
+                            operator: "BeginsWith".into(),
+                            values: vec![s.to_string()],
+                        });
+                    }
+                }
+                if let Some(s) = filter.get("subjectEndsWith").and_then(|v| v.as_str()) {
+                    if !s.is_empty() {
+                        filters.push(EventGridFilter {
+                            key: "Subject".into(),
+                            operator: "EndsWith".into(),
+                            values: vec![s.to_string()],
+                        });
+                    }
+                }
+                // Advanced filters
+                if let Some(adv) = filter.get("advancedFilters").and_then(|f| f.as_array()) {
+                    for af in adv {
+                        let key = af["key"].as_str().unwrap_or("").to_string();
+                        let op = af["operatorType"].as_str().unwrap_or("").to_string();
+                        let values: Vec<String> = af["values"]
+                            .as_array()
+                            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                            .or_else(|| af["value"].as_str().map(|s| vec![s.to_string()]))
+                            .unwrap_or_default();
+                        filters.push(EventGridFilter { key, operator: op, values });
+                    }
+                }
+            }
+
+            Some(EventGridSubscription {
+                name,
+                destination_type: dest_type,
+                destination_queue: dest_queue,
+                filters,
+            })
+        })
+        .collect();
+
+    Ok(subs)
+}
+
 /// List EventGrid topics in a resource group (blocking)
 pub fn list_eventgrid_topics(rg: &str) -> Result<Vec<EventGridTopic>, String> {
     let output = Command::new("az")
@@ -574,6 +706,56 @@ pub struct EventGridFilter {
     pub key: String,
     pub operator: String,
     pub values: Vec<String>,
+}
+
+/// Describes which Event Grid topic+subscription feeds a given queue.
+#[derive(Clone, Debug, PartialEq)]
+pub struct EgLink {
+    pub topic_name: String,
+    pub subscription_name: String,
+    pub filters: Vec<EventGridFilter>,
+}
+
+/// Build a map from destination queue name → EgLink.
+/// Fetches all custom topics + system topics and their subscriptions.
+pub fn build_eg_links(rg: &str) -> HashMap<String, EgLink> {
+    let mut map = HashMap::new();
+
+    // Custom topics
+    if let Ok(topics) = list_eventgrid_topics(rg) {
+        for t in &topics {
+            if let Ok(subs) = list_eventgrid_subscriptions(&t.id) {
+                for s in &subs {
+                    if !s.destination_queue.is_empty() {
+                        map.insert(s.destination_queue.clone(), EgLink {
+                            topic_name: t.name.clone(),
+                            subscription_name: s.name.clone(),
+                            filters: s.filters.clone(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    // System topics
+    if let Ok(sys_topics) = list_eventgrid_system_topics(rg) {
+        for st in &sys_topics {
+            if let Ok(subs) = list_eventgrid_system_topic_subscriptions(rg, &st.name) {
+                for s in &subs {
+                    if !s.destination_queue.is_empty() {
+                        map.insert(s.destination_queue.clone(), EgLink {
+                            topic_name: st.name.clone(),
+                            subscription_name: s.name.clone(),
+                            filters: s.filters.clone(),
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    map
 }
 
 /// List EventGrid subscriptions for a topic (blocking)

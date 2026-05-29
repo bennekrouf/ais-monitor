@@ -4,7 +4,7 @@ use crate::components::{
     chain_detail::{AzConfig, ChainDetailView, ChainHealth},
     eventgrid_panel::EventGridPanel,
 };
-use crate::services::{azure, chain, kpi, remote_chain};
+use crate::services::{azure, azure::EgLink, chain, kpi, remote_chain};
 use std::collections::HashMap;
 
 #[derive(Props, Clone, PartialEq)]
@@ -32,6 +32,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     let mut load_error     = use_signal(|| Option::<String>::None);
     let mut checking_all   = use_signal(|| false);
     let mut check_progress = use_signal(|| (0usize, 0usize)); // (done, total)
+    let eg_links: Signal<HashMap<String, EgLink>> = use_signal(HashMap::new);
 
     // ── Resize handle script ────────────────────────────────────────────
     use_effect(move || {
@@ -100,6 +101,23 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                     Err(e) => load_error.set(Some(format!("{e}"))),
                 }
                 loading_chains.set(false);
+            });
+        }
+    });
+
+    // ── Fetch Event Grid links (queue → topic mapping) ────────────────────
+    use_effect({
+        let rg = az.resource_group.clone();
+        let mut eg_links = eg_links;
+        move || {
+            let rg = rg.clone();
+            spawn(async move {
+                let result = tokio::task::spawn_blocking(move || {
+                    azure::build_eg_links(&rg)
+                }).await;
+                if let Ok(links) = result {
+                    eg_links.set(links);
+                }
             });
         }
     });
@@ -346,6 +364,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                             az_config: Some(az.clone()),
                                             chain_names: chain_names,
                                             chain_health: Some(chain_health),
+                                            eg_links: eg_links,
                                         }
                                     } else {
                                         div { class: "detail-empty",
