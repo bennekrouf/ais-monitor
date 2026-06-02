@@ -255,3 +255,80 @@ fn save_cached_definition(cache_dir: &PathBuf, workflow: &str, def: &serde_json:
         let _ = std::fs::write(path, json);
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── parse_queue_from_trigger_name ─────────────────────────────────────
+
+    #[test]
+    fn parse_queue_peek_lock() {
+        assert_eq!(
+            parse_queue_from_trigger_name("When_messages_are_available_in_my-queue_(peek-lock)"),
+            Some("my-queue".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_queue_receive_and_delete() {
+        assert_eq!(
+            parse_queue_from_trigger_name("When_messages_are_available_in_my-queue_(receive-and-delete)"),
+            Some("my-queue".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_queue_no_suffix() {
+        assert_eq!(
+            parse_queue_from_trigger_name("When_messages_are_available_in_my-queue"),
+            Some("my-queue".to_string())
+        );
+    }
+
+    #[test]
+    fn parse_queue_http_trigger_returns_none() {
+        assert_eq!(parse_queue_from_trigger_name("manual"), None);
+        assert_eq!(parse_queue_from_trigger_name("HTTPTrigger"), None);
+        assert_eq!(parse_queue_from_trigger_name(""), None);
+    }
+
+    #[test]
+    fn parse_queue_empty_name_after_prefix_returns_none() {
+        assert_eq!(
+            parse_queue_from_trigger_name("When_messages_are_available_in_"),
+            None
+        );
+    }
+
+    // ── resolve_appsetting ────────────────────────────────────────────────
+
+    #[test]
+    fn resolve_appsetting_single_quotes() {
+        let mut settings = std::collections::HashMap::new();
+        settings.insert("MY_QUEUE".to_string(), "orders-queue".to_string());
+        assert_eq!(resolve_appsetting("@appsetting('MY_QUEUE')", &settings), "orders-queue");
+    }
+
+    #[test]
+    fn resolve_appsetting_with_braces() {
+        let mut settings = std::collections::HashMap::new();
+        settings.insert("MY_QUEUE".to_string(), "orders-queue".to_string());
+        assert_eq!(resolve_appsetting("@{appsetting('MY_QUEUE')}", &settings), "orders-queue");
+    }
+
+    #[test]
+    fn resolve_appsetting_missing_key_returns_original() {
+        let settings = std::collections::HashMap::new();
+        assert_eq!(
+            resolve_appsetting("@appsetting('MISSING')", &settings),
+            "@appsetting('MISSING')"
+        );
+    }
+
+    #[test]
+    fn resolve_appsetting_plain_string_untouched() {
+        let settings = std::collections::HashMap::new();
+        assert_eq!(resolve_appsetting("my-literal-queue", &settings), "my-literal-queue");
+    }
+}

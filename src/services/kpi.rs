@@ -97,3 +97,84 @@ fn format_ago(dt: DateTime<Utc>) -> String {
     let days = diff.num_days();
     format!("{days}d ago")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(id: &str, status: &str, start: &str, end: Option<&str>) -> RunInfo {
+        RunInfo {
+            id: id.to_string(),
+            status: status.to_string(),
+            start: start.to_string(),
+            end: end.map(|s| s.to_string()),
+        }
+    }
+
+    #[test]
+    fn empty_runs_returns_default() {
+        let kpi = compute_workflow_kpi(&[]);
+        assert_eq!(kpi.total_runs, 0);
+        assert_eq!(kpi.success_rate, 0.0);
+        assert_eq!(kpi.failure_streak, 0);
+        assert!(kpi.avg_duration_secs.is_none());
+    }
+
+    #[test]
+    fn all_succeeded_full_rate_no_streak() {
+        let runs = vec![
+            run("1", "Succeeded", "2026-01-01T10:00:00Z", Some("2026-01-01T10:00:10Z")),
+            run("2", "Succeeded", "2026-01-01T10:01:00Z", Some("2026-01-01T10:01:05Z")),
+        ];
+        let kpi = compute_workflow_kpi(&runs);
+        assert_eq!(kpi.total_runs, 2);
+        assert_eq!(kpi.succeeded, 2);
+        assert_eq!(kpi.failed, 0);
+        assert_eq!(kpi.success_rate, 100.0);
+        assert_eq!(kpi.failure_streak, 0);
+    }
+
+    #[test]
+    fn mixed_runs_correct_rate() {
+        let runs = vec![
+            run("1", "Failed",    "2026-01-01T10:00:00Z", Some("2026-01-01T10:00:02Z")),
+            run("2", "Failed",    "2026-01-01T09:00:00Z", Some("2026-01-01T09:00:02Z")),
+            run("3", "Succeeded", "2026-01-01T08:00:00Z", Some("2026-01-01T08:00:10Z")),
+            run("4", "Succeeded", "2026-01-01T07:00:00Z", Some("2026-01-01T07:00:10Z")),
+        ];
+        let kpi = compute_workflow_kpi(&runs);
+        assert_eq!(kpi.total_runs, 4);
+        assert_eq!(kpi.succeeded, 2);
+        assert_eq!(kpi.failed, 2);
+        assert!((kpi.success_rate - 50.0).abs() < 0.01);
+        // Two leading failures → streak of 2
+        assert_eq!(kpi.failure_streak, 2);
+    }
+
+    #[test]
+    fn duration_avg_and_p95_computed() {
+        // 4 runs: 2s, 4s, 6s, 100s
+        let runs = vec![
+            run("1", "Succeeded", "2026-01-01T10:00:00Z", Some("2026-01-01T10:00:02Z")),
+            run("2", "Succeeded", "2026-01-01T10:01:00Z", Some("2026-01-01T10:01:04Z")),
+            run("3", "Succeeded", "2026-01-01T10:02:00Z", Some("2026-01-01T10:02:06Z")),
+            run("4", "Succeeded", "2026-01-01T10:03:00Z", Some("2026-01-01T10:04:40Z")),
+        ];
+        let kpi = compute_workflow_kpi(&runs);
+        let avg = kpi.avg_duration_secs.unwrap();
+        assert!((avg - 28.0).abs() < 0.1, "avg={avg}");
+        // sorted: [2,4,6,100], p95 idx = ceil(4*0.95)-1 = ceil(3.8)-1 = 4-1 = 3 → 100s
+        assert!((kpi.p95_duration_secs.unwrap() - 100.0).abs() < 0.1);
+    }
+
+    #[test]
+    fn no_end_time_excluded_from_durations() {
+        let runs = vec![
+            run("1", "Running",   "2026-01-01T10:00:00Z", None),
+            run("2", "Succeeded", "2026-01-01T09:00:00Z", Some("2026-01-01T09:00:30Z")),
+        ];
+        let kpi = compute_workflow_kpi(&runs);
+        // Only the Succeeded run has duration
+        assert!((kpi.avg_duration_secs.unwrap() - 30.0).abs() < 0.1);
+    }
+}

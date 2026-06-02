@@ -260,7 +260,7 @@ fn leaf_value(name: &str) -> Value {
     Value::String(s.to_string())
 }
 
-fn sample_named(name: &str, schema: &Value) -> Value {
+pub(crate) fn sample_named(name: &str, schema: &Value) -> Value {
     let ty = resolve_type(schema);
     if !ty.is_empty() && ty != "string" {
         return schema_to_sample(name, schema);
@@ -292,4 +292,151 @@ fn sample_named(name: &str, schema: &Value) -> Value {
         "text"
     };
     Value::String(s.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    // ── leaf_value ────────────────────────────────────────────────────────
+
+    #[test]
+    fn leaf_id_fields_produce_test_id() {
+        assert_eq!(leaf_value("correlationId"), Value::String("TEST-001".into()));
+        assert_eq!(leaf_value("identifier"),    Value::String("TEST-001".into()));
+    }
+
+    #[test]
+    fn leaf_time_fields_produce_timestamp() {
+        assert_eq!(leaf_value("startTime"), Value::String("2026-04-29T10:00:00Z".into()));
+        assert_eq!(leaf_value("date"),      Value::String("2026-04-29T10:00:00Z".into()));
+    }
+
+    #[test]
+    fn leaf_error_fields_produce_message() {
+        assert_eq!(leaf_value("errorMessage"), Value::String("Something went wrong".into()));
+        assert_eq!(leaf_value("error"),        Value::String("Something went wrong".into()));
+    }
+
+    #[test]
+    fn leaf_unknown_field_produces_text() {
+        assert_eq!(leaf_value("whatever"), Value::String("text".into()));
+    }
+
+    // ── resolve_type ──────────────────────────────────────────────────────
+
+    #[test]
+    fn resolve_type_simple_string() {
+        let schema = json!({ "type": "integer" });
+        assert_eq!(resolve_type(&schema), "integer");
+    }
+
+    #[test]
+    fn resolve_type_nullable_array_picks_non_null() {
+        let schema = json!({ "type": ["null", "string"] });
+        assert_eq!(resolve_type(&schema), "string");
+    }
+
+    #[test]
+    fn resolve_type_missing_returns_empty() {
+        assert_eq!(resolve_type(&json!({})), "");
+    }
+
+    // ── schema_to_sample ──────────────────────────────────────────────────
+
+    #[test]
+    fn schema_object_with_properties() {
+        let schema = json!({
+            "type": "object",
+            "properties": {
+                "name": { "type": "string" },
+                "age":  { "type": "integer" }
+            }
+        });
+        let sample = schema_to_sample("root", &schema);
+        assert!(sample["name"].is_string());
+        assert_eq!(sample["age"], json!(0));
+    }
+
+    #[test]
+    fn schema_array_wraps_item() {
+        let schema = json!({ "type": "array", "items": { "type": "boolean" } });
+        let sample = schema_to_sample("items", &schema);
+        assert_eq!(sample, json!([false]));
+    }
+
+    #[test]
+    fn schema_boolean() {
+        assert_eq!(schema_to_sample("flag", &json!({ "type": "boolean" })), json!(false));
+    }
+
+    #[test]
+    fn schema_number() {
+        assert_eq!(schema_to_sample("count", &json!({ "type": "number" })), json!(0));
+    }
+
+    // ── scan_trigger_body_refs ─────────────────────────────────────────────
+
+    #[test]
+    fn scan_simple_field_reference() {
+        let content = r#"@triggerBody()?['correlationId']"#;
+        let result = scan_trigger_body_refs(content).unwrap();
+        assert_eq!(result["correlationId"], json!("TEST-001"));
+    }
+
+    #[test]
+    fn scan_nested_reference() {
+        let content = r#"@triggerBody()?['data']?['msg']"#;
+        let result = scan_trigger_body_refs(content).unwrap();
+        // "data" is an intermediate object, "msg" is a leaf string
+        assert!(result["data"].is_object());
+        assert!(result["data"]["msg"].is_string());
+    }
+
+    #[test]
+    fn scan_no_trigger_refs_returns_none() {
+        assert!(scan_trigger_body_refs("no references here").is_none());
+    }
+
+    #[test]
+    fn scan_deduplicates_paths() {
+        let content = "@triggerBody()?['id'] @triggerBody()?['id']";
+        let result = scan_trigger_body_refs(content).unwrap();
+        let obj = result.as_object().unwrap();
+        assert_eq!(obj.len(), 1);
+    }
+
+    // ── find_trigger_body_schema ──────────────────────────────────────────
+
+    #[test]
+    fn find_schema_from_parse_json_action() {
+        let actions = serde_json::from_str::<serde_json::Map<String, Value>>(r#"{
+            "Parse_body": {
+                "type": "ParseJson",
+                "inputs": {
+                    "content": "@triggerBody()",
+                    "schema": {
+                        "type": "object",
+                        "properties": { "id": { "type": "string" } }
+                    }
+                }
+            }
+        }"#).unwrap();
+        assert!(find_trigger_body_schema(&actions).is_some());
+    }
+
+    #[test]
+    fn find_schema_ignores_non_trigger_parse_json() {
+        let actions = serde_json::from_str::<serde_json::Map<String, Value>>(r#"{
+            "Parse_other": {
+                "type": "ParseJson",
+                "inputs": {
+                    "content": "@body('HTTP')",
+                    "schema": { "type": "object", "properties": { "x": { "type": "string" } } }
+                }
+            }
+        }"#).unwrap();
+        assert!(find_trigger_body_schema(&actions).is_none());
+    }
 }
