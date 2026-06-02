@@ -1,4 +1,4 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::process::Command;
 
@@ -519,7 +519,7 @@ pub fn check_queue(sb_namespace: &str, rg: &str, queue_name: &str) -> Result<Que
 
 // ── EventGrid ────────────────────────────────────────────────────────────────
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct EventGridTopic {
     pub name: String,
     pub id: String,
@@ -528,7 +528,7 @@ pub struct EventGridTopic {
 
 // ── System Topics ────────────────────────────────────────────────────────────
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct EventGridSystemTopic {
     pub name: String,
     pub id: String,
@@ -693,7 +693,7 @@ pub fn list_eventgrid_topics(rg: &str) -> Result<Vec<EventGridTopic>, String> {
     Ok(topics)
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct EventGridSubscription {
     pub name: String,
     pub destination_type: String,
@@ -701,7 +701,7 @@ pub struct EventGridSubscription {
     pub filters: Vec<EventGridFilter>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct EventGridFilter {
     pub key: String,
     pub operator: String,

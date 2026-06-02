@@ -3,6 +3,7 @@ use crate::components::{
     chain_list::ChainList,
     chain_detail::{AzConfig, ChainDetailView, ChainHealth},
     eventgrid_panel::EventGridPanel,
+    graph_panel::GraphPanel,
 };
 use crate::services::{azure, azure::EgLink, chain, kpi, remote_chain};
 use std::collections::HashMap;
@@ -26,7 +27,8 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     let mut selected_chain = use_signal(|| Option::<String>::None);
     let mut deployed_workflows = use_signal(|| Vec::<String>::new());
     let chain_names = use_signal(|| HashMap::<String, String>::new());
-    let mut chain_health = use_signal(|| HashMap::<String, ChainHealth>::new());
+    let mut chain_health  = use_signal(|| HashMap::<String, ChainHealth>::new());
+    let mut last_checked: Signal<HashMap<String, u64>> = use_signal(HashMap::new);
     let mut view_mode = use_signal(|| ViewMode::Chains);
     let mut loading_chains = use_signal(|| true);
     let mut load_error     = use_signal(|| Option::<String>::None);
@@ -168,7 +170,8 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                 span { class: "topbar-dir", title: "{app_label}", "{app_label}" }
                 {
                     let is_chains = *view_mode.read() == ViewMode::Chains;
-                    let is_eg = *view_mode.read() == ViewMode::EventGrid;
+                    let is_eg     = *view_mode.read() == ViewMode::EventGrid;
+                    let is_graph  = *view_mode.read() == ViewMode::Graph;
                     rsx! {
                         div { class: "topbar-tabs",
                             button {
@@ -180,6 +183,11 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                 class: if is_eg { "topbar-tab active" } else { "topbar-tab" },
                                 onclick: move |_| view_mode.set(ViewMode::EventGrid),
                                 "EventGrid"
+                            }
+                            button {
+                                class: if is_graph { "topbar-tab active" } else { "topbar-tab" },
+                                onclick: move |_| view_mode.set(ViewMode::Graph),
+                                "Graph"
                             }
                         }
                     }
@@ -285,8 +293,11 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
 
                                         // Write result into the shared health map
                                         let mut map = chain_health.read().clone();
-                                        map.insert(label, health);
+                                        map.insert(label.clone(), health);
                                         chain_health.set(map);
+                                        let mut lc = last_checked.read().clone();
+                                        lc.insert(label, epoch_now());
+                                        last_checked.set(lc);
                                         check_progress.set((idx + 1, total_n));
                                     }
                                     checking_all.set(false);
@@ -354,6 +365,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                     on_select: move |label: String| selected_chain.set(Some(label)),
                                     chain_names: chain_names.read().clone(),
                                     chain_health: chain_health.read().clone(),
+                                    last_checked: last_checked.read().clone(),
                                 }
                                 div { class: "resize-handle", id: "resize-handle" }
                                 div { class: "detail-pane",
@@ -364,6 +376,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                             az_config: Some(az.clone()),
                                             chain_names: chain_names,
                                             chain_health: Some(chain_health),
+                                            last_checked: Some(last_checked),
                                             eg_links: eg_links,
                                         }
                                     } else {
@@ -381,6 +394,14 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                 }
                             }
                         },
+                        ViewMode::Graph => rsx! {
+                            div { class: "main-content",
+                                GraphPanel {
+                                    chains: chains.read().clone(),
+                                    is_light: is_light,
+                                }
+                            }
+                        },
                     }
                 }
             }
@@ -388,8 +409,16 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     }
 }
 
+fn epoch_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
 #[derive(Clone, Debug, PartialEq)]
 enum ViewMode {
     Chains,
     EventGrid,
+    Graph,
 }

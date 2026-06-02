@@ -18,6 +18,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
     let mut rg_input = use_signal(|| String::new());
     let mut app_input = use_signal(|| String::new());
     let mut sb_input = use_signal(|| String::new());
+    let mut local_dir_input = use_signal(|| String::new());
     let mut error_msg = use_signal(|| Option::<String>::None);
     let mut show_form = use_signal(|| false);
     let mut editing_profile = use_signal(|| Option::<usize>::None);
@@ -94,6 +95,29 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                     div { class: "az-status",
                                         span { class: "dot ok" }
                                         span { "Connected: {account}" }
+                                        button {
+                                            style: "margin-left:10px; font-size:11px; background:none; border:1px solid currentColor; border-radius:4px; padding:1px 8px; cursor:pointer; opacity:0.6;",
+                                            title: "Sign in with a different Azure account",
+                                            onclick: move |_| {
+                                                az_state.set(AzLoginState::Checking);
+                                                azure::open_login(None);
+                                                spawn(async move {
+                                                    for _ in 0..24 {
+                                                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                                                        let state = tokio::task::spawn_blocking(azure::check_login)
+                                                            .await
+                                                            .unwrap_or(AzLoginState::NotLoggedIn);
+                                                        if let AzLoginState::LoggedIn { ref subscription_id, .. } = state {
+                                                            sub_id.set(subscription_id.clone());
+                                                        }
+                                                        let done = matches!(state, AzLoginState::LoggedIn { .. });
+                                                        az_state.set(state);
+                                                        if done { break; }
+                                                    }
+                                                });
+                                            },
+                                            "Switch account"
+                                        }
                                     }
                                     if profiles.read().is_empty() {
                                         p { style: "margin:8px 0 0; font-size:12px; opacity:0.65;",
@@ -202,6 +226,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                                 rg_input.set(p.resource_group.clone());
                                                                 app_input.set(p.app_name.clone());
                                                                 sb_input.set(p.sb_namespace.clone());
+                                                                local_dir_input.set(p.local_dir.clone());
                                                                 editing_profile.set(Some(idx));
                                                                 show_form.set(true);
                                                             },
@@ -241,6 +266,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                     rg_input.set(String::new());
                                     app_input.set(String::new());
                                     sb_input.set(String::new());
+                                    local_dir_input.set(String::new());
                                     subscriptions.set(vec![]);
                                     selected_sub.set(String::new());
                                     logic_app_sites.set(vec![]);
@@ -291,6 +317,8 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                     r#type: "text",
                                     placeholder: "e.g. Production, Acme Corp…",
                                     value: "{label_input.read()}",
+                                    autocapitalize: "off",
+                                    spellcheck: false,
                                     oninput: move |e| label_input.set(e.value().clone()),
                                 }
                             }
@@ -512,6 +540,9 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                 sb_namespace: sb_input.read().trim().to_string(),
                                                 tenant: tenant_input.read().trim().to_string(),
                                                 label: label_input.read().trim().to_string(),
+                                                local_dir: dirs::home_dir()
+                                                    .map(|p| p.to_string_lossy().to_string())
+                                                    .unwrap_or_default(),
                                             };
                                             let mut saved = profiles.read().clone();
                                             saved.insert(0, config.clone());
@@ -547,6 +578,8 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                     r#type: "text",
                                     placeholder: "Acme Corp — PRD",
                                     value: "{label_input.read()}",
+                                    autocapitalize: "off",
+                                    spellcheck: false,
                                     oninput: move |e| label_input.set(e.value().clone()),
                                 }
                             }
@@ -608,6 +641,9 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                 sb_namespace: sb_input.read().trim().to_string(),
                                                 tenant: tenant_input.read().trim().to_string(),
                                                 label: label_input.read().trim().to_string(),
+                                                local_dir: dirs::home_dir()
+                                                    .map(|p| p.to_string_lossy().to_string())
+                                                    .unwrap_or_default(),
                                             };
                                             let mut saved = profiles.read().clone();
                                             if let Some(idx) = *editing_profile.read() {

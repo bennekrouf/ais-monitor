@@ -3,3 +3,4 @@ pub mod chain_detail;
 pub mod login_banner;
 pub mod trigger_panel;
 pub mod eventgrid_panel;
+pub mod graph_panel;

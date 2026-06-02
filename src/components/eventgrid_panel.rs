@@ -33,14 +33,21 @@ pub fn EventGridPanel(props: EventGridPanelProps) -> Element {
         .filter(|p| p.resource_group != az.resource_group || p.subscription != az.subscription)
         .collect();
 
-    // Fetch primary env on mount
+    // Load from cache immediately, then fetch fresh in background
     use_effect({
         let az = az.clone();
         move || {
             let rg = az.resource_group.clone();
-            loading.set(true);
+            // Show cache instantly if available
+            if let Some(cached) = load_eg_cache(&rg) {
+                topics.set(cached.topics);
+                sys_topics.set(cached.sys_topics);
+            } else {
+                loading.set(true);
+            }
             error_msg.set(None);
             spawn(async move {
+                loading.set(true);
                 fetch_eg(&rg, &mut topics, &mut sys_topics, &mut error_msg).await;
                 loading.set(false);
             });
@@ -70,6 +77,27 @@ pub fn EventGridPanel(props: EventGridPanelProps) -> Element {
                 h3 { "EventGrid Topology" }
                 div { style: "display:flex;gap:8px;align-items:center",
                     span { class: "eg-rg", "{az.resource_group}" }
+                    button {
+                        class: "btn btn-small",
+                        disabled: *loading.read(),
+                        title: "Clear cache and reload from Azure",
+                        onclick: {
+                            let rg = az.resource_group.clone();
+                            move |_| {
+                                clear_eg_cache(&rg);
+                                topics.set(vec![]);
+                                sys_topics.set(vec![]);
+                                loading.set(true);
+                                error_msg.set(None);
+                                let rg = rg.clone();
+                                spawn(async move {
+                                    fetch_eg(&rg, &mut topics, &mut sys_topics, &mut error_msg).await;
+                                    loading.set(false);
+                                });
+                            }
+                        },
+                        if *loading.read() { "Refreshing…" } else { "Refresh" }
+                    }
                     if !other_profiles.is_empty() {
                         button {
                             class: "btn btn-small",
@@ -192,6 +220,8 @@ async fn fetch_eg(
         }
         sys_topics.set(all);
     }
+
+    save_eg_cache(rg, &topics.read(), &sys_topics.read());
 }
 
 // ── Render helpers ───────────────────────────────────────────────────────────
@@ -351,16 +381,53 @@ fn render_subs(subs: &[EventGridSubscription]) -> Element {
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 struct TopicWithSubs {
     topic: EventGridTopic,
     subscriptions: Vec<EventGridSubscription>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 struct SysTopicWithSubs {
     topic: EventGridSystemTopic,
     subscriptions: Vec<EventGridSubscription>,
+}
+
+// ── Cache ─────────────────────────────────────────────────────────────────────
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct EgCache {
+    topics: Vec<TopicWithSubs>,
+    sys_topics: Vec<SysTopicWithSubs>,
+}
+
+fn eg_cache_path(rg: &str) -> std::path::PathBuf {
+    let safe = rg.replace(['/', '\\', ':'], "_");
+    dirs::cache_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("ais-monitor")
+        .join(format!("eg_{safe}.json"))
+}
+
+fn load_eg_cache(rg: &str) -> Option<EgCache> {
+    let path = eg_cache_path(rg);
+    let content = std::fs::read_to_string(&path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+fn save_eg_cache(rg: &str, topics: &[TopicWithSubs], sys_topics: &[SysTopicWithSubs]) {
+    let path = eg_cache_path(rg);
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let cache = EgCache { topics: topics.to_vec(), sys_topics: sys_topics.to_vec() };
+    if let Ok(json) = serde_json::to_string(&cache) {
+        let _ = std::fs::write(path, json);
+    }
+}
+
+fn clear_eg_cache(rg: &str) {
+    let _ = std::fs::remove_file(eg_cache_path(rg));
 }
 
 // ── Profile persistence (shared with welcome screen) ─────────────────────────

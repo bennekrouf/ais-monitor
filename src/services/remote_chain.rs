@@ -4,12 +4,18 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 /// Discover chains by fetching workflow definitions from Azure.
-/// Results are cached locally for faster subsequent loads.
+/// The final chain graph is cached to disk so subsequent launches are instant.
+/// Call `clear_cache` (already wired to the Refresh button) to force a re-fetch.
 pub fn discover_chains_remote(
     sub: &str,
     rg: &str,
     app: &str,
 ) -> Result<Vec<ChainDetail>, String> {
+    // Return the cached chain graph immediately if available.
+    if let Some(cached) = load_chains_result(sub, app) {
+        return Ok(cached);
+    }
+
     let cache_dir = cache_path(sub, app);
 
     // Fetch deployed workflow list
@@ -113,7 +119,7 @@ pub fn discover_chains_remote(
         ));
     }
 
-    let chains = multi_step
+    let chains: Vec<ChainDetail> = multi_step
         .iter()
         .map(|c| {
             let mut queues = HashSet::new();
@@ -150,6 +156,7 @@ pub fn discover_chains_remote(
         })
         .collect();
 
+    save_chains_result(sub, app, &chains);
     Ok(chains)
 }
 
@@ -191,6 +198,23 @@ fn resolve_appsetting(s: &str, settings: &std::collections::HashMap<String, Stri
         }
     }
     s.to_string()
+}
+
+fn chains_result_path(sub: &str, app: &str) -> PathBuf {
+    cache_path(sub, app).join("_chains.json")
+}
+
+fn load_chains_result(sub: &str, app: &str) -> Option<Vec<ChainDetail>> {
+    let path = chains_result_path(sub, app);
+    let content = std::fs::read_to_string(&path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+fn save_chains_result(sub: &str, app: &str, chains: &[ChainDetail]) {
+    let path = chains_result_path(sub, app);
+    if let Ok(json) = serde_json::to_string(chains) {
+        let _ = std::fs::write(path, json);
+    }
 }
 
 /// Invalidate the cache for a specific app, forcing a fresh fetch next time.

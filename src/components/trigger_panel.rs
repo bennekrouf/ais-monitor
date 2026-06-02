@@ -1,5 +1,6 @@
 use dioxus::prelude::*;
 use crate::services::azure;
+use crate::services::payload::suggest_payload;
 use crate::components::chain_detail::AzConfig;
 
 #[derive(Props, Clone, PartialEq)]
@@ -7,13 +8,24 @@ pub struct TriggerPanelProps {
     pub workflow: String,
     pub az_config: AzConfig,
     pub payloads_dir: String,
+    /// Path to the local logic apps workspace. When set, the suggested payload
+    /// is derived from the workflow's JSON schema (ParseJson schema first, then
+    /// trigger schema) instead of the generic CloudEvent default.
+    #[props(default)]
+    pub local_dir: String,
     #[props(default)]
     pub on_triggered: Option<EventHandler<()>>,
 }
 
 #[component]
 pub fn TriggerPanel(props: TriggerPanelProps) -> Element {
-    let mut payload_text = use_signal(|| default_payload());
+    let initial_payload = if props.local_dir.is_empty() {
+        default_payload()
+    } else {
+        let suggested = suggest_payload(&props.local_dir, &props.workflow);
+        if suggested == "{}" { default_payload() } else { suggested }
+    };
+    let mut payload_text = use_signal(|| initial_payload.clone());
     let mut trigger_url = use_signal(|| Option::<String>::None);
     let mut fetching_url = use_signal(|| false);
     let mut trigger_result = use_signal(|| Option::<TriggerState>::None);
@@ -130,7 +142,7 @@ pub fn TriggerPanel(props: TriggerPanelProps) -> Element {
                         }
                         button {
                             class: "btn btn-small",
-                            onclick: move |_| payload_text.set(default_payload()),
+                            onclick: move |_| payload_text.set(initial_payload.clone()),
                             "Reset"
                         }
                     }

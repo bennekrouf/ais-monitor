@@ -21,6 +21,8 @@ pub struct ChainDetailProps {
     pub chain_names: Signal<HashMap<String, String>>,
     #[props(default)]
     pub chain_health: Option<Signal<HashMap<String, ChainHealth>>>,
+    #[props(default)]
+    pub last_checked: Option<Signal<HashMap<String, u64>>>,
     /// Event Grid links: queue name → EG topic/subscription info
     #[props(default)]
     pub eg_links: Signal<HashMap<String, EgLink>>,
@@ -36,6 +38,10 @@ pub struct AzConfig {
     pub tenant: String,
     #[serde(default)]
     pub label: String,
+    /// Optional path to the local logic apps workspace — used to suggest
+    /// workflow-specific payloads in the trigger panel.
+    #[serde(default)]
+    pub local_dir: String,
 }
 
 #[component]
@@ -61,6 +67,7 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
     let mut loading_actions = use_signal(|| Option::<String>::None);
 
     let chain_health_signal = props.chain_health;
+    let last_checked_signal = props.last_checked;
 
     let az = props.az_config.clone();
     let chain_steps: Vec<String> = chain.steps.iter().map(|s| s.workflow.clone()).collect();
@@ -157,6 +164,11 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                         let mut map = health_sig.read().clone();
                         map.insert(lbl.clone(), health);
                         health_sig.set(map);
+                    }
+                    if let Some(mut lc) = last_checked_signal {
+                        let mut map = lc.read().clone();
+                        map.insert(lbl.clone(), epoch_now());
+                        lc.set(map);
                     }
                     loading.set(false);
                 }
@@ -342,8 +354,13 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                                     if let Some(mut health_sig) = chain_health_signal {
                                         let health = compute_health(&runs_map, &q_statuses);
                                         let mut map = health_sig.read().clone();
-                                        map.insert(lbl, health);
+                                        map.insert(lbl.clone(), health);
                                         health_sig.set(map);
+                                    }
+                                    if let Some(mut lc) = last_checked_signal {
+                                        let mut map = lc.read().clone();
+                                        map.insert(lbl.clone(), epoch_now());
+                                        lc.set(map);
                                     }
                                     loading.set(false);
                                 });
@@ -411,6 +428,7 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                                 workflow: selected_wf,
                                 az_config: az.clone(),
                                 payloads_dir: dir.clone(),
+                                local_dir: az.local_dir.clone(),
                                 on_triggered: EventHandler::new({
                                     let az = az_refresh.clone();
                                     let steps = steps_refresh.clone();
@@ -471,8 +489,13 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                                             if let Some(mut health_sig) = chain_health_signal {
                                                 let health = compute_health(&runs_map, &q_statuses);
                                                 let mut map = health_sig.read().clone();
-                                                map.insert(lbl, health);
+                                                map.insert(lbl.clone(), health);
                                                 health_sig.set(map);
+                                            }
+                                            if let Some(mut lc) = last_checked_signal {
+                                                let mut map = lc.read().clone();
+                                                map.insert(lbl.clone(), epoch_now());
+                                                lc.set(map);
                                             }
                                             loading.set(false);
                                         });
@@ -913,4 +936,11 @@ struct ActionDetail {
     name: String,
     status: String,
     error: Option<String>,
+}
+
+fn epoch_now() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }

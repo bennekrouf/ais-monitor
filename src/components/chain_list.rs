@@ -12,6 +12,8 @@ pub struct ChainListProps {
     pub chain_names: HashMap<String, String>,
     #[props(default)]
     pub chain_health: HashMap<String, ChainHealth>,
+    #[props(default)]
+    pub last_checked: HashMap<String, u64>,
 }
 
 #[component]
@@ -24,6 +26,16 @@ pub fn ChainList(props: ChainListProps) -> Element {
         };
     }
 
+    let mut sorted = props.chains.clone();
+    sorted.sort_by(|a, b| {
+        let a_ts = props.last_checked.get(&a.label).copied().unwrap_or(0);
+        let b_ts = props.last_checked.get(&b.label).copied().unwrap_or(0);
+        if a_ts != b_ts {
+            return b_ts.cmp(&a_ts);
+        }
+        a.label.to_lowercase().cmp(&b.label.to_lowercase())
+    });
+
     rsx! {
         div { class: "chain-list",
             h3 {
@@ -32,7 +44,7 @@ pub fn ChainList(props: ChainListProps) -> Element {
                     if n == 1 { "1 chain".to_string() } else { format!("{n} chains") }
                 }
             }
-            for chain in props.chains.iter() {
+            for chain in sorted.iter() {
                 {
                     let label = chain.label.clone();
                     let display_name = props.chain_names
