@@ -8,6 +8,8 @@ pub enum AzLoginState {
     LoggedIn { account: String, subscription_id: String },
     Expired,
     NotLoggedIn,
+    /// Azure CLI binary not found on this machine
+    AzNotFound,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -137,7 +139,14 @@ pub fn check_login() -> AzLoginState {
                 Err(_) => return AzLoginState::NotLoggedIn,
             }
         }
-        _ => return AzLoginState::NotLoggedIn,
+        Ok(_) => return AzLoginState::NotLoggedIn,
+        Err(e) => {
+            // Command failed to execute — az binary not found
+            if e.kind() == std::io::ErrorKind::NotFound {
+                return AzLoginState::AzNotFound;
+            }
+            return AzLoginState::NotLoggedIn;
+        }
     };
 
     // Step 2: validate the token is actually fresh by requesting a new one.
@@ -161,7 +170,13 @@ pub fn check_login() -> AzLoginState {
                 AzLoginState::NotLoggedIn
             }
         }
-        Err(_) => AzLoginState::NotLoggedIn,
+        Err(e) => {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                AzLoginState::AzNotFound
+            } else {
+                AzLoginState::NotLoggedIn
+            }
+        }
     }
 }
 

@@ -50,5 +50,11 @@ pub fn LoginBanner(props: LoginBannerProps) -> Element {
                 }
             }
         },
+        AzLoginState::AzNotFound => rsx! {
+            div { class: "login-banner error",
+                span { class: "dot error" }
+                span { "Azure CLI not installed" }
+            }
+        },
     }
 }

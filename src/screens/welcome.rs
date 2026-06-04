@@ -125,6 +125,22 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                         }
                                     }
                                 },
+                                AzLoginState::AzNotFound => rsx! {
+                                    div { class: "az-status",
+                                        span { class: "dot error" }
+                                        span { "Azure CLI not found" }
+                                    }
+                                    p { style: "margin:8px 0 0; font-size:12px; color:var(--red);",
+                                        "The 'az' command was not found. Install Azure CLI from "
+                                        a { href: "https://aka.ms/installazurecliwindows", target: "_blank",
+                                            "aka.ms/installazurecliwindows"
+                                        }
+                                        " then restart the app."
+                                    }
+                                    p { style: "margin:4px 0 0; font-size:11px; opacity:0.7;",
+                                        "On Windows, close and reopen your terminal after installing to refresh the PATH."
+                                    }
+                                },
                                 AzLoginState::Expired | AzLoginState::NotLoggedIn => {
                                     let msg = if matches!(state, AzLoginState::Expired) { "Session expired" } else { "Not logged in" };
                                     let dot = if matches!(state, AzLoginState::Expired) { "dot warn" } else { "dot error" };
