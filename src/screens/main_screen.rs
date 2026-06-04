@@ -170,6 +170,10 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                     }
                 }
                 span { class: "topbar-dir", title: "{app_label}", "{app_label}" }
+                span {
+                    style: "font-size:10px; opacity:0.4; white-space:nowrap;",
+                    { concat!("v", env!("CARGO_PKG_VERSION")) }
+                }
                 {
                     let is_chains = *view_mode.read() == ViewMode::Chains;
                     let is_eg     = *view_mode.read() == ViewMode::EventGrid;
