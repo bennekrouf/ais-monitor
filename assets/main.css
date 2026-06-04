@@ -492,14 +492,30 @@ body {
     min-width: 160px;
 }
 
-.chain-list h3 {
+.chain-list-header {
+    display: flex; align-items: center; gap: 8px;
+    padding: 10px 12px 6px;
+    position: sticky; top: 0; z-index: 1;
+    background: var(--bg0);
+}
+.chain-list-header h3 {
     font-size: 11px;
     font-weight: 600;
     color: var(--text2);
     text-transform: uppercase;
     letter-spacing: 0.08em;
-    padding: 14px 16px 8px;
+    white-space: nowrap;
+    margin: 0;
 }
+.chain-filter-input {
+    flex: 1; min-width: 0;
+    font-size: 11px; padding: 3px 8px;
+    background: var(--bg1); color: var(--text1);
+    border: 1px solid var(--border); border-radius: 4px;
+    outline: none;
+}
+.chain-filter-input:focus { border-color: var(--blue); }
+.chain-filter-input::placeholder { color: var(--text3); }
 
 /* ── Resize handle ────────────────────────────────────────────────── */
 .resize-handle {
@@ -832,6 +848,37 @@ body {
 .queue-dl        { color: var(--text2); }
 .queue-dl.warn   { color: var(--red); font-weight: 600; }
 .queue-pending   { color: var(--text3); }
+
+/* Send message to queue */
+.sb-send-btn { font-size: 13px; cursor: pointer; opacity: .6; margin-left: auto; }
+.sb-send-btn:hover { opacity: 1; }
+.sb-send-btn.active { opacity: 1; }
+.sb-send-panel {
+    margin: 8px 0 12px;
+    padding: 12px;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+}
+.sb-send-header {
+    font-size: 12px; color: var(--text2); margin-bottom: 8px;
+}
+.sb-send-header strong { color: var(--text1); }
+.sb-send-ns { color: var(--text3); font-size: 11px; }
+.sb-send-body {
+    width: 100%; box-sizing: border-box;
+    font-family: var(--font-mono, monospace);
+    font-size: 12px; padding: 8px;
+    background: var(--bg0); color: var(--text1);
+    border: 1px solid var(--border); border-radius: 6px;
+    resize: vertical; min-height: 80px;
+}
+.sb-send-actions {
+    display: flex; align-items: center; gap: 8px; margin-top: 8px;
+}
+.sb-send-status {
+    font-size: 12px; color: var(--text2);
+}
 
 /* ══════════════════════════════════════════════
    STEP ROW DRILL-DOWN (Phase D)

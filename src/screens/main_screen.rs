@@ -10,9 +10,10 @@ use std::collections::HashMap;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct MainScreenProps {
-    pub az_config: AzConfig,
-    pub is_light:  Signal<bool>,
-    pub on_back:   EventHandler<()>,
+    pub az_config:        AzConfig,
+    pub is_light:         Signal<bool>,
+    pub theme_overridden: Signal<bool>,
+    pub on_back:          EventHandler<()>,
 }
 
 #[component]
@@ -23,6 +24,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     // is_light is owned by the root App so theme applies to Welcome too.
     // The ☀️/🌙 button writes back into this same signal.
     let mut is_light = props.is_light;
+    let mut theme_overridden = props.theme_overridden;
     let mut chains = use_signal(|| Vec::<chain::ChainDetail>::new());
     let mut selected_chain = use_signal(|| Option::<String>::None);
     let mut deployed_workflows = use_signal(|| Vec::<String>::new());
@@ -316,14 +318,9 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                 button {
                     class: "btn-theme",
                     onclick: move |_| {
+                        theme_overridden.set(true);
                         let new_light = !*is_light.read();
                         is_light.set(new_light);
-                        let js = if new_light {
-                            "document.body.classList.add('light')"
-                        } else {
-                            "document.body.classList.remove('light')"
-                        };
-                        document::eval(js);
                     },
                     if *is_light.read() { "🌙" } else { "☀️" }
                 }

@@ -61,6 +61,14 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
     let mut editing_name = use_signal(|| false);
     let mut name_input = use_signal(|| String::new());
 
+    // Send message to queue
+    let mut send_queue: Signal<Option<String>> = use_signal(|| None);
+    let mut send_body: Signal<String> = use_signal(|| "{}".to_string());
+    let mut send_status: Signal<Option<String>> = use_signal(|| None);
+    let mut sending: Signal<bool> = use_signal(|| false);
+    // Cache the connection string so we only fetch it once per session
+    let mut sb_conn_str: Signal<Option<String>> = use_signal(|| None);
+
     // Phase D: expanded step + actions
     let mut expanded_step = use_signal(|| Option::<String>::None);
     let mut step_actions = use_signal(|| HashMap::<String, Vec<ActionDetail>>::new());
@@ -871,6 +879,8 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                             let qs = queue_statuses.read().get(q).cloned();
                             let (active, dl) = qs.map(|s| (s.active, s.dead_letter)).unwrap_or((-1, -1));
                             let dl_class = if dl > 0 { "queue-dl warn" } else { "queue-dl" };
+                            let q_send = q.clone();
+                            let is_open = send_queue.read().as_deref() == Some(q.as_str());
                             rsx! {
                                 div { class: "queue-row",
                                     span { class: "queue-name", "{q}" }
@@ -879,6 +889,131 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                                         span { class: "{dl_class}", "dead-letter: {dl}" }
                                     } else {
                                         span { class: "queue-pending", "—" }
+                                    }
+                                    if az.is_some() {
+                                        button {
+                                            class: if is_open { "btn-icon sb-send-btn active" } else { "btn-icon sb-send-btn" },
+                                            title: "Send a message to this queue",
+                                            onclick: move |_| {
+                                                if is_open {
+                                                    send_queue.set(None);
+                                                } else {
+                                                    send_queue.set(Some(q_send.clone()));
+                                                    send_status.set(None);
+                                                }
+                                            },
+                                            "📨"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // ── Send message form ─────────────────────────────────
+                    if let Some(ref target_q) = *send_queue.read() {
+                        {
+                            let target_q = target_q.clone();
+                            let az_send = az.clone();
+                            rsx! {
+                                div { class: "sb-send-panel",
+                                    div { class: "sb-send-header",
+                                        span { "Send to " }
+                                        strong { "{target_q}" }
+                                        if let Some(ref a) = az_send {
+                                            span { class: "sb-send-ns",
+                                                " ({a.sb_namespace})"
+                                            }
+                                        }
+                                    }
+                                    textarea {
+                                        class: "sb-send-body",
+                                        rows: "8",
+                                        placeholder: "Message body (JSON)…",
+                                        value: "{send_body}",
+                                        oninput: move |e| send_body.set(e.value()),
+                                    }
+                                    div { class: "sb-send-actions",
+                                        button {
+                                            class: "btn btn-small",
+                                            disabled: *sending.read(),
+                                            onclick: {
+                                                let q = target_q.clone();
+                                                let az_ref = az_send.clone();
+                                                move |_| {
+                                                    let q = q.clone();
+                                                    let body = send_body.read().clone();
+                                                    let az_ref = az_ref.clone();
+                                                    let cached_conn = sb_conn_str.read().clone();
+                                                    if let Some(ref a) = az_ref {
+                                                        let rg = a.resource_group.clone();
+                                                        let sub = a.subscription.clone();
+                                                        let ns = a.sb_namespace.clone();
+                                                        sending.set(true);
+                                                        send_status.set(Some("Sending…".into()));
+                                                        spawn(async move {
+                                                            // Resolve namespace: use configured, or auto-discover from RG
+                                                            let ns_resolved = if !ns.is_empty() {
+                                                                Ok(ns)
+                                                            } else {
+                                                                let sub2 = sub.clone();
+                                                                let rg2 = rg.clone();
+                                                                send_status.set(Some("Discovering SB namespace…".into()));
+                                                                tokio::task::spawn_blocking(move || {
+                                                                    azure::list_service_bus_namespaces(&sub2, &rg2)
+                                                                }).await
+                                                                    .unwrap_or_else(|e| Err(format!("{e}")))
+                                                                    .and_then(|list| {
+                                                                        list.into_iter().next()
+                                                                            .ok_or_else(|| "No SB namespace found in this resource group".into())
+                                                                    })
+                                                            };
+
+                                                            let ns_name = match ns_resolved {
+                                                                Ok(n) => n,
+                                                                Err(e) => {
+                                                                    send_status.set(Some(format!("❌ {e}")));
+                                                                    sending.set(false);
+                                                                    return;
+                                                                }
+                                                            };
+
+                                                            // Get or fetch connection string
+                                                            let conn = if let Some(c) = cached_conn {
+                                                                Ok(c)
+                                                            } else {
+                                                                let rg2 = rg.clone();
+                                                                let ns2 = ns_name.clone();
+                                                                tokio::task::spawn_blocking(move || {
+                                                                    azure::sb_get_connection_string(&rg2, &ns2)
+                                                                }).await.unwrap_or_else(|e| Err(format!("{e}")))
+                                                            };
+
+                                                            match conn {
+                                                                Ok(cs) => {
+                                                                    sb_conn_str.set(Some(cs.clone()));
+                                                                    match azure::sb_send_message(&cs, &q, &body).await {
+                                                                        Ok(()) => send_status.set(Some("✅ Message sent".into())),
+                                                                        Err(e) => send_status.set(Some(format!("❌ {e}"))),
+                                                                    }
+                                                                }
+                                                                Err(e) => send_status.set(Some(format!("❌ Auth: {e}"))),
+                                                            }
+                                                            sending.set(false);
+                                                        });
+                                                    }
+                                                }
+                                            },
+                                            if *sending.read() { "Sending…" } else { "▶ Send" }
+                                        }
+                                        button {
+                                            class: "btn btn-small",
+                                            onclick: move |_| send_queue.set(None),
+                                            "Cancel"
+                                        }
+                                        if let Some(ref st) = *send_status.read() {
+                                            span { class: "sb-send-status", "{st}" }
+                                        }
                                     }
                                 }
                             }

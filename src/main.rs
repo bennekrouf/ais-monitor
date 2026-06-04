@@ -10,6 +10,11 @@ use screens::{welcome::Welcome, main_screen::MainScreen};
 const MAIN_CSS: &str = include_str!("../assets/main.css");
 
 fn main() {
+    // Suppress noisy debug logs from hyper/reqwest unless the user overrides RUST_LOG
+    if std::env::var("RUST_LOG").is_err() {
+        std::env::set_var("RUST_LOG", "info,hyper_util=warn,hyper=warn,reqwest=warn");
+    }
+
     let webview_data_dir = dirs::data_local_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("AIS Monitor");
@@ -112,19 +117,31 @@ fn App() -> Element {
     let mut az_config = use_signal(|| Option::<AzConfig>::None);
 
     // ── System theme — applies to both Welcome and MainScreen ────────────
-    let mut is_light = use_signal(|| dark_light::detect() != dark_light::Mode::Dark);
+    // Start with the OS preference; stop syncing once the user toggles manually.
+    let system_light = dark_light::detect() != dark_light::Mode::Dark;
+    let mut is_light = use_signal(|| system_light);
+    let theme_overridden = use_signal(|| false);
+
+    // Inject CSS once at startup
+    use_effect(move || {
+        let css = MAIN_CSS.replace('`', "\\`").replace("${", "\\${");
+        document::eval(&format!(
+            "if(!document.getElementById('ais-css')){{var s=document.createElement('style');s.id='ais-css';s.textContent=`{}`;document.head.appendChild(s);}}",
+            css
+        ));
+    });
 
     // Apply CSS class whenever theme changes
     use_effect(move || {
-        let cls = if *is_light.read() { "document.body.classList.add('light')" }
-                  else                { "document.body.classList.remove('light')" };
-        document::eval(cls);
+        let cls = if *is_light.read() { "light" } else { "" };
+        document::eval(&format!("document.body.className = '{}';", cls));
     });
 
-    // Poll system preference every 2 s
+    // Poll system preference every 2 s — skip when user has overridden
     use_coroutine(move |_rx: dioxus::prelude::UnboundedReceiver<()>| async move {
         loop {
             tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+            if *theme_overridden.read() { continue; }
             let system_light = tokio::task::spawn_blocking(|| {
                 dark_light::detect() != dark_light::Mode::Dark
             }).await.unwrap_or(*is_light.read());
@@ -137,7 +154,6 @@ fn App() -> Element {
     let config_val = az_config.read().clone();
 
     rsx! {
-        document::Style { "{MAIN_CSS}" }
         match config_val {
             None => rsx! {
                 Welcome {
@@ -148,6 +164,7 @@ fn App() -> Element {
                 MainScreen {
                     az_config: config,
                     is_light,
+                    theme_overridden,
                     on_back: move |_| az_config.set(None),
                 }
             },

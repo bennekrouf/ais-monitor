@@ -71,6 +71,7 @@ pub fn list_logic_app_sites(sub: &str) -> Result<Vec<LogicAppSite>, String> {
     serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))
 }
 
+#[allow(dead_code)]
 pub fn list_logic_apps(sub: &str, rg: &str) -> Result<Vec<String>, String> {
     let output = Command::new("az")
         .args([
@@ -515,6 +516,130 @@ pub fn check_queue(sb_namespace: &str, rg: &str, queue_name: &str) -> Result<Que
         dead_letter: cd["deadLetterMessageCount"].as_i64().unwrap_or(0),
         scheduled: cd["scheduledMessageCount"].as_i64().unwrap_or(0),
     })
+}
+
+/// Fetch the primary connection string for a Service Bus namespace via az CLI.
+pub fn sb_get_connection_string(rg: &str, namespace: &str) -> Result<String, String> {
+    let output = Command::new("az")
+        .args([
+            "servicebus", "namespace", "authorization-rule", "keys", "list",
+            "--resource-group", rg,
+            "--namespace-name", namespace,
+            "--name", "RootManageSharedAccessKey",
+            "--query", "primaryConnectionString",
+            "-o", "tsv",
+        ])
+        .output()
+        .map_err(|e| format!("az failed: {e}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// URL-encode with lowercase hex digits to match C#'s HttpUtility.UrlEncode,
+/// which Azure SAS validation uses server-side.
+fn lowercase_url_encode(s: &str) -> String {
+    let mut result = String::with_capacity(s.len() * 3);
+    for byte in s.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                result.push(byte as char);
+            }
+            _ => {
+                result.push('%');
+                result.push_str(&format!("{:02x}", byte)); // lowercase hex
+            }
+        }
+    }
+    result
+}
+
+/// Send a message to a Service Bus queue using the REST API with SAS auth.
+/// `conn_str` is the full connection string from `sb_get_connection_string`.
+pub async fn sb_send_message(conn_str: &str, queue: &str, body: &str) -> Result<(), String> {
+    // Parse connection string
+    let mut endpoint = "";
+    let mut key_name = "";
+    let mut key = "";
+    for part in conn_str.split(';') {
+        let part = part.trim();
+        if let Some(v) = part.strip_prefix("Endpoint=sb://") {
+            endpoint = v.trim_end_matches('/');
+        } else if let Some(v) = part.strip_prefix("SharedAccessKeyName=") {
+            key_name = v;
+        } else if let Some(v) = part.strip_prefix("SharedAccessKey=") {
+            key = v;
+        }
+    }
+    if endpoint.is_empty() || key.is_empty() {
+        return Err(format!("Invalid connection string (endpoint={}, key_name={}, key_len={})",
+            endpoint.is_empty(), key_name, key.len()));
+    }
+
+    eprintln!("[SB Send] endpoint='{}' key_name='{}' key_len={}", endpoint, key_name, key.len());
+
+    let url = format!("https://{}/{}/messages", endpoint, queue);
+
+    // Generate SAS token (valid 5 minutes)
+    // Azure SB SAS spec:
+    //   StringToSign = URL_ENCODE(lowercase(resource_uri)) + "\n" + expiry
+    //   resource_uri = "https://<fqdn>/<queue>"
+    let expiry = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() + 300;
+
+    // The resource URI for signing — use https:// scheme per Azure REST API.
+    // URL-encode must use lowercase hex (%3a not %3A) to match Azure's server-side
+    // validation (C# HttpUtility.UrlEncode uses lowercase).
+    let resource_uri = format!("https://{}/{}", endpoint, queue).to_lowercase();
+    let encoded_resource = lowercase_url_encode(&resource_uri);
+    let to_sign = format!("{}\n{}", encoded_resource, expiry);
+
+    eprintln!("[SB Send] url: {}", url);
+    eprintln!("[SB Send] resource_uri: {}", resource_uri);
+    eprintln!("[SB Send] to_sign: {:?}", to_sign);
+
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    type HmacSha256 = Hmac<Sha256>;
+
+    let decoded_key = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, key)
+        .map_err(|e| format!("base64 decode: {e}"))?;
+    let mut mac = HmacSha256::new_from_slice(&decoded_key)
+        .map_err(|e| format!("hmac: {e}"))?;
+    mac.update(to_sign.as_bytes());
+    let sig_bytes = mac.finalize().into_bytes();
+    let signature = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, sig_bytes);
+    let encoded_sig = lowercase_url_encode(&signature);
+
+    let token = format!(
+        "SharedAccessSignature sr={}&sig={}&se={}&skn={}",
+        encoded_resource, encoded_sig, expiry, key_name
+    );
+
+    let client = reqwest::Client::new();
+    let resp = client
+        .post(&url)
+        .header("Authorization", &token)
+        .header("Content-Type", "application/atom+xml;type=entry;charset=utf-8")
+        .body(body.to_string())
+        .send()
+        .await
+        .map_err(|e| format!("HTTP error: {e}"))?;
+
+    let status = resp.status();
+    let text = resp.text().await.unwrap_or_default();
+    eprintln!("[SB Send] response: {} {}", status, &text[..200.min(text.len())]);
+    if status.is_success() || status.as_u16() == 201 {
+        Ok(())
+    } else if status.as_u16() == 401 && text.is_empty() {
+        // Empty 401 = network-level rejection (SB firewall / IP not allowlisted)
+        Err("401 — your IP is not in the Service Bus firewall allowlist. Connect to VPN or add your IP in the Azure portal (SB namespace → Networking).".into())
+    } else {
+        Err(format!("SB returned {}: {}", status, text))
+    }
 }
 
 // ── EventGrid ────────────────────────────────────────────────────────────────

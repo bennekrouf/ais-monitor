@@ -18,6 +18,8 @@ pub struct ChainListProps {
 
 #[component]
 pub fn ChainList(props: ChainListProps) -> Element {
+    let mut filter = use_signal(String::new);
+
     if props.chains.is_empty() {
         return rsx! {
             div { class: "chain-list empty",
@@ -26,7 +28,18 @@ pub fn ChainList(props: ChainListProps) -> Element {
         };
     }
 
-    let mut sorted = props.chains.clone();
+    let query = filter.read().to_lowercase();
+    let mut sorted: Vec<ChainDetail> = props.chains.iter()
+        .filter(|c| {
+            if query.is_empty() { return true; }
+            let display = props.chain_names.get(&c.label).unwrap_or(&c.label);
+            display.to_lowercase().contains(&query)
+                || c.label.to_lowercase().contains(&query)
+                || c.steps.iter().any(|s| s.workflow.to_lowercase().contains(&query))
+                || c.queues.iter().any(|q| q.to_lowercase().contains(&query))
+        })
+        .cloned()
+        .collect();
     sorted.sort_by(|a, b| {
         let a_ts = props.last_checked.get(&a.label).copied().unwrap_or(0);
         let b_ts = props.last_checked.get(&b.label).copied().unwrap_or(0);
@@ -36,12 +49,27 @@ pub fn ChainList(props: ChainListProps) -> Element {
         a.label.to_lowercase().cmp(&b.label.to_lowercase())
     });
 
+    let total = props.chains.len();
+    let shown = sorted.len();
+
     rsx! {
         div { class: "chain-list",
-            h3 {
-                {
-                    let n = props.chains.len();
-                    if n == 1 { "1 chain".to_string() } else { format!("{n} chains") }
+            div { class: "chain-list-header",
+                h3 {
+                    {
+                        let label = if shown == total {
+                            if total == 1 { "1 chain".to_string() } else { format!("{total} chains") }
+                        } else {
+                            format!("{shown}/{total} chains")
+                        };
+                        "{label}"
+                    }
+                }
+                input {
+                    class: "chain-filter-input",
+                    placeholder: "Filter…",
+                    value: "{filter}",
+                    oninput: move |e| filter.set(e.value()),
                 }
             }
             for chain in sorted.iter() {

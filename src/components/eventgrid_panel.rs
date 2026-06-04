@@ -16,14 +16,14 @@ pub fn EventGridPanel(props: EventGridPanelProps) -> Element {
     let mut sys_topics = use_signal(|| Vec::<SysTopicWithSubs>::new());
     let mut loading = use_signal(|| false);
     let mut error_msg: Signal<Option<String>> = use_signal(|| None);
-    let mut expanded_topic = use_signal(|| None);
+    let expanded_topic = use_signal(|| None);
 
     // Compare env state
     let mut cmp_topics = use_signal(|| Vec::<TopicWithSubs>::new());
     let mut cmp_sys_topics = use_signal(|| Vec::<SysTopicWithSubs>::new());
     let mut cmp_loading = use_signal(|| false);
     let mut cmp_error: Signal<Option<String>> = use_signal(|| None);
-    let mut cmp_expanded = use_signal(|| None);
+    let cmp_expanded = use_signal(|| None);
     let mut cmp_picker_open = use_signal(|| false);
     let mut cmp_profile: Signal<Option<AzConfig>> = use_signal(|| None);
 
@@ -296,7 +296,6 @@ fn render_topic_block(tws: &TopicWithSubs, mut expanded: Signal<Option<String>>)
 
 fn render_sys_topic_block(stws: &SysTopicWithSubs, mut expanded: Signal<Option<String>>) -> Element {
     let topic_name = stws.topic.name.clone();
-    let topic_name_click = topic_name.clone();
     let key = format!("sys:{}", topic_name);
     let key_click = key.clone();
     let is_expanded = expanded.read().as_ref() == Some(&key);
