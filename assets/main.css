@@ -1303,3 +1303,100 @@ body {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--text3); }
+
+/* ══════════════════════════════════════════════
+   FUNCTIONS PANEL
+══════════════════════════════════════════════ */
+.func-panel { padding: 20px; overflow-y: auto; flex: 1; min-height: 0; }
+.func-header { display: flex; align-items: center; gap: 16px; margin-bottom: 16px; }
+.func-header h2 { font-size: 16px; font-weight: 600; color: var(--text1); margin: 0; }
+.func-metrics-bar { display: flex; align-items: center; gap: 8px; }
+.func-loading, .func-empty { color: var(--text3); font-size: 13px; padding: 20px 0; }
+.func-note { color: var(--text3); font-size: 12px; margin-top: 16px; font-style: italic; }
+
+.func-app-card {
+    background: var(--bg1); border: 1px solid var(--border);
+    border-radius: 8px; padding: 16px; margin-bottom: 16px;
+}
+.func-app-header {
+    display: flex; align-items: center; gap: 10px; margin-bottom: 12px;
+}
+.func-app-header h3 { font-size: 14px; font-weight: 600; color: var(--text1); margin: 0; }
+.func-app-count { font-size: 11px; color: var(--text3); }
+.func-state {
+    width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0;
+}
+.func-state.running { background: var(--green); }
+.func-state.stopped { background: var(--red); }
+
+.func-table {
+    width: 100%; border-collapse: collapse; font-size: 12px;
+}
+.func-table th {
+    text-align: left; font-weight: 600; font-size: 11px;
+    color: var(--text2); text-transform: uppercase; letter-spacing: .04em;
+    padding: 6px 10px; border-bottom: 1px solid var(--border);
+}
+.func-th-num { text-align: right !important; }
+.func-table td { padding: 8px 10px; border-bottom: 1px solid var(--border2); }
+.func-row:last-child td { border-bottom: none; }
+.func-row.func-disabled { opacity: 0.5; }
+.func-name { font-weight: 500; color: var(--text1); }
+.func-lang { }
+.func-lang-badge {
+    display: inline-block; padding: 1px 8px; border-radius: 8px;
+    font-size: 10px; font-weight: 600; text-transform: uppercase;
+    background: color-mix(in srgb, var(--blue) 12%, transparent);
+    color: var(--blue);
+}
+.func-badge-active {
+    font-size: 10px; color: var(--green); font-weight: 600;
+}
+.func-badge-disabled {
+    font-size: 10px; color: var(--text3); font-weight: 600;
+}
+.func-td-num { text-align: right; }
+.func-success { color: var(--green); font-weight: 600; }
+.func-errors { color: var(--text2); }
+.func-errors.has-errors { color: var(--red); font-weight: 700; }
+.func-errors-btn { cursor: pointer; user-select: none; }
+.func-errors-btn:hover { opacity: 0.75; }
+.func-error-detail-row td { padding: 0 !important; border-bottom: none !important; }
+.func-error-detail-panel {
+    background: color-mix(in srgb, var(--red) 6%, var(--bg2));
+    border-left: 3px solid var(--red);
+    padding: 10px 14px;
+    margin: 0 0 4px;
+}
+.func-error-loading, .func-error-empty {
+    font-size: 12px; color: var(--text2); padding: 4px 0;
+}
+.func-error-table {
+    width: 100%; border-collapse: collapse; font-size: 11px;
+}
+.func-error-table th {
+    text-align: left; font-weight: 600; color: var(--text2);
+    text-transform: uppercase; letter-spacing: .04em;
+    padding: 4px 8px; border-bottom: 1px solid var(--border);
+}
+.func-error-table td { padding: 5px 8px; border-bottom: 1px solid var(--border2); vertical-align: top; }
+.func-error-table tr:last-child td { border-bottom: none; }
+.func-error-ts { color: var(--text2); white-space: nowrap; }
+.func-error-code { color: var(--red); font-weight: 600; white-space: nowrap; }
+.func-error-msg { color: var(--text1); font-family: monospace; word-break: break-word; max-width: 600px; }
+.func-error-copy-cell { width: 28px; text-align: center; padding: 0 4px !important; }
+.func-error-copy-btn {
+    background: none; border: none; cursor: pointer;
+    color: var(--text3); font-size: 13px; padding: 2px 4px;
+    border-radius: 4px; line-height: 1; opacity: 0.6;
+}
+.func-error-copy-btn:hover { opacity: 1; color: var(--text1); background: var(--border2); }
+.func-no-data { color: var(--text3); }
+.func-last-run { color: var(--text2); font-size: 11px; }
+.func-empty-small { color: var(--text3); font-size: 12px; padding: 8px 0; }
+
+.func-summary {
+    display: flex; gap: 16px; padding: 10px 10px 0;
+    font-size: 12px; border-top: 1px solid var(--border2); margin-top: 4px;
+}
+.func-summary-item { color: var(--text2); }

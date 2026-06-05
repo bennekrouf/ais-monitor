@@ -961,3 +961,185 @@ pub fn list_eventgrid_subscriptions(topic_id: &str) -> Result<Vec<EventGridSubsc
 
     Ok(subs)
 }
+
+// ── Function Apps ────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct FunctionApp {
+    pub name: String,
+    pub state: String,
+    pub resource_group: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct FunctionDetail {
+    pub name: String,
+    pub language: String,
+    pub is_disabled: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct FunctionMetrics {
+    pub function_name: String,
+    pub success: i64,
+    pub errors: i64,
+    pub last_run: String,
+}
+
+/// List all Function Apps in a resource group.
+pub fn list_function_apps(sub: &str, rg: &str) -> Result<Vec<FunctionApp>, String> {
+    let output = Command::new("az")
+        .args([
+            "functionapp", "list",
+            "--subscription", sub,
+            "--resource-group", rg,
+            "--query", "[].{name:name,state:state}",
+            "-o", "json",
+        ])
+        .output()
+        .map_err(|e| format!("az functionapp list: {e}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    let body = String::from_utf8_lossy(&output.stdout);
+    let arr: Vec<serde_json::Value> = serde_json::from_str(&body)
+        .map_err(|e| format!("parse: {e}"))?;
+    Ok(arr.iter().map(|v| FunctionApp {
+        name: v["name"].as_str().unwrap_or("").to_string(),
+        state: v["state"].as_str().unwrap_or("Unknown").to_string(),
+        resource_group: rg.to_string(),
+    }).collect())
+}
+
+/// List functions inside a Function App.
+pub fn list_functions(rg: &str, app: &str) -> Result<Vec<FunctionDetail>, String> {
+    let output = Command::new("az")
+        .args([
+            "functionapp", "function", "list",
+            "--resource-group", rg,
+            "--name", app,
+            "--query", "[].{name:name,language:language,isDisabled:isDisabled}",
+            "-o", "json",
+        ])
+        .output()
+        .map_err(|e| format!("az functionapp function list: {e}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    let body = String::from_utf8_lossy(&output.stdout);
+    let arr: Vec<serde_json::Value> = serde_json::from_str(&body)
+        .map_err(|e| format!("parse: {e}"))?;
+    Ok(arr.iter().map(|v| {
+        let full = v["name"].as_str().unwrap_or("");
+        let short = full.rsplit('/').next().unwrap_or(full);
+        FunctionDetail {
+            name: short.to_string(),
+            language: v["language"].as_str().unwrap_or("").to_string(),
+            is_disabled: v["isDisabled"].as_bool().unwrap_or(false),
+        }
+    }).collect())
+}
+
+/// Discover Application Insights resource names in a resource group.
+pub fn find_app_insights(rg: &str) -> Result<Vec<String>, String> {
+    let output = Command::new("az")
+        .args([
+            "monitor", "app-insights", "component", "show",
+            "--resource-group", rg,
+            "--query", "[].name",
+            "-o", "json",
+        ])
+        .output()
+        .map_err(|e| format!("az monitor app-insights: {e}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    let body = String::from_utf8_lossy(&output.stdout);
+    let arr: Vec<String> = serde_json::from_str(&body).unwrap_or_default();
+    Ok(arr)
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct FunctionError {
+    pub timestamp: String,
+    pub operation_name: String,
+    pub result_code: String,
+    pub message: String,
+}
+
+/// Query failed invocation details for a specific function from Application Insights.
+pub fn query_function_errors(rg: &str, app_insights: &str, function_app: &str, function_name: &str, days: u32) -> Result<Vec<FunctionError>, String> {
+    let query = format!(
+        "requests \
+         | where timestamp > ago({days}d) \
+         | where cloud_RoleName == '{function_app}' \
+         | where success == false \
+         | where operation_Name == '{function_name}' \
+         | project timestamp, operation_Name, resultCode, tostring(customDimensions) \
+         | order by timestamp desc \
+         | take 50"
+    );
+    let output = Command::new("az")
+        .args([
+            "monitor", "app-insights", "query",
+            "--app", app_insights,
+            "--resource-group", rg,
+            "--analytics-query", &query,
+            "-o", "json",
+        ])
+        .output()
+        .map_err(|e| format!("az app-insights query: {e}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    let body = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|e| format!("parse: {e}"))?;
+    let rows = json["tables"][0]["rows"].as_array()
+        .ok_or_else(|| "No rows in response".to_string())?;
+    Ok(rows.iter().filter_map(|r| {
+        let arr = r.as_array()?;
+        Some(FunctionError {
+            timestamp: arr.first()?.as_str().unwrap_or("").to_string(),
+            operation_name: arr.get(1)?.as_str().unwrap_or("").to_string(),
+            result_code: arr.get(2)?.as_str().unwrap_or("").to_string(),
+            message: arr.get(3)?.as_str().unwrap_or("").to_string(),
+        })
+    }).collect())
+}
+
+/// Query function invocation metrics from Application Insights.
+pub fn query_function_metrics(rg: &str, app_insights: &str, function_app: &str, days: u32) -> Result<Vec<FunctionMetrics>, String> {
+    let query = format!(
+        "requests | where timestamp > ago({days}d) | where cloud_RoleName == '{function_app}' \
+         | summarize success=countif(success==true), errors=countif(success==false), lastRun=max(timestamp) \
+         by operation_Name | order by operation_Name asc"
+    );
+    let output = Command::new("az")
+        .args([
+            "monitor", "app-insights", "query",
+            "--app", app_insights,
+            "--resource-group", rg,
+            "--analytics-query", &query,
+            "-o", "json",
+        ])
+        .output()
+        .map_err(|e| format!("az app-insights query: {e}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    let body = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&body)
+        .map_err(|e| format!("parse: {e}"))?;
+    let rows = json["tables"][0]["rows"].as_array()
+        .ok_or_else(|| "No rows in response".to_string())?;
+    Ok(rows.iter().filter_map(|r| {
+        let arr = r.as_array()?;
+        Some(FunctionMetrics {
+            function_name: arr.first()?.as_str()?.to_string(),
+            success: arr.get(1)?.as_i64().unwrap_or(0),
+            errors: arr.get(2)?.as_i64().unwrap_or(0),
+            last_run: arr.get(3)?.as_str().unwrap_or("").to_string(),
+        })
+    }).collect())
+}

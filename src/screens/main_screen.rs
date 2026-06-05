@@ -4,6 +4,7 @@ use crate::components::{
     chain_detail::{AzConfig, ChainDetailView, ChainHealth},
     eventgrid_panel::EventGridPanel,
     graph_panel::GraphPanel,
+    functions_panel::FunctionsPanel,
 };
 use crate::services::{azure, azure::EgLink, chain, kpi, remote_chain};
 use std::collections::HashMap;
@@ -88,8 +89,9 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                 let sub = az.subscription.clone();
                 let rg = az.resource_group.clone();
                 let app = az.app_name.clone();
+                let local_dir = az.local_dir.clone();
                 let result = tokio::task::spawn_blocking(move || {
-                    remote_chain::discover_chains_remote(&sub, &rg, &app)
+                    remote_chain::discover_chains_remote(&sub, &rg, &app, &local_dir)
                 }).await;
 
                 match result {
@@ -178,6 +180,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                     let is_chains = *view_mode.read() == ViewMode::Chains;
                     let is_eg     = *view_mode.read() == ViewMode::EventGrid;
                     let is_graph  = *view_mode.read() == ViewMode::Graph;
+                    let is_funcs  = *view_mode.read() == ViewMode::Functions;
                     rsx! {
                         div { class: "topbar-tabs",
                             button {
@@ -189,6 +192,11 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                 class: if is_eg { "topbar-tab active" } else { "topbar-tab" },
                                 onclick: move |_| view_mode.set(ViewMode::EventGrid),
                                 "EventGrid"
+                            }
+                            button {
+                                class: if is_funcs { "topbar-tab active" } else { "topbar-tab" },
+                                onclick: move |_| view_mode.set(ViewMode::Functions),
+                                "Functions"
                             }
                             button {
                                 class: if is_graph { "topbar-tab active" } else { "topbar-tab" },
@@ -214,11 +222,12 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                 let sub2 = sub.clone();
                                 let rg = az.resource_group.clone();
                                 let app2 = app.clone();
+                                let local_dir = az.local_dir.clone();
                                 tokio::task::spawn_blocking(move || {
                                     remote_chain::clear_cache(&sub, &app);
                                 }).await.ok();
                                 let result = tokio::task::spawn_blocking(move || {
-                                    remote_chain::discover_chains_remote(&sub2, &rg, &app2)
+                                    remote_chain::discover_chains_remote(&sub2, &rg, &app2, &local_dir)
                                 }).await;
                                 match result {
                                     Ok(Ok(discovered)) => {
@@ -395,6 +404,13 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                 }
                             }
                         },
+                        ViewMode::Functions => rsx! {
+                            div { class: "main-content",
+                                div { class: "detail-pane",
+                                    FunctionsPanel { az_config: az.clone() }
+                                }
+                            }
+                        },
                         ViewMode::Graph => rsx! {
                             div { class: "main-content",
                                 GraphPanel {
@@ -421,5 +437,6 @@ fn epoch_now() -> u64 {
 enum ViewMode {
     Chains,
     EventGrid,
+    Functions,
     Graph,
 }

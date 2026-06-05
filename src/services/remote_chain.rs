@@ -10,6 +10,7 @@ pub fn discover_chains_remote(
     sub: &str,
     rg: &str,
     app: &str,
+    local_dir: &str,
 ) -> Result<Vec<ChainDetail>, String> {
     // Return the cached chain graph immediately if available.
     if let Some(cached) = load_chains_result(sub, app) {
@@ -98,7 +99,10 @@ pub fn discover_chains_remote(
         }
     }
 
-    let graph = ais_chain::graph::build(&resolved_workflows, &[]);
+    // Load manual links from .ais-chain file in the local workspace (EventGrid,
+    // dynamic queue routing that isn't visible in the deployed workflow JSON).
+    let manual_links = load_manual_links(local_dir);
+    let graph = ais_chain::graph::build(&resolved_workflows, &manual_links);
     let raw_chains = graph.find_chains();
 
     // If no multi-step chains, surface a diagnostic instead of silently returning empty
@@ -198,6 +202,29 @@ fn resolve_appsetting(s: &str, settings: &std::collections::HashMap<String, Stri
         }
     }
     s.to_string()
+}
+
+fn load_manual_links(local_dir: &str) -> Vec<String> {
+    if local_dir.is_empty() { return Vec::new(); }
+    let base = std::path::Path::new(local_dir);
+    // Mirror ais-runner: look for .ais-chain inside logic_apps/ subfolder first
+    let dir = if base.join("logic_apps").exists() {
+        base.join("logic_apps")
+    } else if base.join("logic-apps").exists() {
+        base.join("logic-apps")
+    } else {
+        base.to_path_buf()
+    };
+    let path = dir.join(".ais-chain");
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    content.lines()
+        .map(|l| l.trim())
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|l| l.to_string())
+        .collect()
 }
 
 fn chains_result_path(sub: &str, app: &str) -> PathBuf {

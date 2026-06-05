@@ -635,6 +635,34 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                     oninput: move |e| sb_input.set(e.value().clone()),
                                 }
                             }
+                            div { class: "az-field",
+                                label { "Local Workspace (optional — for chain links & payload suggestions)" }
+                                div { style: "display:flex; gap:6px;",
+                                    input {
+                                        r#type: "text",
+                                        placeholder: "/path/to/platform",
+                                        value: "{local_dir_input.read()}",
+                                        style: "flex:1;",
+                                        oninput: move |e| local_dir_input.set(e.value().clone()),
+                                    }
+                                    button {
+                                        class: "btn btn-small",
+                                        r#type: "button",
+                                        onclick: move |_| {
+                                            spawn(async move {
+                                                if let Some(path) = rfd::AsyncFileDialog::new()
+                                                    .set_title("Select local workspace folder")
+                                                    .pick_folder()
+                                                    .await
+                                                {
+                                                    local_dir_input.set(path.path().to_string_lossy().to_string());
+                                                }
+                                            });
+                                        },
+                                        "Browse…"
+                                    }
+                                }
+                            }
                             {
                                 let err = error_msg.read().clone();
                                 if let Some(msg) = err {
@@ -650,6 +678,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                     onclick: {
                                         let on_connect = props.on_connect.clone();
                                         move |_| {
+                                            let local_dir_val = local_dir_input.read().trim().to_string();
                                             let config = AzConfig {
                                                 subscription: sub_id.read().clone(),
                                                 resource_group: rg_input.read().trim().to_string(),
@@ -657,9 +686,13 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                 sb_namespace: sb_input.read().trim().to_string(),
                                                 tenant: tenant_input.read().trim().to_string(),
                                                 label: label_input.read().trim().to_string(),
-                                                local_dir: dirs::home_dir()
-                                                    .map(|p| p.to_string_lossy().to_string())
-                                                    .unwrap_or_default(),
+                                                local_dir: if local_dir_val.is_empty() {
+                                                    dirs::home_dir()
+                                                        .map(|p| p.to_string_lossy().to_string())
+                                                        .unwrap_or_default()
+                                                } else {
+                                                    local_dir_val
+                                                },
                                             };
                                             let mut saved = profiles.read().clone();
                                             if let Some(idx) = *editing_profile.read() {
