@@ -880,7 +880,9 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                             let (active, dl) = qs.map(|s| (s.active, s.dead_letter)).unwrap_or((-1, -1));
                             let dl_class = if dl > 0 { "queue-dl warn" } else { "queue-dl" };
                             let q_send = q.clone();
+                            let q_target = q.clone();
                             let is_open = send_queue.read().as_deref() == Some(q.as_str());
+                            let az_send = az.clone();
                             rsx! {
                                 div { class: "queue-row",
                                     span { class: "queue-name", "{q}" }
@@ -906,17 +908,13 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                                         }
                                     }
                                 }
-                            }
-                        }
-                    }
-
-                    // ── Send message form ─────────────────────────────────
-                    if let Some(ref target_q) = *send_queue.read() {
-                        {
-                            let target_q = target_q.clone();
-                            let az_send = az.clone();
-                            rsx! {
-                                div { class: "sb-send-panel",
+                                // ── Send message form (inline, right under this queue) ──
+                                if is_open {
+                                    {
+                                        let target_q = q_target.clone();
+                                        let az_send = az_send.clone();
+                                        rsx! {
+                                            div { class: "sb-send-panel",
                                     div { class: "sb-send-header",
                                         span { "Send to " }
                                         strong { "{target_q}" }
@@ -1018,12 +1016,15 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                                 }
                             }
                         }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
     }
-}
 
 fn compute_health(
     runs_map: &HashMap<String, Vec<azure::RunInfo>>,

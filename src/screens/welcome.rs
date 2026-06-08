@@ -32,6 +32,8 @@ pub fn Welcome(props: WelcomeProps) -> Element {
     let mut sb_namespaces    = use_signal(|| Vec::<String>::new());
     // "" | "subs" | "apps"
     let mut browse_loading   = use_signal(|| String::new());
+    // Error feedback when `az login` fails to spawn (Windows: az.cmd not on PATH, etc.)
+    let mut login_error: Signal<Option<String>> = use_signal(|| None);
 
     let mut profiles = use_signal(|| load_profiles());
 
@@ -100,7 +102,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                             title: "Sign in with a different Azure account",
                                             onclick: move |_| {
                                                 az_state.set(AzLoginState::Checking);
-                                                azure::open_login(None);
+                                                let _ = azure::open_login(None);
                                                 spawn(async move {
                                                     for _ in 0..24 {
                                                         tokio::time::sleep(std::time::Duration::from_secs(5)).await;
@@ -144,6 +146,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                 AzLoginState::Expired | AzLoginState::NotLoggedIn => {
                                     let msg = if matches!(state, AzLoginState::Expired) { "Session expired" } else { "Not logged in" };
                                     let dot = if matches!(state, AzLoginState::Expired) { "dot warn" } else { "dot error" };
+                                    let err = login_error.read().clone();
                                     rsx! {
                                         div { class: "az-status",
                                             span { class: "{dot}" }
@@ -153,24 +156,43 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                 onclick: move |_| {
                                                     let tenant = tenant_input.read().clone();
                                                     let t = if tenant.is_empty() { None } else { Some(tenant.clone()) };
-                                                    azure::open_login(t.as_deref());
-                                                    az_state.set(AzLoginState::Checking);
-                                                    spawn(async move {
-                                                        for _ in 0..24 {
-                                                            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                                                            let state = tokio::task::spawn_blocking(azure::check_login)
-                                                                .await
-                                                                .unwrap_or(AzLoginState::NotLoggedIn);
-                                                            if let AzLoginState::LoggedIn { ref subscription_id, .. } = state {
-                                                                sub_id.set(subscription_id.clone());
-                                                            }
-                                                            let done = matches!(state, AzLoginState::LoggedIn { .. });
-                                                            az_state.set(state);
-                                                            if done { break; }
+                                                    login_error.set(None);
+                                                    match azure::open_login(t.as_deref()) {
+                                                        Ok(()) => {
+                                                            az_state.set(AzLoginState::Checking);
+                                                            spawn(async move {
+                                                                for _ in 0..24 {
+                                                                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                                                                    let state = tokio::task::spawn_blocking(azure::check_login)
+                                                                        .await
+                                                                        .unwrap_or(AzLoginState::NotLoggedIn);
+                                                                    if let AzLoginState::LoggedIn { ref subscription_id, .. } = state {
+                                                                        sub_id.set(subscription_id.clone());
+                                                                    }
+                                                                    let done = matches!(state, AzLoginState::LoggedIn { .. });
+                                                                    az_state.set(state);
+                                                                    if done { break; }
+                                                                }
+                                                            });
                                                         }
-                                                    });
+                                                        Err(e) => {
+                                                            // Spawn failed — show the user what went wrong instead of
+                                                            // silently leaving them on "Not logged in".
+                                                            login_error.set(Some(e));
+                                                        }
+                                                    }
                                                 },
                                                 "Connect to Azure"
+                                            }
+                                        }
+                                        if let Some(e) = err {
+                                            p { style: "margin:8px 0 0; font-size:12px; color:var(--red); word-break:break-word;",
+                                                "{e}"
+                                            }
+                                            p { style: "margin:4px 0 0; font-size:11px; opacity:0.7;",
+                                                "If the browser didn't open, run "
+                                                code { style: "font-family:monospace; background:var(--bg2); padding:1px 5px; border-radius:3px;", "az login" }
+                                                " from a terminal, then click here again."
                                             }
                                         }
                                     }
@@ -224,7 +246,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                                 move |_| {
                                                                     let mut config = p.clone();
                                                                     if !config.tenant.is_empty() {
-                                                                        azure::open_login(Some(&config.tenant));
+                                                                        let _ = azure::open_login(Some(&config.tenant));
                                                                     }
                                                                     config.subscription = sub_id.read().clone();
                                                                     on_connect.call(config);
@@ -463,7 +485,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                             class: "btn-primary",
                                                             style: "display:inline; padding:2px 10px; font-size:12px;",
                                                             onclick: move |_| {
-                                                                azure::open_login(None);
+                                                                let _ = azure::open_login(None);
                                                                 az_state.set(AzLoginState::Checking);
                                                             },
                                                             "Log in again"

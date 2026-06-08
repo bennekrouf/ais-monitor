@@ -59,11 +59,8 @@ Browse Event Grid topics and subscriptions linked to your Azure resource group �
 
 ### macOS (Apple Silicon)
 
-```bash
-curl -L https://github.com/Bennekrouf/ais-monitor/releases/latest/download/ais-monitor-macos-arm64.tar.gz | tar xz
-cd ais-monitor-macos-arm64
-./setup-mac.sh && ./ais-monitor
-```
+Download [`ais-monitor-macos-arm64.dmg`](https://github.com/Bennekrouf/ais-monitor/releases/latest/download/ais-monitor-macos-arm64.dmg), open it, and drag **AIS Monitor** to Applications.
+Signed with Apple Developer ID and notarized — opens with a normal double-click.
 
 ### Windows
 
@@ -147,7 +144,6 @@ src/
     names.rs            Local chain rename storage
 scripts/
   release.sh            Cut a release (bump version, tag, push → triggers CI)
-  setup-mac.sh          macOS runtime dependency installer
   setup-linux.sh        Linux runtime dependency installer
   setup-windows.ps1     Windows runtime dependency installer
 .github/workflows/

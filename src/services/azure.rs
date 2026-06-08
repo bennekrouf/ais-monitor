@@ -2,6 +2,52 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::process::Command;
 
+/// On Windows, `az` ships as a `.cmd` batch file (not an `.exe`), and Dioxus
+/// desktop apps don't inherit the full shell PATH that resolves it. We must
+/// invoke it via `cmd /c az ...` and explicitly add the CLI install dir to
+/// PATH for `cmd.exe` to find `az.cmd`.
+#[cfg(target_os = "windows")]
+fn resolve_az_windows() -> String {
+    let candidates: &[(&str, &str)] = &[
+        ("ProgramFiles(x86)", r"Microsoft SDKs\Azure\CLI2\wbin\az.cmd"),
+        ("ProgramFiles",      r"Microsoft SDKs\Azure\CLI2\wbin\az.cmd"),
+        ("LOCALAPPDATA",      r"Programs\Azure CLI\wbin\az.cmd"),
+    ];
+    for (env_var, suffix) in candidates {
+        if let Ok(base) = std::env::var(env_var) {
+            let full = std::path::Path::new(&base).join(suffix);
+            if full.is_file() {
+                return full.to_string_lossy().to_string();
+            }
+        }
+    }
+    "az".to_string()
+}
+
+/// Build a `Command` that invokes the Azure CLI cross-platform.
+/// On Windows it wraps with `cmd /c az` and injects the CLI directory into PATH.
+pub fn az_command(args: &[&str]) -> Command {
+    #[cfg(target_os = "windows")]
+    {
+        let az_path = resolve_az_windows();
+        let mut cmd = Command::new("cmd");
+        cmd.args(["/c", "az"]).args(args);
+        if az_path != "az" {
+            if let Some(dir) = std::path::Path::new(&az_path).parent() {
+                let current = std::env::var("PATH").unwrap_or_default();
+                cmd.env("PATH", format!("{};{}", dir.display(), current));
+            }
+        }
+        cmd
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let mut cmd = Command::new("az");
+        cmd.args(args);
+        cmd
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum AzLoginState {
     Checking,
@@ -127,8 +173,7 @@ pub fn list_service_bus_namespaces(sub: &str, rg: &str) -> Result<Vec<String>, S
 /// Check current az login status (blocking — call from spawn_blocking)
 pub fn check_login() -> AzLoginState {
     // Step 1: get account metadata from local cache
-    let account_out = Command::new("az")
-        .args(["account", "show", "--output", "json"])
+    let account_out = az_command(&["account", "show", "--output", "json"])
         .output();
 
     let acc = match account_out {
@@ -153,8 +198,7 @@ pub fn check_login() -> AzLoginState {
     // `az account show` reads local cache and succeeds even after AADSTS70043 expiry.
     // `az account get-access-token` calls the identity endpoint and fails when the
     // refresh token has expired (conditional access, sign-in frequency policy, etc.).
-    let token_out = Command::new("az")
-        .args(["account", "get-access-token", "--output", "none"])
+    let token_out = az_command(&["account", "get-access-token", "--output", "none"])
         .output();
 
     match token_out {
@@ -180,16 +224,29 @@ pub fn check_login() -> AzLoginState {
     }
 }
 
-/// Open az login in a terminal (non-blocking)
-pub fn open_login(tenant: Option<&str>) {
-    let mut args = vec!["login".to_string()];
-    if let Some(t) = tenant {
-        args.push("--tenant".into());
-        args.push(t.into());
-        args.push("--scope".into());
-        args.push("https://management.core.windows.net//.default".into());
+/// Open `az login` (non-blocking). `az login` opens the browser for OAuth on
+/// all platforms, so we don't need a visible terminal. Returns Ok if the
+/// child process spawned successfully, Err with a human-readable message
+/// otherwise — surface this in the UI so the user gets feedback instead of
+/// silently staying on "Not logged in".
+pub fn open_login(tenant: Option<&str>) -> Result<(), String> {
+    let mut args: Vec<&str> = vec!["login"];
+    let tenant_owned;
+    if let Some(t) = tenant.filter(|t| !t.is_empty()) {
+        tenant_owned = t.to_string();
+        args.extend_from_slice(&["--tenant", &tenant_owned]);
+        args.extend_from_slice(&["--scope", "https://management.core.windows.net//.default"]);
     }
-    let _ = Command::new("az").args(&args).spawn();
+    az_command(&args)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                "Azure CLI not found. Install it from https://aka.ms/installazurecliwindows then restart the app.".to_string()
+            } else {
+                format!("Failed to start 'az login': {e}")
+            }
+        })
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]

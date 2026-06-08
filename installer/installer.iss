@@ -1,6 +1,6 @@
 ; AIS Monitor — Windows Installer
 ; Build: iscc /DMyAppVersion=X.Y.Z installer\installer.iss
-; Output: dist\ais-monitor-setup.exe
+; Output: dist\ais-monitor-setup-X.Y.Z.exe
 
 #ifndef MyAppVersion
   #define MyAppVersion "0.1.0"
@@ -15,17 +15,25 @@
 AppId={{A3C7E1D4-5B2F-4A8E-9D6C-F1E3B7A2C5D8}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
+AppVerName={#MyAppName} {#MyAppVersion}
 AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 AppSupportURL={#MyAppURL}/issues
 AppUpdatesURL={#MyAppURL}/releases/latest
+; Embed version info into the compiled setup.exe so File Explorer
+; (right-click → Properties → Details) shows the version.
+VersionInfoVersion={#MyAppVersion}
+VersionInfoProductVersion={#MyAppVersion}
+VersionInfoProductName={#MyAppName}
+VersionInfoDescription={#MyAppName} {#MyAppVersion} Installer
+VersionInfoCompany={#MyAppPublisher}
 ; Admin install — UAC appears once so the dependency script can install
 ; Node.js, Azure CLI, etc. without self-elevation.
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
 OutputDir=..\dist
-OutputBaseFilename=ais-monitor-setup
+OutputBaseFilename=ais-monitor-setup-{#MyAppVersion}
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
