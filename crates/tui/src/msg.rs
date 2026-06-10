@@ -51,4 +51,8 @@ pub enum Msg {
     /// Periodic tick (watch mode). Fired by a background interval task; the
     /// receiver decides whether to act based on `App::watch`.
     Tick,
+    /// Fast redraw tick (~10 Hz) — drives spinner animation without
+    /// triggering any data fetch. No-op handler; presence in the channel is
+    /// what wakes the main loop so `terminal.draw()` runs again.
+    RenderTick,
 }

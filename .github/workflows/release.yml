@@ -546,31 +546,25 @@ jobs:
 
           ## Terminal UI (`ais-monitor-tui`)
 
-          Single static binary — drop into `$PATH`, no installer.
-
-          **macOS (Apple Silicon)**
-          ```bash
-          curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/ais-monitor-tui-aarch64-apple-darwin \
-            -o /usr/local/bin/ais-monitor-tui && chmod +x /usr/local/bin/ais-monitor-tui
-          ```
-
-          **Linux (x86_64)**
-          ```bash
-          curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/ais-monitor-tui-x86_64-unknown-linux-gnu \
-            -o /usr/local/bin/ais-monitor-tui && chmod +x /usr/local/bin/ais-monitor-tui
-          ```
-
-          **Windows (PowerShell)**
+          **Windows — paste into PowerShell:**
           ```powershell
-          Invoke-WebRequest `
-            https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/ais-monitor-tui-x86_64-pc-windows-msvc.exe `
-            -OutFile $env:USERPROFILE\bin\ais-monitor-tui.exe
+          iwr https://raw.githubusercontent.com/${{ github.repository }}/master/scripts/install-tui.ps1 | iex
           ```
 
-          **Or with `cargo binstall`** (auto-detects platform):
+          **macOS / Linux:**
           ```bash
-          cargo binstall ais-monitor-tui
+          curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/master/scripts/install-tui.sh | sh
           ```
+
+          Both installers download the matching binary, drop it on PATH, and clear the platform's "downloaded from internet" mark so first run doesn't trigger SmartScreen / Gatekeeper.
+
+          After install:
+          ```
+          az login
+          ais-monitor-tui
+          ```
+
+          Headless (SSH, Server Core, no browser): `ais-monitor-tui --device-code`.
           EOF
           )" \
             $FILES

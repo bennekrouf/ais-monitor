@@ -233,7 +233,10 @@ impl App {
             login_modal_dismissed: false,
             device_code_login: cli.device_code,
             pending_device_code_login: false,
-            watch: false,
+            // Watch mode is on by default — that's the whole point of a
+            // live monitor. The `w` key toggles it off when you want to
+            // freeze the view (e.g. while reading a stack trace).
+            watch: true,
             watch_interval_secs,
             eg_topics: Slot::Idle,
             eg_topic_cursor,
@@ -258,6 +261,9 @@ impl App {
         // (one message per interval) and lets us toggle watch with no spawn
         // dance.
         spawn_tick_task(self.tx.clone(), self.watch_interval_secs);
+        // Fast render tick for spinners. 100 ms gives smooth animation
+        // without burning CPU — ratatui is happy at 60 fps, we're at 10.
+        spawn_render_tick(self.tx.clone());
 
         let mut events = EventStream::new();
         while !self.should_quit {
@@ -386,25 +392,40 @@ impl App {
                 self.eg_sub_cursor.select(Some(0));
             }
 
+            Msg::RenderTick => {
+                // No-op — the loop redraws after every handle() call, so the
+                // mere arrival of this message animates the spinner.
+            }
+
             Msg::Tick => {
-                if self.watch && matches!(self.view, View::Browser) {
-                    if let Some(wf) = self.focused_workflow() {
-                        // Quietly refresh — don't replace status, don't flash
-                        // a Loading state. Just overwrite when results arrive.
-                        let tx = self.tx.clone();
-                        let (sub, rg, app) = match (
-                            self.config.subscription.clone(),
-                            self.config.resource_group.clone(),
-                            self.config.logic_app.clone(),
-                        ) {
-                            (Some(s), Some(r), Some(a)) => (s, r, a),
-                            _ => return,
-                        };
-                        tokio::task::spawn_blocking(move || {
-                            let r = azure::list_runs(&sub, &rg, &app, &wf, 20);
-                            let _ = tx.send(Msg::RunsLoaded { workflow: wf, result: r });
-                        });
-                    }
+                // Live refresh — pulls fresh runs for *every* step of the
+                // currently-focused chain, not just the focused step. So when
+                // the user Tabs around they see up-to-date data immediately,
+                // and a new run appearing anywhere in the pipeline shows up
+                // by the next tick.
+                //
+                // Cost: one az call per step per interval. For a 15-step
+                // chain at the 5s default that's ~3 calls/s — well below
+                // ARM throttling (~100 req/s).
+                if !self.watch || !matches!(self.view, View::Browser) {
+                    return;
+                }
+                let Some(chain) = self.current_chain() else { return };
+                let (Some(sub), Some(rg), Some(app)) = (
+                    self.config.subscription.clone(),
+                    self.config.resource_group.clone(),
+                    self.config.logic_app.clone(),
+                ) else {
+                    return;
+                };
+                for step in &chain.steps {
+                    let tx = self.tx.clone();
+                    let (sub, rg, app, wf) =
+                        (sub.clone(), rg.clone(), app.clone(), step.workflow.clone());
+                    tokio::task::spawn_blocking(move || {
+                        let r = azure::list_runs(&sub, &rg, &app, &wf, 20);
+                        let _ = tx.send(Msg::RunsLoaded { workflow: wf, result: r });
+                    });
                 }
             }
         }
@@ -584,9 +605,9 @@ impl App {
             KeyCode::Char('w') => {
                 self.watch = !self.watch;
                 self.status = if self.watch {
-                    format!("watch mode on ({}s)", self.watch_interval_secs)
+                    format!("live: on ({}s refresh)", self.watch_interval_secs)
                 } else {
-                    "watch mode off".into()
+                    "live: paused (press w to resume)".into()
                 };
                 return;
             }
@@ -1142,13 +1163,18 @@ impl App {
             .as_deref()
             .map(|a| Span::styled(format!("  ·  {a}"), Style::default().fg(Color::Cyan)))
             .unwrap_or(Span::raw(""));
+        // Live indicator — always present, color signals state. Pulses
+        // visually when watch is on, dim grey when paused.
         let watch_span = if self.watch {
             Span::styled(
-                format!("  ·  WATCH {}s", self.watch_interval_secs),
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD),
+                format!("  ·  ● live {}s", self.watch_interval_secs),
+                Style::default().fg(Color::Green).add_modifier(Modifier::BOLD),
             )
         } else {
-            Span::raw("")
+            Span::styled(
+                "  ·  ○ paused",
+                Style::default().fg(Color::DarkGray),
+            )
         };
         frame.render_widget(
             Paragraph::new(Line::from(vec![
@@ -1307,6 +1333,23 @@ impl App {
                                 Style::default().fg(Color::Cyan),
                             ));
                         }
+                        // Surface live activity directly in the chain list:
+                        // any step running anywhere in the pipeline → yellow
+                        // dot + count. Lets the user see at a glance which
+                        // pipelines have traffic without focusing them.
+                        let running: usize = c
+                            .steps
+                            .iter()
+                            .map(|s| running_count(&self.runs, &s.workflow))
+                            .sum();
+                        if running > 0 {
+                            spans.push(Span::styled(
+                                format!("  {} {running}", spinner_glyph()),
+                                Style::default()
+                                    .fg(Color::Yellow)
+                                    .add_modifier(Modifier::BOLD),
+                            ));
+                        }
                         spans.push(Span::raw(format!("  ({} steps)", c.steps.len())));
                         ListItem::new(Line::from(spans))
                     })
@@ -1364,17 +1407,27 @@ impl App {
             .iter()
             .enumerate()
             .map(|(idx, step)| {
+                let running = running_count(&self.runs, &step.workflow);
+                let mut first = vec![
+                    Span::styled(
+                        format!("{:>2}. ", idx + 1),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    Span::styled(
+                        step.workflow.clone(),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ),
+                ];
+                if running > 0 {
+                    first.push(Span::styled(
+                        format!("  {} {running} running", spinner_glyph()),
+                        Style::default()
+                            .fg(Color::Yellow)
+                            .add_modifier(Modifier::BOLD),
+                    ));
+                }
                 ListItem::new(vec![
-                    Line::from(vec![
-                        Span::styled(
-                            format!("{:>2}. ", idx + 1),
-                            Style::default().fg(Color::DarkGray),
-                        ),
-                        Span::styled(
-                            step.workflow.clone(),
-                            Style::default().add_modifier(Modifier::BOLD),
-                        ),
-                    ]),
+                    Line::from(first),
                     Line::from(vec![
                         Span::raw("    "),
                         Span::styled(
@@ -1391,7 +1444,22 @@ impl App {
             })
             .collect();
 
-        let title = format!(" {} — {} step(s) ", chain.label, chain.steps.len());
+        let total_running: usize = chain
+            .steps
+            .iter()
+            .map(|s| running_count(&self.runs, &s.workflow))
+            .sum();
+        let title = if total_running > 0 {
+            format!(
+                " {} — {} step(s) · {} {} running ",
+                chain.label,
+                chain.steps.len(),
+                spinner_glyph(),
+                total_running
+            )
+        } else {
+            format!(" {} — {} step(s) ", chain.label, chain.steps.len())
+        };
         let list = List::new(items)
             .block(focused_block(&title, self.focus == Focus::Steps))
             .highlight_style(Style::default().bg(Color::DarkGray).add_modifier(Modifier::BOLD))
@@ -1517,11 +1585,15 @@ impl App {
         let rows: Vec<Row> = runs
             .iter()
             .map(|r| {
+                let row_style = status_style(&r.status);
                 Row::new(vec![
-                    Cell::from(status_glyph(&r.status)),
-                    Cell::from(short_time(&r.start)),
-                    Cell::from(duration_str(&r.start, r.end.as_deref())),
-                    Cell::from(short_id(&r.id)),
+                    Cell::from(Span::styled(status_glyph(&r.status), row_style)),
+                    Cell::from(Span::styled(short_time(&r.start), row_style)),
+                    Cell::from(Span::styled(
+                        duration_str(&r.start, r.end.as_deref()),
+                        row_style,
+                    )),
+                    Cell::from(Span::styled(short_id(&r.id), row_style)),
                 ])
             })
             .collect();
@@ -1860,7 +1932,7 @@ impl App {
                 Span::styled("m", Style::default().fg(Color::Yellow)),
                 Span::raw(" rename  "),
                 Span::styled("w", Style::default().fg(Color::Yellow)),
-                Span::raw(" watch  "),
+                Span::raw(" pause/resume  "),
                 Span::styled("g", Style::default().fg(Color::Yellow)),
                 Span::raw(" eg  "),
                 Span::styled("?", Style::default().fg(Color::Yellow)),
@@ -1971,6 +2043,33 @@ fn spawn_tick_task(tx: UnboundedSender<Msg>, interval_secs: u64) {
     });
 }
 
+/// Fast redraw tick at 10 Hz so spinners animate. Cheap: each Msg::RenderTick
+/// just triggers a `terminal.draw()` next loop iteration.
+fn spawn_render_tick(tx: UnboundedSender<Msg>) {
+    tokio::spawn(async move {
+        let mut iv = tokio::time::interval(std::time::Duration::from_millis(100));
+        iv.tick().await;
+        loop {
+            iv.tick().await;
+            if tx.send(Msg::RenderTick).is_err() {
+                break;
+            }
+        }
+    });
+}
+
+/// Animated spinner glyph derived from wall-clock time, so the frame is the
+/// same regardless of who's rendering. Braille-style 10-frame cycle reads
+/// smoothly in any terminal font that ships modern Unicode coverage.
+fn spinner_glyph() -> char {
+    const FRAMES: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    let ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    FRAMES[((ms / 100) as usize) % FRAMES.len()]
+}
+
 /// Center a popup of (pct_w, pct_h) inside `area`.
 fn centered_rect(pct_w: u16, pct_h: u16, area: Rect) -> Rect {
     let v = Layout::default()
@@ -2040,21 +2139,50 @@ fn status_glyph(status: &str) -> String {
     match status {
         "Succeeded" => "  ok ".into(),
         "Failed" => " FAIL".into(),
-        "Running" => " run ".into(),
+        // Animated spinner — refreshed by the render-tick task at 10 Hz.
+        "Running" => format!(" {} run", spinner_glyph()),
         "Cancelled" => " canc".into(),
         "Skipped" => " skip".into(),
         s => format!(" {:<4}", s.chars().take(4).collect::<String>()),
     }
 }
 
-/// Trim the start timestamp to "MM-DD HH:MM:SS".
+/// Color for a run-status glyph. Running pops yellow+bold so an active run
+/// catches the eye even in a packed table.
+fn status_style(status: &str) -> Style {
+    match status {
+        "Running" => Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD),
+        "Failed" => Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        "Succeeded" => Style::default().fg(Color::Green),
+        "Cancelled" | "Skipped" => Style::default().fg(Color::DarkGray),
+        _ => Style::default(),
+    }
+}
+
+/// Count how many runs are currently in flight for `workflow` according to
+/// our cached snapshot. Watch-mode keeps this fresh every tick.
+fn running_count(runs_cache: &HashMap<String, Slot<Vec<RunInfo>>>, workflow: &str) -> usize {
+    match runs_cache.get(workflow) {
+        Some(Slot::Loaded(v)) => v.iter().filter(|r| r.status == "Running").count(),
+        _ => 0,
+    }
+}
+
+/// Render an Azure RFC3339 timestamp in the user's local timezone, trimmed
+/// to "MM-DD HH:MM:SS". Azure always returns UTC; without conversion the
+/// user sees clock-skewed times (e.g. CEST shown as UTC = 2 h behind).
 fn short_time(s: &str) -> String {
-    // Input is RFC3339 like 2026-06-09T13:45:22.123Z. Strip the T and trailing
-    // sub-second/zone — robust to varying precision.
+    use chrono::{DateTime, Local};
+    if let Ok(dt) = DateTime::parse_from_rfc3339(s) {
+        return dt.with_timezone(&Local).format("%m-%d %H:%M:%S").to_string();
+    }
+    // Fallback if Azure ever returns something we can't parse — keep the
+    // raw string but at least strip the T and trailing fractional seconds.
     let s = s.replace('T', " ");
     let cut = s.find('.').or_else(|| s.find('+')).or_else(|| s.find('Z'));
     let trimmed = cut.map(|i| &s[..i]).unwrap_or(&s);
-    // Drop the year for compactness.
     trimmed.get(5..).unwrap_or(trimmed).to_string()
 }
 
