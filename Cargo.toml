@@ -1,3 +1,6 @@
+[workspace]
+members = ["crates/core", "crates/tui"]
+
 [package]
 name = "ais-monitor"
 version = "0.1.15"

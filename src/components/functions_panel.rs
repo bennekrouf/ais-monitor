@@ -1,5 +1,6 @@
 use dioxus::prelude::*;
 use crate::services::azure::{self, FunctionApp, FunctionDetail, FunctionMetrics, FunctionError};
+use crate::services::functions_cache;
 use crate::components::chain_detail::AzConfig;
 
 #[derive(Props, Clone, PartialEq)]
@@ -24,16 +25,30 @@ pub fn FunctionsPanel(props: FunctionsPanelProps) -> Element {
     let mut error_details: Signal<Vec<FunctionError>> = use_signal(Vec::new);
     let mut error_details_loading: Signal<bool> = use_signal(|| false);
 
-    // Auto-discover on mount
+    // Auto-discover on mount: paint cached snapshot instantly, then refresh.
     use_effect({
         let az = az.clone();
         move || {
             let az = az.clone();
-            loading.set(true);
             error_msg.set(None);
+
+            // Hydrate from disk first so the user sees something immediately.
+            let snap = functions_cache::load_for(&az.resource_group, &az.app_name);
+            let has_cache = !snap.func_apps.is_empty();
+            if has_cache {
+                func_apps.set(snap.func_apps);
+                functions.set(snap.functions);
+                app_insights_name.set(snap.app_insights_name);
+                metrics.set(snap.metrics);
+                loading.set(false);
+            } else {
+                loading.set(true);
+            }
+
             spawn(async move {
                 let sub = az.subscription.clone();
                 let rg = az.resource_group.clone();
+                let app = az.app_name.clone();
 
                 // 1. List function apps
                 let rg2 = rg.clone();
@@ -48,9 +63,9 @@ pub fn FunctionsPanel(props: FunctionsPanelProps) -> Element {
 
                         // 2. List functions for each app
                         let mut all_funcs = Vec::new();
-                        for app in &apps {
+                        for app_info in &apps {
                             let rg3 = rg.clone();
-                            let name = app.name.clone();
+                            let name = app_info.name.clone();
                             let name2 = name.clone();
                             if let Ok(Ok(fns)) = tokio::task::spawn_blocking(move || {
                                 azure::list_functions(&rg3, &name)
@@ -58,17 +73,31 @@ pub fn FunctionsPanel(props: FunctionsPanelProps) -> Element {
                                 all_funcs.push((name2, fns));
                             }
                         }
-                        functions.set(all_funcs);
+                        functions.set(all_funcs.clone());
 
                         // 3. Discover App Insights
                         let rg4 = rg.clone();
-                        if let Ok(Ok(ai_list)) = tokio::task::spawn_blocking(move || {
+                        let ai_name: Option<String> = tokio::task::spawn_blocking(move || {
                             azure::find_app_insights(&rg4)
-                        }).await {
-                            if let Some(ai) = ai_list.into_iter().next() {
-                                app_insights_name.set(Some(ai));
-                            }
-                        }
+                        }).await
+                            .ok()
+                            .and_then(|r| r.ok())
+                            .and_then(|list| list.into_iter().next());
+                        app_insights_name.set(ai_name.clone());
+
+                        // 4. Persist what we just discovered. Metrics are kept
+                        //    from the previous snapshot (or empty) — they only
+                        //    get refreshed on explicit "Fetch Metrics" click.
+                        let snap = functions_cache::FunctionsSnapshot {
+                            func_apps: apps,
+                            functions: all_funcs,
+                            app_insights_name: ai_name,
+                            metrics: metrics.read().clone(),
+                            last_fetched: epoch_secs(),
+                        };
+                        tokio::task::spawn_blocking(move || {
+                            functions_cache::save_for(&rg, &app, &snap);
+                        }).await.ok();
                     }
                     Ok(Err(e)) => error_msg.set(Some(e)),
                     Err(e) => error_msg.set(Some(format!("{e}"))),
@@ -102,8 +131,22 @@ pub fn FunctionsPanel(props: FunctionsPanelProps) -> Element {
                         all_metrics.push((app_name2, m));
                     }
                 }
-                metrics.set(all_metrics);
+                metrics.set(all_metrics.clone());
                 metrics_loading.set(false);
+
+                // Persist the new metrics into the cached snapshot.
+                let snap = functions_cache::FunctionsSnapshot {
+                    func_apps: func_apps.read().clone(),
+                    functions: functions.read().clone(),
+                    app_insights_name: app_insights_name.read().clone(),
+                    metrics: all_metrics,
+                    last_fetched: epoch_secs(),
+                };
+                let rg = az.resource_group.clone();
+                let app = az.app_name.clone();
+                tokio::task::spawn_blocking(move || {
+                    functions_cache::save_for(&rg, &app, &snap);
+                }).await.ok();
             });
         }
     };
@@ -407,4 +450,11 @@ fn format_last_run(ts: &str) -> String {
         // Fallback: show first 19 chars (datetime without fractional seconds)
         ts.get(..19).unwrap_or(ts).to_string()
     }
+}
+
+fn epoch_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
 }

@@ -1,12 +1,13 @@
 use dioxus::prelude::*;
 use crate::components::{
+    activity_panel::ActivityPanel,
     chain_list::ChainList,
     chain_detail::{AzConfig, ChainDetailView, ChainHealth},
     eventgrid_panel::EventGridPanel,
     graph_panel::GraphPanel,
     functions_panel::FunctionsPanel,
 };
-use crate::services::{azure, azure::EgLink, chain, kpi, remote_chain};
+use crate::services::{activity, azure, azure::EgLink, chain, health_cache, kpi, remote_chain};
 use std::collections::HashMap;
 
 #[derive(Props, Clone, PartialEq)]
@@ -33,11 +34,95 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     let mut chain_health  = use_signal(|| HashMap::<String, ChainHealth>::new());
     let mut last_checked: Signal<HashMap<String, u64>> = use_signal(HashMap::new);
     let mut view_mode = use_signal(|| ViewMode::Chains);
+    // Mirrors `view_mode == Graph` as a plain bool signal so the (always-mounted)
+    // GraphPanel can react to becoming visible and re-measure its container.
+    let mut graph_visible = use_signal(|| false);
+    // Lazy keep-alive: the EventGrid and Functions panels run Azure discovery on
+    // mount, so we only mount them once their tab is first opened — then keep them
+    // mounted (hidden) so their fetched state survives later tab switches.
+    let mut visited_eg = use_signal(|| false);
+    let mut visited_fn = use_signal(|| false);
+    use_effect(move || {
+        match *view_mode.read() {
+            ViewMode::Graph     => graph_visible.set(true),
+            ViewMode::EventGrid => { graph_visible.set(false); visited_eg.set(true); }
+            ViewMode::Functions => { graph_visible.set(false); visited_fn.set(true); }
+            ViewMode::Chains    => graph_visible.set(false),
+        }
+    });
     let mut loading_chains = use_signal(|| true);
     let mut load_error     = use_signal(|| Option::<String>::None);
     let mut checking_all   = use_signal(|| false);
     let mut check_progress = use_signal(|| (0usize, 0usize)); // (done, total)
+    // Shared run-history sample size — both "Check all" and the per-chain
+    // detail view read this so their KPIs come from the same sample.
+    let run_depth = use_signal(|| 20u32);
     let eg_links: Signal<HashMap<String, EgLink>> = use_signal(HashMap::new);
+
+    // Minute-tick: forces re-render of the freshness dot in the top bar so
+    // KPIs visibly age from fresh → stale → old without a user interaction.
+    let mut freshness_tick = use_signal(|| 0u64);
+    use_effect(move || {
+        spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                let prev = *freshness_tick.peek();
+                freshness_tick.set(prev.wrapping_add(1));
+            }
+        });
+    });
+
+    // Per-workspace directory used for cached health/last_checked snapshots and
+    // any other on-disk artifacts. Same convention used in chain_detail.rs.
+    let workspace_dir: String = dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("ais-monitor")
+        .join(format!("{}_{}", az.resource_group, az.app_name))
+        .to_string_lossy()
+        .to_string();
+    // Point the activity log at this workspace, so events from anywhere in the
+    // app (including spawn_blocking closures with no UI context) get persisted
+    // to {workspace_dir}/activity.jsonl. Loading existing events happens here.
+    activity::set_workspace_dir(workspace_dir.clone());
+
+    // Skip-first-save latch: don't write back the snapshot we just loaded.
+    let mut hydrated = use_signal(|| false);
+
+    // Load cached KPI snapshot once on mount. Each Azure profile has its own
+    // file, so chain_health survives app restarts.
+    use_effect({
+        let dir = workspace_dir.clone();
+        move || {
+            let snap = health_cache::load(&dir);
+            if !snap.health.is_empty() {
+                chain_health.set(snap.health);
+            }
+            if !snap.last_checked.is_empty() {
+                last_checked.set(snap.last_checked);
+            }
+            hydrated.set(true);
+        }
+    });
+
+    // Persist whenever chain_health or last_checked change. The hydration guard
+    // prevents the initial load from immediately writing back unchanged data.
+    use_effect({
+        let dir = workspace_dir.clone();
+        move || {
+            if !*hydrated.read() { return; }
+            let snap = health_cache::HealthSnapshot {
+                health: chain_health.read().clone(),
+                last_checked: last_checked.read().clone(),
+            };
+            let dir = dir.clone();
+            // Write on a blocking task so we never block the UI on slow disks.
+            spawn(async move {
+                tokio::task::spawn_blocking(move || {
+                    health_cache::save(&dir, &snap);
+                }).await.ok();
+            });
+        }
+    });
 
     // ── Resize handle script ────────────────────────────────────────────
     use_effect(move || {
@@ -100,11 +185,22 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                         let deployed: Vec<String> = discovered.iter()
                             .flat_map(|c| c.steps.iter().map(|s| s.workflow.clone()))
                             .collect();
+                        activity::info(
+                            "Discovered chains",
+                            format!("{} chain(s), {} workflow(s)", discovered.len(), deployed.len()),
+                        );
                         deployed_workflows.set(deployed);
                         chains.set(discovered);
                     }
-                    Ok(Err(e)) => load_error.set(Some(e)),
-                    Err(e) => load_error.set(Some(format!("{e}"))),
+                    Ok(Err(e)) => {
+                        activity::error("Chain discovery failed", "", e.clone());
+                        load_error.set(Some(e));
+                    }
+                    Err(e) => {
+                        let s = format!("{e}");
+                        activity::error("Chain discovery failed", "", s.clone());
+                        load_error.set(Some(s));
+                    }
                 }
                 loading_chains.set(false);
             });
@@ -135,6 +231,28 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     });
 
     let app_label = format!("{} / {}", az.resource_group, az.app_name);
+
+    // Principal ID of the Logic App's managed identity — fetched once and shown
+    // in the topbar so the user can copy it for RBAC role assignments.
+    let mut principal_id: Signal<Option<String>> = use_signal(|| None);
+    let mut copied_pid: Signal<bool>             = use_signal(|| false);
+    use_effect({
+        let az = az.clone();
+        move || {
+            if principal_id.read().is_some() { return; }
+            let az = az.clone();
+            spawn(async move {
+                let result = tokio::task::spawn_blocking(move || {
+                    azure::get_principal_id(&az.subscription, &az.resource_group, &az.app_name)
+                }).await;
+                if let Ok(Ok(pid)) = result {
+                    if !pid.is_empty() {
+                        principal_id.set(Some(pid));
+                    }
+                }
+            });
+        }
+    });
 
     // Derive an environment colour from the label or resource/app names
     let env_source = if !az.label.is_empty() { az.label.to_lowercase() }
@@ -172,6 +290,35 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                     }
                 }
                 span { class: "topbar-dir", title: "{app_label}", "{app_label}" }
+                {
+                    let pid = principal_id.read().clone();
+                    if let Some(p) = pid {
+                        let p_full   = p.clone();
+                        let p_short  = if p.len() > 8 { format!("{}…", &p[..8]) } else { p.clone() };
+                        let tooltip  = format!("Logic App managed identity\nPrincipal ID: {}\nClick to copy", p_full);
+                        rsx! {
+                            button {
+                                style: "background:none; border:1px solid #30363d; border-radius:4px; \
+                                        padding:1px 6px; font-size:10px; opacity:0.65; cursor:pointer; \
+                                        font-family:monospace; white-space:nowrap;",
+                                title: "{tooltip}",
+                                onclick: move |_| {
+                                    if let Ok(mut cb) = arboard::Clipboard::new() {
+                                        let _ = cb.set_text(p_full.clone());
+                                        copied_pid.set(true);
+                                        spawn(async move {
+                                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                                            copied_pid.set(false);
+                                        });
+                                    }
+                                },
+                                if *copied_pid.read() { "✅ copied" } else { "🆔 {p_short}" }
+                            }
+                        }
+                    } else {
+                        rsx! {}
+                    }
+                }
                 span {
                     style: "font-size:10px; opacity:0.4; white-space:nowrap;",
                     { concat!("v", env!("CARGO_PKG_VERSION")) }
@@ -181,12 +328,35 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                     let is_eg     = *view_mode.read() == ViewMode::EventGrid;
                     let is_graph  = *view_mode.read() == ViewMode::Graph;
                     let is_funcs  = *view_mode.read() == ViewMode::Functions;
+                    // Pick the most-recent last_checked timestamp across all chains
+                    // and translate it into a freshness state. Subscribe to the
+                    // minute-tick so the colour ages without user interaction.
+                    let _ = *freshness_tick.read();
+                    let now = epoch_now();
+                    let freshest: Option<u64> = last_checked.read().values().max().copied();
+                    let (dot_class, dot_title) = match freshest {
+                        None => ("freshness-dot freshness-none", "No KPIs collected yet".to_string()),
+                        Some(ts) => {
+                            let age = now.saturating_sub(ts);
+                            if age < 5 * 60 {
+                                ("freshness-dot freshness-fresh",
+                                 format!("KPIs fresh ({}s ago)", age))
+                            } else if age < 60 * 60 {
+                                ("freshness-dot freshness-stale",
+                                 format!("KPIs stale — last check {}m ago", age / 60))
+                            } else {
+                                ("freshness-dot freshness-old",
+                                 format!("KPIs very stale — last check {}h ago", age / 3600))
+                            }
+                        }
+                    };
                     rsx! {
                         div { class: "topbar-tabs",
                             button {
                                 class: if is_chains { "topbar-tab active" } else { "topbar-tab" },
                                 onclick: move |_| view_mode.set(ViewMode::Chains),
                                 "Chains"
+                                span { class: "{dot_class}", title: "{dot_title}" }
                             }
                             button {
                                 class: if is_eg { "topbar-tab active" } else { "topbar-tab" },
@@ -261,10 +431,16 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                 let az      = az2.clone();
                                 let all     = chains.read().clone();
                                 let total_n = all.len();
+                                let depth   = *run_depth.read();
                                 checking_all.set(true);
                                 check_progress.set((0, total_n));
+                                activity::info(
+                                    "Check all started",
+                                    format!("{} chain(s), depth {}", total_n, depth),
+                                );
 
                                 spawn(async move {
+                                    let mut failed_chains: Vec<(String, String)> = Vec::new();
                                     // Check each chain sequentially to avoid hammering the API
                                     for (idx, ch) in all.iter().enumerate() {
                                         let sub  = az.subscription.clone();
@@ -274,21 +450,25 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                         let steps  = ch.steps.iter().map(|s| s.workflow.clone()).collect::<Vec<_>>();
                                         let queues = ch.queues.clone();
                                         let label  = ch.label.clone();
+                                        let label_for_log = label.clone();
 
-                                        let health = tokio::task::spawn_blocking(move || {
+                                        let (health, errors) = tokio::task::spawn_blocking(move || {
+                                            let mut errors: Vec<String> = Vec::new();
                                             // Run history for each workflow step
                                             let mut runs_map: HashMap<String, Vec<azure::RunInfo>> = HashMap::new();
                                             for wf in &steps {
-                                                if let Ok(runs) = azure::list_runs(&sub, &rg, &app, wf, 20) {
-                                                    runs_map.insert(wf.clone(), runs);
+                                                match azure::list_runs(&sub, &rg, &app, wf, depth) {
+                                                    Ok(runs) => { runs_map.insert(wf.clone(), runs); }
+                                                    Err(e) => errors.push(format!("list_runs {wf}: {e}")),
                                                 }
                                             }
                                             // Queue dead-letter counts
                                             let mut dl_total: i64 = 0;
                                             if !ns.is_empty() {
                                                 for q in &queues {
-                                                    if let Ok(qi) = azure::check_queue(&ns, &rg, q) {
-                                                        dl_total += qi.dead_letter;
+                                                    match azure::check_queue(&ns, &rg, q) {
+                                                        Ok(qi) => dl_total += qi.dead_letter,
+                                                        Err(e) => errors.push(format!("check_queue {q}: {e}")),
                                                     }
                                                 }
                                             }
@@ -303,8 +483,12 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                             } else { None };
                                             let stuck   = all_kpis.iter().map(|k| k.stuck_runs.len()).sum();
                                             let streak  = all_kpis.iter().map(|k| k.failure_streak).max().unwrap_or(0);
-                                            ChainHealth { success_rate: rate, dead_letters: dl_total, stuck_count: stuck, failure_streak: streak }
-                                        }).await.unwrap_or_default();
+                                            (ChainHealth { success_rate: rate, dead_letters: dl_total, stuck_count: stuck, failure_streak: streak }, errors)
+                                        }).await.unwrap_or((ChainHealth::default(), vec!["spawn_blocking panic".into()]));
+
+                                        if !errors.is_empty() {
+                                            failed_chains.push((label_for_log.clone(), errors.join("\n")));
+                                        }
 
                                         // Write result into the shared health map
                                         let mut map = chain_health.read().clone();
@@ -316,6 +500,19 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                         check_progress.set((idx + 1, total_n));
                                     }
                                     checking_all.set(false);
+                                    if failed_chains.is_empty() {
+                                        activity::ok("Check all completed", format!("{} chain(s)", total_n));
+                                    } else {
+                                        let summary = format!(
+                                            "{} of {} chain(s) had per-step errors",
+                                            failed_chains.len(), total_n,
+                                        );
+                                        let detail = failed_chains.iter()
+                                            .map(|(label, errs)| format!("• {label}\n{errs}"))
+                                            .collect::<Vec<_>>()
+                                            .join("\n\n");
+                                        activity::warn("Check all completed with errors", summary, detail);
+                                    }
                                 });
                             },
                             if *checking_all.read() {
@@ -366,9 +563,17 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                         }
                     }
                 } else {
-                    match mode {
-                        ViewMode::Chains => rsx! {
-                            div { class: "main-content",
+                    // Render ALL view panels and toggle visibility via CSS, so each
+                    // panel's component state (e.g. ChainDetailView's fetched runs and
+                    // KPI snapshot) survives tab switches instead of being dropped
+                    // when an unselected match-arm goes away.
+                    let chains_style    = if mode == ViewMode::Chains    { "" } else { "display:none" };
+                    let eg_style        = if mode == ViewMode::EventGrid { "" } else { "display:none" };
+                    let functions_style = if mode == ViewMode::Functions { "" } else { "display:none" };
+                    let graph_style     = if mode == ViewMode::Graph     { "" } else { "display:none" };
+                    rsx! {
+                        div { class: "view-stack",
+                            div { class: "main-content", style: "{chains_style}",
                                 ChainList {
                                     chains: chains.read().clone(),
                                     selected: selected_chain.read().clone(),
@@ -381,6 +586,9 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                 div { class: "detail-pane",
                                     if let Some(chain) = selected_chain_detail {
                                         ChainDetailView {
+                                            // Key by chain label so each chain keeps its own state,
+                                            // but switching tabs (which doesn't change the key) preserves it.
+                                            key: "{chain.label}",
                                             chain: chain,
                                             deployed_workflows: deployed_workflows.read().clone(),
                                             az_config: Some(az.clone()),
@@ -388,6 +596,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                             chain_health: Some(chain_health),
                                             last_checked: Some(last_checked),
                                             eg_links: eg_links,
+                                            run_depth: Some(run_depth),
                                         }
                                     } else {
                                         div { class: "detail-empty",
@@ -396,32 +605,33 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                     }
                                 }
                             }
-                        },
-                        ViewMode::EventGrid => rsx! {
-                            div { class: "main-content",
+                            div { class: "main-content", style: "{eg_style}",
                                 div { class: "detail-pane",
-                                    EventGridPanel { az_config: az.clone() }
+                                    if *visited_eg.read() {
+                                        EventGridPanel { az_config: az.clone() }
+                                    }
                                 }
                             }
-                        },
-                        ViewMode::Functions => rsx! {
-                            div { class: "main-content",
+                            div { class: "main-content", style: "{functions_style}",
                                 div { class: "detail-pane",
-                                    FunctionsPanel { az_config: az.clone() }
+                                    if *visited_fn.read() {
+                                        FunctionsPanel { az_config: az.clone() }
+                                    }
                                 }
                             }
-                        },
-                        ViewMode::Graph => rsx! {
-                            div { class: "main-content",
+                            div { class: "main-content", style: "{graph_style}",
                                 GraphPanel {
                                     chains: chains.read().clone(),
                                     is_light: is_light,
+                                    visible: graph_visible,
                                 }
                             }
-                        },
+                        }
                     }
                 }
             }
+            // Floating activity log — visible above the main content.
+            ActivityPanel {}
         }
     }
 }

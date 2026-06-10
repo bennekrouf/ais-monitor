@@ -51,20 +51,18 @@ pub fn ChainList(props: ChainListProps) -> Element {
 
     let total = props.chains.len();
     let shown = sorted.len();
+    // Header label hoisted into outer scope so the rsx `"{header_label}"`
+    // interpolation actually substitutes the variable.
+    let header_label = if shown == total {
+        if total == 1 { "1 chain".to_string() } else { format!("{total} chains") }
+    } else {
+        format!("{shown}/{total} chains")
+    };
 
     rsx! {
         div { class: "chain-list",
             div { class: "chain-list-header",
-                h3 {
-                    {
-                        let label = if shown == total {
-                            if total == 1 { "1 chain".to_string() } else { format!("{total} chains") }
-                        } else {
-                            format!("{shown}/{total} chains")
-                        };
-                        "{label}"
-                    }
-                }
+                h3 { "{header_label}" }
                 input {
                     class: "chain-filter-input",
                     placeholder: "Filter…",

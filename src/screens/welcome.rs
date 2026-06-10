@@ -159,6 +159,10 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                     login_error.set(None);
                                                     match azure::open_login(t.as_deref()) {
                                                         Ok(()) => {
+                                                            crate::services::activity::info(
+                                                                "Opened az login",
+                                                                if tenant.is_empty() { "default tenant".to_string() } else { tenant.clone() },
+                                                            );
                                                             az_state.set(AzLoginState::Checking);
                                                             spawn(async move {
                                                                 for _ in 0..24 {
@@ -166,8 +170,9 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                                     let state = tokio::task::spawn_blocking(azure::check_login)
                                                                         .await
                                                                         .unwrap_or(AzLoginState::NotLoggedIn);
-                                                                    if let AzLoginState::LoggedIn { ref subscription_id, .. } = state {
+                                                                    if let AzLoginState::LoggedIn { ref subscription_id, ref account, .. } = state {
                                                                         sub_id.set(subscription_id.clone());
+                                                                        crate::services::activity::ok("Logged in to Azure", account.clone());
                                                                     }
                                                                     let done = matches!(state, AzLoginState::LoggedIn { .. });
                                                                     az_state.set(state);
@@ -178,6 +183,9 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                         Err(e) => {
                                                             // Spawn failed — show the user what went wrong instead of
                                                             // silently leaving them on "Not logged in".
+                                                            crate::services::activity::error(
+                                                                "az login spawn failed", "", e.clone(),
+                                                            );
                                                             login_error.set(Some(e));
                                                         }
                                                     }

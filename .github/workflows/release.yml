@@ -142,6 +142,9 @@ jobs:
       - name: Build
         run: cargo build --release --target aarch64-apple-darwin
 
+      - name: Build TUI
+        run: cargo build -p ais-monitor-tui --release --target aarch64-apple-darwin --bin ais-monitor-tui
+
       # ── Sign the binary with hardened runtime + webview entitlements ───────
       - name: Codesign binary
         run: |
@@ -152,6 +155,25 @@ jobs:
             --sign "$SIGNING_IDENTITY" \
             "$BIN"
           codesign --verify --strict --verbose=2 "$BIN"
+
+      # ── Sign the TUI binary too (no entitlements needed — pure CLI) ────────
+      - name: Codesign TUI binary
+        run: |
+          set -euo pipefail
+          BIN=target/aarch64-apple-darwin/release/ais-monitor-tui
+          codesign --force --options runtime --timestamp \
+            --sign "$SIGNING_IDENTITY" \
+            "$BIN"
+          codesign --verify --strict --verbose=2 "$BIN"
+
+      # ── Stage the TUI binary under the binstall-compatible asset name ─────
+      - name: Stage TUI binary
+        run: |
+          mkdir -p dist
+          cp target/aarch64-apple-darwin/release/ais-monitor-tui \
+            dist/ais-monitor-tui-aarch64-apple-darwin
+          shasum -a 256 dist/ais-monitor-tui-aarch64-apple-darwin \
+            > dist/ais-monitor-tui-aarch64-apple-darwin.sha256
 
       # ── Wrap binary in .app bundle, build signed + notarized + stapled DMG ─
       - name: Build .app + .dmg
@@ -225,6 +247,14 @@ jobs:
             dist/ais-monitor-macos-arm64.dmg
             dist/ais-monitor-macos-arm64.dmg.sha256
 
+      - name: Upload TUI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ais-monitor-tui-aarch64-apple-darwin
+          path: |
+            dist/ais-monitor-tui-aarch64-apple-darwin
+            dist/ais-monitor-tui-aarch64-apple-darwin.sha256
+
   build-windows:
     needs: [prepare]
     if: always() && !failure() && !cancelled()
@@ -245,6 +275,18 @@ jobs:
 
       - name: Build
         run: cargo build --release
+
+      - name: Build TUI
+        run: cargo build -p ais-monitor-tui --release --bin ais-monitor-tui
+
+      - name: Stage TUI binary
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path dist -Force | Out-Null
+          $name = "ais-monitor-tui-x86_64-pc-windows-msvc.exe"
+          Copy-Item "target\release\ais-monitor-tui.exe" "dist\$name" -Force
+          $hash = (Get-FileHash "dist\$name" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $name" | Out-File "dist\$name.sha256" -Encoding ASCII
 
       - name: Copy WebView2Loader.dll
         shell: pwsh
@@ -272,6 +314,38 @@ jobs:
           "$hash  $exe" | Out-File "dist\$exe.sha256" -Encoding ASCII
           Write-Host "Installer: dist\$exe ($([math]::Round((Get-Item dist\$exe).Length/1MB,1)) MB)"
 
+      
+      # ── SignPath Foundation: code-sign the .exe for free (OSS only) ────────
+      # Uncomment this block after SignPath Foundation has approved the project.
+      # Until then the .exe ships unsigned (SmartScreen will warn on download).
+      #
+      # Setup (one-time, after SignPath approval):
+      #   1. Add repo secret `SIGNPATH_API_TOKEN` (from SignPath dashboard).
+      #   2. Fill the three placeholders below with values from your
+      #      SignPath project page (organization-id, project-slug, policy-slug).
+      #
+      # - name: Upload unsigned artifact to GitHub
+      #   id: upload-unsigned
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: ais-monitor-windows-unsigned
+      #     path: dist/ais-monitor-setup.exe
+      #
+      # - name: Submit signing request to SignPath
+      #   uses: signpath/github-action-submit-signing-request@v1
+      #   with:
+      #     api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+      #     organization-id: 'REPLACE-WITH-SIGNPATH-ORG-UUID'
+      #     project-slug:    'REPLACE-WITH-SIGNPATH-PROJECT-SLUG'
+      #     signing-policy-slug: 'REPLACE-WITH-SIGNPATH-POLICY-SLUG'
+      #     github-artifact-id: ${{ steps.upload-unsigned.outputs.artifact-id }}
+      #     wait-for-completion: true
+      #     output-artifact-directory: dist-signed
+      #
+      # - name: Replace .exe with the signed version
+      #   shell: pwsh
+      #   run: |
+      #     Move-Item -Force dist-signed\ais-monitor-setup.exe dist\ais-monitor-setup.exe
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -279,6 +353,51 @@ jobs:
           path: |
             dist\ais-monitor-setup-*.exe
             dist\ais-monitor-setup-*.exe.sha256
+
+      # ── SignPath Foundation: code-sign the TUI .exe for free (OSS only) ────
+      # Uncomment after SignPath Foundation has approved the project. Mirrors
+      # the desktop installer block above — same org/project/policy slugs,
+      # different artifact. Until then the TUI .exe ships unsigned; SmartScreen
+      # will warn on browser-download (curl / cargo binstall / cargo install
+      # bypass quarantine, so power-user paths are unaffected).
+      #
+      # - name: Upload unsigned TUI artifact to GitHub
+      #   id: upload-tui-unsigned
+      #   uses: actions/upload-artifact@v4
+      #   with:
+      #     name: ais-monitor-tui-windows-unsigned
+      #     path: dist/ais-monitor-tui-x86_64-pc-windows-msvc.exe
+      #
+      # - name: Submit TUI signing request to SignPath
+      #   uses: signpath/github-action-submit-signing-request@v1
+      #   with:
+      #     api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+      #     organization-id: 'REPLACE-WITH-SIGNPATH-ORG-UUID'
+      #     project-slug:    'REPLACE-WITH-SIGNPATH-PROJECT-SLUG'
+      #     signing-policy-slug: 'REPLACE-WITH-SIGNPATH-POLICY-SLUG'
+      #     github-artifact-id: ${{ steps.upload-tui-unsigned.outputs.artifact-id }}
+      #     wait-for-completion: true
+      #     output-artifact-directory: dist-tui-signed
+      #
+      # - name: Replace TUI .exe with signed version
+      #   shell: pwsh
+      #   run: |
+      #     Move-Item -Force `
+      #       dist-tui-signed\ais-monitor-tui-x86_64-pc-windows-msvc.exe `
+      #       dist\ais-monitor-tui-x86_64-pc-windows-msvc.exe
+      #     $hash = (Get-FileHash "dist\ais-monitor-tui-x86_64-pc-windows-msvc.exe" `
+      #       -Algorithm SHA256).Hash.ToLower()
+      #     "$hash  ais-monitor-tui-x86_64-pc-windows-msvc.exe" `
+      #       | Out-File "dist\ais-monitor-tui-x86_64-pc-windows-msvc.exe.sha256" `
+      #         -Encoding ASCII
+
+      - name: Upload TUI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ais-monitor-tui-x86_64-pc-windows-msvc
+          path: |
+            dist\ais-monitor-tui-x86_64-pc-windows-msvc.exe
+            dist\ais-monitor-tui-x86_64-pc-windows-msvc.exe.sha256
 
   build-linux:
     needs: [prepare]
@@ -315,6 +434,17 @@ jobs:
       - name: Build
         run: cargo build --release --target x86_64-unknown-linux-gnu
 
+      - name: Build TUI
+        run: cargo build -p ais-monitor-tui --release --target x86_64-unknown-linux-gnu --bin ais-monitor-tui
+
+      - name: Stage TUI binary
+        run: |
+          mkdir -p dist
+          NAME="ais-monitor-tui-x86_64-unknown-linux-gnu"
+          cp target/x86_64-unknown-linux-gnu/release/ais-monitor-tui "dist/$NAME"
+          strip "dist/$NAME" || true
+          sha256sum "dist/$NAME" > "dist/$NAME.sha256"
+
       - name: Package tar.gz
         run: |
           NAME="ais-monitor-linux-x86_64"
@@ -334,6 +464,14 @@ jobs:
             ais-monitor-linux-x86_64.tar.gz
             ais-monitor-linux-x86_64.tar.gz.sha256
 
+      - name: Upload TUI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ais-monitor-tui-x86_64-unknown-linux-gnu
+          path: |
+            dist/ais-monitor-tui-x86_64-unknown-linux-gnu
+            dist/ais-monitor-tui-x86_64-unknown-linux-gnu.sha256
+
   release:
     needs: [build-mac, build-windows, build-linux]
     runs-on: ubuntu-latest
@@ -348,6 +486,38 @@ jobs:
         with:
           path: artifacts
 
+      - name: Flatten artifacts + generate latest.json
+        env:
+          REPO: ${{ github.repository }}
+          TAG:  ${{ github.ref_name }}
+        run: |
+          mkdir -p release
+          find artifacts -type f -exec cp {} release/ \;
+          ls -lh release/
+
+          VER="${TAG#v}"
+          BASE="https://github.com/$REPO/releases/download/$TAG"
+          MAC_DMG="ais-monitor-macos-arm64.dmg"
+          WIN_MSI="ais-monitor-setup.exe"
+          LINUX_TGZ="ais-monitor-linux-x86_64.tar.gz"
+
+          sha() { [ -n "$1" ] && [ -f "release/$1" ] && sha256sum "release/$1" | awk '{print $1}' || echo ""; }
+
+          cat > release/latest.json <<EOF
+          {
+            "name": "ais-monitor",
+            "version": "$VER",
+            "tag": "$TAG",
+            "released_at": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "platforms": {
+              "macos":   { "dmg":    { "url": "$BASE/$MAC_DMG",   "sha256": "$(sha "$MAC_DMG")"   } },
+              "windows": { "exe_or_msi": { "url": "$BASE/$WIN_MSI", "sha256": "$(sha "$WIN_MSI")" } },
+              "linux":   { "tarball": { "url": "$BASE/$LINUX_TGZ", "sha256": "$(sha "$LINUX_TGZ")" } }
+            }
+          }
+          EOF
+          cp release/latest.json artifacts/  # so gh release attaches it
+          cat release/latest.json
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -358,7 +528,7 @@ jobs:
           gh release create "$TAG" \
             --title "ais-monitor $TAG" \
             --notes "$(cat <<'EOF'
-          ## Installation
+          ## Desktop app
 
           ### macOS (Apple Silicon)
           Download `ais-monitor-macos-arm64.dmg`, open it, and drag AIS Monitor to /Applications.
@@ -374,11 +544,32 @@ jobs:
           sudo ./setup-linux.sh && ./ais-monitor
           ```
 
-          ### Linux (arm64)
+          ## Terminal UI (`ais-monitor-tui`)
+
+          Single static binary — drop into `$PATH`, no installer.
+
+          **macOS (Apple Silicon)**
           ```bash
-          curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/ais-monitor-linux-arm64.tar.gz | tar xz
-          cd ais-monitor-linux-arm64
-          sudo ./setup-linux.sh && ./ais-monitor
+          curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/ais-monitor-tui-aarch64-apple-darwin \
+            -o /usr/local/bin/ais-monitor-tui && chmod +x /usr/local/bin/ais-monitor-tui
+          ```
+
+          **Linux (x86_64)**
+          ```bash
+          curl -L https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/ais-monitor-tui-x86_64-unknown-linux-gnu \
+            -o /usr/local/bin/ais-monitor-tui && chmod +x /usr/local/bin/ais-monitor-tui
+          ```
+
+          **Windows (PowerShell)**
+          ```powershell
+          Invoke-WebRequest `
+            https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}/ais-monitor-tui-x86_64-pc-windows-msvc.exe `
+            -OutFile $env:USERPROFILE\bin\ais-monitor-tui.exe
+          ```
+
+          **Or with `cargo binstall`** (auto-detects platform):
+          ```bash
+          cargo binstall ais-monitor-tui
           ```
           EOF
           )" \

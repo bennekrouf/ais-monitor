@@ -1,0 +1,36 @@
+[package]
+name = "ais-monitor-tui"
+version = "0.1.0"
+edition = "2021"
+description = "Terminal UI for AIS Monitor — chain discovery, runs, KPIs"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Bennekrouf/ais-monitor"
+default-run = "ais-monitor-tui"
+
+# Lets users `cargo binstall ais-monitor-tui` to fetch the prebuilt binary
+# from the matching GitHub Release instead of compiling locally. The CI
+# release workflow (.github/workflows/release.yml) attaches assets under
+# these exact names.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }{ binary-ext }"
+pkg-fmt = "bin"
+
+[[bin]]
+name = "ais-monitor-tui"
+path = "src/main.rs"
+
+[[bin]]
+name = "probe"
+path = "src/bin/probe.rs"
+
+[dependencies]
+ais-monitor-core = { path = "../core" }
+ratatui = "0.28"
+crossterm = { version = "0.28", features = ["event-stream"] }
+futures = "0.3"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "5"

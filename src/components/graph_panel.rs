@@ -6,6 +6,11 @@ use crate::services::chain::ChainDetail;
 pub struct GraphPanelProps {
     pub chains: Vec<ChainDetail>,
     pub is_light: Signal<bool>,
+    /// Whether this panel is the active tab. The panel is kept mounted even when
+    /// hidden (so other tabs keep their state), but D3 must re-measure and redraw
+    /// when it becomes visible — a hidden container reports 0×0 dimensions.
+    #[props(default)]
+    pub visible: Signal<bool>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -51,11 +56,16 @@ pub fn GraphPanel(props: GraphPanelProps) -> Element {
         },
         Some(data) => {
             let eff_data = data.clone();
+            let visible_sig = props.visible;
             use_effect(move || {
                 let sel      = selected_chain.read().clone();
                 let light    = *is_light.read();
                 let excluded = excluded_nodes.read().clone();
                 let data_ref = eff_data.clone();
+                // Subscribe to visibility: when the panel becomes the active tab,
+                // re-run so D3 measures the now-visible container instead of 0×0.
+                let is_visible = *visible_sig.read();
+                if !is_visible { return; }
 
                 spawn(async move {
                     let script = tokio::task::spawn_blocking(move || {

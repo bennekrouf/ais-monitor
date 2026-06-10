@@ -1,6 +1,7 @@
 mod screens;
 mod components;
 mod services;
+mod update_check;
 
 use dioxus::prelude::*;
 use dioxus::desktop::LogicalSize;
@@ -153,7 +154,37 @@ fn App() -> Element {
 
     let config_val = az_config.read().clone();
 
+    // ── Auto-update check ──────────────────────────────────────────────────
+    let mut update_info      = use_signal(|| Option::<update_check::UpdateInfo>::None);
+    let mut update_dismissed = use_signal(|| false);
+    use_coroutine(move |_rx: dioxus::prelude::UnboundedReceiver<()>| async move {
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+        if let Some(info) = update_check::check().await {
+            update_info.set(Some(info));
+        }
+    });
+
     rsx! {
+        if let (Some(info), false) = (update_info.read().clone(), *update_dismissed.read()) {
+            div { class: "update-banner",
+                span { class: "update-banner-text",
+                    "ais-monitor "
+                    strong { "{info.latest_version}" }
+                    " is available (you have {env!(\"CARGO_PKG_VERSION\")})."
+                }
+                a {
+                    class: "update-banner-link",
+                    href: "{info.release_url}",
+                    target: "_blank",
+                    "Download"
+                }
+                button {
+                    class: "update-banner-dismiss",
+                    onclick: move |_| update_dismissed.set(true),
+                    "×"
+                }
+            }
+        }
         match config_val {
             None => rsx! {
                 Welcome {

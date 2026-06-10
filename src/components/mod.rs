@@ -1,3 +1,4 @@
+pub mod activity_panel;
 pub mod chain_list;
 pub mod chain_detail;
 pub mod login_banner;

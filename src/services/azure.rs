@@ -308,7 +308,7 @@ pub fn list_deployed_workflows(sub: &str, rg: &str, app: &str) -> Result<Vec<Wor
     Ok(workflows)
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct RunInfo {
     pub id: String,
     pub status: String,
@@ -1021,21 +1021,25 @@ pub fn list_eventgrid_subscriptions(topic_id: &str) -> Result<Vec<EventGridSubsc
 
 // ── Function Apps ────────────────────────────────────────────────────────────
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FunctionApp {
     pub name: String,
     pub state: String,
     pub resource_group: String,
+    /// System-assigned managed identity object/principal ID — empty if MSI not enabled.
+    /// Useful for granting Azure RBAC roles (Cosmos, Key Vault, SQL) to the function app.
+    #[serde(default)]
+    pub principal_id: String,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FunctionDetail {
     pub name: String,
     pub language: String,
     pub is_disabled: bool,
 }
 
-#[derive(Clone, Debug, PartialEq, Default)]
+#[derive(Clone, Debug, PartialEq, Default, Serialize, Deserialize)]
 pub struct FunctionMetrics {
     pub function_name: String,
     pub success: i64,
@@ -1050,7 +1054,7 @@ pub fn list_function_apps(sub: &str, rg: &str) -> Result<Vec<FunctionApp>, Strin
             "functionapp", "list",
             "--subscription", sub,
             "--resource-group", rg,
-            "--query", "[].{name:name,state:state}",
+            "--query", "[].{name:name,state:state,principalId:identity.principalId}",
             "-o", "json",
         ])
         .output()
@@ -1065,7 +1069,29 @@ pub fn list_function_apps(sub: &str, rg: &str) -> Result<Vec<FunctionApp>, Strin
         name: v["name"].as_str().unwrap_or("").to_string(),
         state: v["state"].as_str().unwrap_or("Unknown").to_string(),
         resource_group: rg.to_string(),
+        principal_id: v["principalId"].as_str().unwrap_or("").to_string(),
     }).collect())
+}
+
+/// Get the system-assigned managed identity (principal ID) of a Logic App or Function App.
+/// Both are App Service sites under the hood — same REST endpoint.
+/// Returns Ok("") if the site has no managed identity assigned.
+pub fn get_principal_id(sub: &str, rg: &str, app: &str) -> Result<String, String> {
+    let output = Command::new("az")
+        .args([
+            "webapp", "identity", "show",
+            "--subscription", sub,
+            "--resource-group", rg,
+            "--name", app,
+            "--query", "principalId",
+            "-o", "tsv",
+        ])
+        .output()
+        .map_err(|e| format!("az webapp identity show: {e}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
 /// List functions inside a Function App.

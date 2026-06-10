@@ -251,10 +251,18 @@ pub fn clear_cache(sub: &str, app: &str) {
 }
 
 fn cache_path(sub: &str, app: &str) -> PathBuf {
-    let base = dirs::cache_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join("ais-monitor")
-        .join(format!("{sub}_{app}"));
+    // `AIS_MONITOR_HOME` lets locked-down Windows Server / corporate
+    // environments override the default cache root — useful when the OS
+    // default (`%LOCALAPPDATA%`) is jailed or roaming. Additive: when unset,
+    // behavior is identical to the previous build.
+    let root = std::env::var_os("AIS_MONITOR_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            dirs::cache_dir()
+                .unwrap_or_else(|| PathBuf::from("."))
+                .join("ais-monitor")
+        });
+    let base = root.join(format!("{sub}_{app}"));
     let _ = std::fs::create_dir_all(&base);
     base
 }

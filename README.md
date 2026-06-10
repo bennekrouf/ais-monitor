@@ -76,6 +76,71 @@ sudo ./setup-linux.sh && ./ais-monitor
 
 ---
 
+## Terminal UI (ais-monitor-tui)
+
+A keyboard-driven [ratatui](https://ratatui.rs/) frontend for the same data — useful over SSH, on a jumpbox, or whenever a browser-based WebView is overkill. Same Azure backend as the desktop app; shares the on-disk chain cache so both views see the same chains.
+
+### Install
+
+**Prebuilt binary** — drop into `$PATH`:
+
+```bash
+# macOS (Apple Silicon)
+curl -L https://github.com/Bennekrouf/ais-monitor/releases/latest/download/ais-monitor-tui-aarch64-apple-darwin \
+  -o /usr/local/bin/ais-monitor-tui && chmod +x /usr/local/bin/ais-monitor-tui
+
+# Linux (x86_64)
+curl -L https://github.com/Bennekrouf/ais-monitor/releases/latest/download/ais-monitor-tui-x86_64-unknown-linux-gnu \
+  -o /usr/local/bin/ais-monitor-tui && chmod +x /usr/local/bin/ais-monitor-tui
+
+# Windows (PowerShell)
+Invoke-WebRequest `
+  https://github.com/Bennekrouf/ais-monitor/releases/latest/download/ais-monitor-tui-x86_64-pc-windows-msvc.exe `
+  -OutFile $env:USERPROFILE\bin\ais-monitor-tui.exe
+```
+
+**With `cargo binstall`** (auto-picks the right binary):
+
+```bash
+cargo binstall ais-monitor-tui
+```
+
+**From source** (Rust toolchain required):
+
+```bash
+cargo install --git https://github.com/Bennekrouf/ais-monitor ais-monitor-tui
+```
+
+### Run
+
+```bash
+ais-monitor-tui          # picker walks you through sub → app on first launch
+ais-monitor-tui --help   # CLI flags for scripting
+```
+
+Inside the app, press `?` for the full keymap. Highlights: `Tab/h/l` cycle focus across chains → steps → runs → actions; `Enter` drills into a run's action timeline; `m` renames a chain; `w` toggles 5-second auto-refresh of the focused step's runs; `g` opens the Event Grid panel.
+
+### Headless / SSH / Windows Server Core
+
+Use device-code sign-in instead of the default browser flow:
+
+```bash
+ais-monitor-tui --device-code
+```
+
+The TUI suspends, runs `az login --use-device-code` in your terminal (prints a URL + 8-char code), and resumes once you complete sign-in on any device with a browser.
+
+### Locked-down profiles
+
+For Windows Server / corporate hosts where `%LOCALAPPDATA%` isn't writable or roams unpredictably, set `AIS_MONITOR_HOME` to a path you control. Config, chain cache, and runs cache all root there:
+
+```bash
+export AIS_MONITOR_HOME=/var/opt/ais-monitor   # bash / zsh
+$env:AIS_MONITOR_HOME = "D:\ais-monitor"        # PowerShell
+```
+
+---
+
 ## Usage
 
 1. Launch `ais-monitor`

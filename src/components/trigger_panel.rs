@@ -189,10 +189,12 @@ pub fn TriggerPanel(props: TriggerPanelProps) -> Element {
                     disabled: !has_url || *triggering.read(),
                     onclick: {
                         let url = trigger_url.read().clone();
+                        let wf_for_log = workflow.clone();
                         move |_| {
                             if let Some(ref callback) = url {
                                 let cb = callback.clone();
                                 let body = payload_text.read().clone();
+                                let wf_log = wf_for_log.clone();
                                 triggering.set(true);
                                 trigger_result.set(None);
                                 spawn(async move {
@@ -202,6 +204,18 @@ pub fn TriggerPanel(props: TriggerPanelProps) -> Element {
                                     let success = match result {
                                         Ok(Ok(r)) => {
                                             let ok = r.status_code >= 200 && r.status_code < 300;
+                                            if ok {
+                                                crate::services::activity::ok(
+                                                    "Triggered workflow",
+                                                    format!("{} ({})", wf_log, r.status_code),
+                                                );
+                                            } else {
+                                                crate::services::activity::warn(
+                                                    "Trigger returned non-2xx",
+                                                    format!("{} ({})", wf_log, r.status_code),
+                                                    r.body.clone(),
+                                                );
+                                            }
                                             trigger_result.set(Some(TriggerState {
                                                 status: r.status_code,
                                                 body: r.body,
@@ -209,6 +223,11 @@ pub fn TriggerPanel(props: TriggerPanelProps) -> Element {
                                             ok
                                         }
                                         Ok(Err(e)) => {
+                                            crate::services::activity::error(
+                                                "Trigger failed",
+                                                wf_log.clone(),
+                                                e.clone(),
+                                            );
                                             trigger_result.set(Some(TriggerState {
                                                 status: 0,
                                                 body: e,
@@ -216,9 +235,15 @@ pub fn TriggerPanel(props: TriggerPanelProps) -> Element {
                                             false
                                         }
                                         Err(e) => {
+                                            let s = format!("{e}");
+                                            crate::services::activity::error(
+                                                "Trigger panic",
+                                                wf_log.clone(),
+                                                s.clone(),
+                                            );
                                             trigger_result.set(Some(TriggerState {
                                                 status: 0,
-                                                body: format!("{e}"),
+                                                body: s,
                                             }));
                                             false
                                         }

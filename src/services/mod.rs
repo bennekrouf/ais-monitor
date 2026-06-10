@@ -1,5 +1,8 @@
+pub mod activity;
 pub mod azure;
 pub mod chain;
+pub mod functions_cache;
+pub mod health_cache;
 pub mod kpi;
 pub mod names;
 pub mod payload;
