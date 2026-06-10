@@ -474,6 +474,10 @@ jobs:
 
   release:
     needs: [build-mac, build-windows, build-linux]
+    # Mirror the build jobs: skipped `prepare` (the tag-push path doesn't run
+    # it) propagates through the default `if: success()` and would skip
+    # `release` too. Override so we only skip on genuine failure / cancel.
+    if: always() && !failure() && !cancelled()
     runs-on: ubuntu-latest
     permissions:
       contents: write
