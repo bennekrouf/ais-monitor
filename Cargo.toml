@@ -3,7 +3,7 @@ members = ["crates/core", "crates/tui"]
 
 [package]
 name = "ais-monitor"
-version = "0.1.19"
+version = "0.1.20"
 edition = "2021"
 description = "Azure Logic Apps chain monitor — discover, test, and debug workflow chains"
 
