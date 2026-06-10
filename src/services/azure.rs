@@ -75,8 +75,7 @@ pub struct AzSubscription {
 }
 
 pub fn list_subscriptions() -> Result<Vec<AzSubscription>, String> {
-    let output = Command::new("az")
-        .args(["account", "list", "--output", "json"])
+    let output = az_command(&["account", "list", "--output", "json"])
         .output()
         .map_err(|e| format!("az account list failed: {e}"))?;
     if !output.status.success() {
@@ -102,8 +101,7 @@ pub struct LogicAppSite {
 /// This works even with PIM access that only covers specific resource groups
 /// (unlike `az group list` which requires subscription-level read access).
 pub fn list_logic_app_sites(sub: &str) -> Result<Vec<LogicAppSite>, String> {
-    let output = Command::new("az")
-        .args([
+    let output = az_command(&[
             "resource", "list",
             "--subscription", sub,
             "--resource-type", "Microsoft.Web/sites",
@@ -121,8 +119,7 @@ pub fn list_logic_app_sites(sub: &str) -> Result<Vec<LogicAppSite>, String> {
 
 #[allow(dead_code)]
 pub fn list_logic_apps(sub: &str, rg: &str) -> Result<Vec<String>, String> {
-    let output = Command::new("az")
-        .args([
+    let output = az_command(&[
             "resource", "list",
             "--subscription", sub,
             "--resource-group", rg,
@@ -150,8 +147,7 @@ pub fn list_logic_apps(sub: &str, rg: &str) -> Result<Vec<String>, String> {
 }
 
 pub fn list_service_bus_namespaces(sub: &str, rg: &str) -> Result<Vec<String>, String> {
-    let output = Command::new("az")
-        .args([
+    let output = az_command(&[
             "servicebus", "namespace", "list",
             "--subscription", sub,
             "--resource-group", rg,
@@ -267,8 +263,7 @@ pub fn list_deployed_workflows(sub: &str, rg: &str, app: &str) -> Result<Vec<Wor
         "https://management.azure.com/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.Web/sites/{app}/hostruntime/runtime/webhooks/workflow/api/management/workflows?api-version=2024-04-01"
     );
 
-    let output = Command::new("az")
-        .args(["rest", "--method", "GET", "--url", &url, "--output", "json"])
+    let output = az_command(&["rest", "--method", "GET", "--url", &url, "--output", "json"])
         .output()
         .map_err(|e| format!("az rest failed: {e}"))?;
 
@@ -322,8 +317,7 @@ pub fn list_runs(sub: &str, rg: &str, app: &str, workflow: &str, top: u32) -> Re
         "https://management.azure.com/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.Web/sites/{app}/hostruntime/runtime/webhooks/workflow/api/management/workflows/{workflow}/runs?api-version=2024-04-01&$top={top}"
     );
 
-    let output = Command::new("az")
-        .args(["rest", "--method", "GET", "--url", &url, "--output", "json"])
+    let output = az_command(&["rest", "--method", "GET", "--url", &url, "--output", "json"])
         .output()
         .map_err(|e| format!("az rest failed: {e}"))?;
 
@@ -366,8 +360,7 @@ pub fn list_actions(sub: &str, rg: &str, app: &str, workflow: &str, run_id: &str
         "https://management.azure.com/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.Web/sites/{app}/hostruntime/runtime/webhooks/workflow/api/management/workflows/{workflow}/runs/{run_id}/actions?api-version=2024-04-01"
     );
 
-    let output = Command::new("az")
-        .args(["rest", "--method", "GET", "--url", &url, "--output", "json"])
+    let output = az_command(&["rest", "--method", "GET", "--url", &url, "--output", "json"])
         .output()
         .map_err(|e| format!("az rest failed: {e}"))?;
 
@@ -411,8 +404,7 @@ pub fn list_triggers(sub: &str, rg: &str, app: &str, workflow: &str) -> Result<V
         "https://management.azure.com/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.Web/sites/{app}/hostruntime/runtime/webhooks/workflow/api/management/workflows/{workflow}/triggers?api-version=2024-04-01"
     );
 
-    let output = Command::new("az")
-        .args(["rest", "--method", "GET", "--url", &url, "--output", "json"])
+    let output = az_command(&["rest", "--method", "GET", "--url", &url, "--output", "json"])
         .output()
         .map_err(|e| format!("az rest failed: {e}"))?;
 
@@ -446,8 +438,7 @@ pub fn get_trigger_url(sub: &str, rg: &str, app: &str, workflow: &str) -> Result
             "https://management.azure.com/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.Web/sites/{app}/hostruntime/runtime/webhooks/workflow/api/management/workflows/{workflow}/triggers/{trigger_name}/listCallbackUrl?api-version=2024-04-01"
         );
 
-        let output = Command::new("az")
-            .args(["rest", "--method", "POST", "--url", &url, "--output", "json"])
+        let output = az_command(&["rest", "--method", "POST", "--url", &url, "--output", "json"])
             .output()
             .map_err(|e| format!("az rest failed: {e}"))?;
 
@@ -499,8 +490,7 @@ pub struct TriggerResult {
 /// Fetch the app's published configuration as a key→value map (blocking).
 /// Used to resolve @appsetting('VAR') references in queue names.
 pub fn get_app_settings(sub: &str, rg: &str, app: &str) -> Result<std::collections::HashMap<String, String>, String> {
-    let output = Command::new("az")
-        .args([
+    let output = az_command(&[
             "webapp", "config", "appsettings", "list",
             "--subscription", sub,
             "--resource-group", rg,
@@ -535,8 +525,7 @@ pub fn get_workflow_definition(sub: &str, rg: &str, app: &str, workflow: &str) -
          /providers/Microsoft.Web/sites/{app}/workflows/{workflow}?api-version=2023-12-01"
     );
 
-    let output = Command::new("az")
-        .args(["rest", "--method", "GET", "--uri", &uri, "--output", "json"])
+    let output = az_command(&["rest", "--method", "GET", "--uri", &uri, "--output", "json"])
         .output()
         .map_err(|e| format!("az rest failed: {e}"))?;
 
@@ -562,8 +551,7 @@ pub fn get_workflow_definition(sub: &str, rg: &str, app: &str, workflow: &str) -
 
 /// Get queue message counts (blocking)
 pub fn check_queue(sb_namespace: &str, rg: &str, queue_name: &str) -> Result<QueueInfo, String> {
-    let output = Command::new("az")
-        .args([
+    let output = az_command(&[
             "servicebus", "queue", "show",
             "--namespace-name", sb_namespace,
             "--resource-group", rg,
@@ -592,8 +580,7 @@ pub fn check_queue(sb_namespace: &str, rg: &str, queue_name: &str) -> Result<Que
 
 /// Fetch the primary connection string for a Service Bus namespace via az CLI.
 pub fn sb_get_connection_string(rg: &str, namespace: &str) -> Result<String, String> {
-    let output = Command::new("az")
-        .args([
+    let output = az_command(&[
             "servicebus", "namespace", "authorization-rule", "keys", "list",
             "--resource-group", rg,
             "--namespace-name", namespace,
@@ -735,8 +722,7 @@ pub struct EventGridSystemTopic {
 
 /// List EventGrid system topics in a resource group (blocking)
 pub fn list_eventgrid_system_topics(rg: &str) -> Result<Vec<EventGridSystemTopic>, String> {
-    let output = Command::new("az")
-        .args([
+    let output = az_command(&[
             "eventgrid", "system-topic", "list",
             "--resource-group", rg,
             "--output", "json",
@@ -772,8 +758,7 @@ pub fn list_eventgrid_system_topics(rg: &str) -> Result<Vec<EventGridSystemTopic
 
 /// List event subscriptions under a system topic (blocking)
 pub fn list_eventgrid_system_topic_subscriptions(rg: &str, topic_name: &str) -> Result<Vec<EventGridSubscription>, String> {
-    let output = Command::new("az")
-        .args([
+    let output = az_command(&[
             "eventgrid", "system-topic", "event-subscription", "list",
             "--resource-group", rg,
             "--system-topic-name", topic_name,
@@ -856,8 +841,7 @@ pub fn list_eventgrid_system_topic_subscriptions(rg: &str, topic_name: &str) -> 
 
 /// List EventGrid topics in a resource group (blocking)
 pub fn list_eventgrid_topics(rg: &str) -> Result<Vec<EventGridTopic>, String> {
-    let output = Command::new("az")
-        .args([
+    let output = az_command(&[
             "eventgrid", "topic", "list",
             "--resource-group", rg,
             "--output", "json",
@@ -957,8 +941,7 @@ pub fn build_eg_links(rg: &str) -> HashMap<String, EgLink> {
 
 /// List EventGrid subscriptions for a topic (blocking)
 pub fn list_eventgrid_subscriptions(topic_id: &str) -> Result<Vec<EventGridSubscription>, String> {
-    let output = Command::new("az")
-        .args([
+    let output = az_command(&[
             "eventgrid", "event-subscription", "list",
             "--source-resource-id", topic_id,
             "--output", "json",
@@ -1049,8 +1032,7 @@ pub struct FunctionMetrics {
 
 /// List all Function Apps in a resource group.
 pub fn list_function_apps(sub: &str, rg: &str) -> Result<Vec<FunctionApp>, String> {
-    let output = Command::new("az")
-        .args([
+    let output = az_command(&[
             "functionapp", "list",
             "--subscription", sub,
             "--resource-group", rg,
@@ -1077,8 +1059,7 @@ pub fn list_function_apps(sub: &str, rg: &str) -> Result<Vec<FunctionApp>, Strin
 /// Both are App Service sites under the hood — same REST endpoint.
 /// Returns Ok("") if the site has no managed identity assigned.
 pub fn get_principal_id(sub: &str, rg: &str, app: &str) -> Result<String, String> {
-    let output = Command::new("az")
-        .args([
+    let output = az_command(&[
             "webapp", "identity", "show",
             "--subscription", sub,
             "--resource-group", rg,
@@ -1096,8 +1077,7 @@ pub fn get_principal_id(sub: &str, rg: &str, app: &str) -> Result<String, String
 
 /// List functions inside a Function App.
 pub fn list_functions(rg: &str, app: &str) -> Result<Vec<FunctionDetail>, String> {
-    let output = Command::new("az")
-        .args([
+    let output = az_command(&[
             "functionapp", "function", "list",
             "--resource-group", rg,
             "--name", app,
@@ -1125,8 +1105,7 @@ pub fn list_functions(rg: &str, app: &str) -> Result<Vec<FunctionDetail>, String
 
 /// Discover Application Insights resource names in a resource group.
 pub fn find_app_insights(rg: &str) -> Result<Vec<String>, String> {
-    let output = Command::new("az")
-        .args([
+    let output = az_command(&[
             "monitor", "app-insights", "component", "show",
             "--resource-group", rg,
             "--query", "[].name",
@@ -1162,8 +1141,7 @@ pub fn query_function_errors(rg: &str, app_insights: &str, function_app: &str, f
          | order by timestamp desc \
          | take 50"
     );
-    let output = Command::new("az")
-        .args([
+    let output = az_command(&[
             "monitor", "app-insights", "query",
             "--app", app_insights,
             "--resource-group", rg,
@@ -1198,8 +1176,7 @@ pub fn query_function_metrics(rg: &str, app_insights: &str, function_app: &str, 
          | summarize success=countif(success==true), errors=countif(success==false), lastRun=max(timestamp) \
          by operation_Name | order by operation_Name asc"
     );
-    let output = Command::new("az")
-        .args([
+    let output = az_command(&[
             "monitor", "app-insights", "query",
             "--app", app_insights,
             "--resource-group", rg,
