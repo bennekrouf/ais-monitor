@@ -589,7 +589,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                             // Key by chain label so each chain keeps its own state,
                                             // but switching tabs (which doesn't change the key) preserves it.
                                             key: "{chain.label}",
-                                            chain: chain,
+                                            chain: chain.clone(),
                                             deployed_workflows: deployed_workflows.read().clone(),
                                             az_config: Some(az.clone()),
                                             chain_names: chain_names,

@@ -17,6 +17,11 @@ pub fn save(dir: &str, names: &HashMap<String, String>) {
 
 /// Load custom chain names. Returns empty map if file is absent or malformed.
 /// Format: one `key = value` per line; lines without `=` are skipped.
+///
+/// Currently consumed only by the TUI frontend (`ais-monitor-tui`); the
+/// desktop app never calls `load` directly. Allow `dead_code` so the
+/// desktop build stays warning-clean.
+#[allow(dead_code)]
 pub fn load(dir: &str) -> HashMap<String, String> {
     let path = Path::new(dir).join(FILENAME);
     let Ok(content) = std::fs::read_to_string(path) else {
