@@ -525,7 +525,12 @@ jobs:
           TAG="${{ github.ref_name }}"
           FILES=$(find artifacts -type f | tr '\n' ' ')
 
+          # `--latest` forces this release to be flagged "Latest" in the GitHub
+          # UI and via the `/releases/latest` API. Without it, the repo's
+          # "latest release preference" (which may be set to manually-pinned)
+          # decides — and an old stray `master` release can hang on as latest.
           gh release create "$TAG" \
+            --latest \
             --title "ais-monitor $TAG" \
             --notes "$(cat <<'EOF'
           ## Desktop app
