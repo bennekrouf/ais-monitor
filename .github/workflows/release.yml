@@ -546,15 +546,22 @@ jobs:
 
           ## Terminal UI (`ais-monitor-tui`)
 
-          **Windows — paste into PowerShell:**
+          **Windows — PowerShell:**
           ```powershell
-          iwr https://raw.githubusercontent.com/${{ github.repository }}/master/scripts/install-tui.ps1 | iex
+          Invoke-WebRequest https://raw.githubusercontent.com/${{ github.repository }}/master/scripts/install-tui.ps1 -UseBasicParsing | Invoke-Expression
+          ```
+
+          **Windows — Command Prompt (cmd.exe):**
+          ```cmd
+          curl -L -o "%TEMP%\install-tui.ps1" https://raw.githubusercontent.com/${{ github.repository }}/master/scripts/install-tui.ps1 && powershell -ExecutionPolicy Bypass -File "%TEMP%\install-tui.ps1"
           ```
 
           **macOS / Linux:**
           ```bash
           curl -fsSL https://raw.githubusercontent.com/${{ github.repository }}/master/scripts/install-tui.sh | sh
           ```
+
+          **Manual download** (no scripts) — grab `ais-monitor-tui-x86_64-pc-windows-msvc.exe` from the Assets list below, rename to `ais-monitor-tui.exe`, drop in any folder on your PATH, right-click → Properties → **Unblock**.
 
           Both installers download the matching binary, drop it on PATH, and clear the platform's "downloaded from internet" mark so first run doesn't trigger SmartScreen / Gatekeeper.
 

@@ -31,13 +31,27 @@ Both: macOS · Windows · Linux. Both read live data from Azure via the `az` CLI
 
 ### Terminal (TUI)
 
-**Windows — paste into Windows Terminal / PowerShell:**
+**Windows — pick the one that matches your terminal:**
+
+PowerShell (Windows Terminal / `pwsh` / `powershell`) — uses full command names so it works on every PowerShell version:
 
 ```powershell
-iwr https://raw.githubusercontent.com/Bennekrouf/ais-monitor/master/scripts/install-tui.ps1 | iex
+Invoke-WebRequest https://raw.githubusercontent.com/Bennekrouf/ais-monitor/master/scripts/install-tui.ps1 -UseBasicParsing | Invoke-Expression
 ```
 
-Downloads the latest binary into `%USERPROFILE%\bin`, adds it to your user PATH, clears the SmartScreen mark, checks for `az`. No admin rights.
+`cmd.exe` (the classic Command Prompt) — uses bundled `curl.exe` to download and run via `powershell`:
+
+```cmd
+curl -L -o "%TEMP%\install-tui.ps1" https://raw.githubusercontent.com/Bennekrouf/ais-monitor/master/scripts/install-tui.ps1 && powershell -ExecutionPolicy Bypass -File "%TEMP%\install-tui.ps1"
+```
+
+Either way, the installer drops the binary into `%USERPROFILE%\bin`, adds that folder to your user PATH, clears the SmartScreen mark, checks for `az`. No admin rights.
+
+**Manual fallback** (no scripts at all) — download directly and put it wherever you keep tools:
+
+- [Download `ais-monitor-tui-x86_64-pc-windows-msvc.exe`](https://github.com/Bennekrouf/ais-monitor/releases/latest/download/ais-monitor-tui-x86_64-pc-windows-msvc.exe)
+- Rename to `ais-monitor-tui.exe` and drop it somewhere on your PATH (e.g. `C:\Users\<you>\bin\`).
+- Right-click → Properties → **Unblock** (clears SmartScreen). Or in PowerShell: `Unblock-File ais-monitor-tui.exe`.
 
 **macOS / Linux — paste into your shell:**
 

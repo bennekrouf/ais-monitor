@@ -39,6 +39,11 @@ use crate::{
     tui::Tui,
 };
 
+/// Upper bound on cached action timelines. Each entry is small (5–50
+/// ActionInfo × ~100 bytes) but unbounded user drills would grow forever.
+/// 32 is generous — covers any realistic "what was I looking at?" workflow.
+const ACTIONS_CAP: usize = 32;
+
 // ── Slot ───────────────────────────────────────────────────────────────
 /// Generic loading state for an async data slot.
 #[derive(Debug, Default)]
@@ -109,8 +114,18 @@ pub struct App {
     action_cursor: ListState,
     /// Runs cached per workflow name. Lets us cycle steps without re-fetching.
     runs: HashMap<String, Slot<Vec<RunInfo>>>,
-    /// Actions cached per (workflow, run_id).
+    /// Actions cached per (workflow, run_id). User-driven drill-ins, so this
+    /// grows monotonically until capped. See `ACTIONS_CAP`.
     actions: HashMap<(String, String), Slot<Vec<ActionInfo>>>,
+    /// Insertion order for `actions` so we can evict the oldest entry when
+    /// `ACTIONS_CAP` is exceeded. Cheap O(n) eviction since N is tiny.
+    actions_order: std::collections::VecDeque<(String, String)>,
+    /// Workflows / runs currently being fetched. Prevents the watch-mode tick
+    /// from piling up duplicate `spawn_blocking` tasks when Azure responses
+    /// take longer than the tick interval — the real-world unbounded-growth
+    /// case on slow networks / rate-limited tenants.
+    inflight_runs: std::collections::HashSet<String>,
+    inflight_actions: std::collections::HashSet<(String, String)>,
     /// Run the user drilled into. When `Some`, the right pane becomes the
     /// action timeline. `Esc`/`Backspace` clears.
     drilled: Option<(String, String)>,
@@ -139,6 +154,14 @@ pub struct App {
     // Watch mode — when on, periodic ticks re-fetch runs for the focused step.
     watch: bool,
     watch_interval_secs: u64,
+
+    // Auto-follow — when a chain has a running workflow, move the step
+    // cursor to it so the user sees what's executing without tabbing.
+    // Off-limits for `grace_secs` after the user has moved the cursor
+    // manually, so investigation isn't interrupted.
+    follow_running: bool,
+    last_manual_step_move: Option<std::time::Instant>,
+    follow_grace_secs: u64,
 
     // Event Grid panel state.
     eg_topics: Slot<Vec<EventGridTopic>>,
@@ -224,6 +247,9 @@ impl App {
             action_cursor,
             runs: HashMap::new(),
             actions: HashMap::new(),
+            actions_order: std::collections::VecDeque::new(),
+            inflight_runs: std::collections::HashSet::new(),
+            inflight_actions: std::collections::HashSet::new(),
             drilled: None,
             focus: Focus::Chains,
             filter: String::new(),
@@ -237,6 +263,9 @@ impl App {
             // live monitor. The `w` key toggles it off when you want to
             // freeze the view (e.g. while reading a stack trace).
             watch: true,
+            follow_running: true,
+            last_manual_step_move: None,
+            follow_grace_secs: 10,
             watch_interval_secs,
             eg_topics: Slot::Idle,
             eg_topic_cursor,
@@ -341,6 +370,7 @@ impl App {
             }
 
             Msg::RunsLoaded { workflow, result } => {
+                self.inflight_runs.remove(&workflow);
                 match &result {
                     Ok(rs) => {
                         self.status = format!("{} run(s) for {workflow}", rs.len());
@@ -365,14 +395,19 @@ impl App {
                         self.run_cursor.select(Some(0));
                     }
                 }
+                // Fresh data may have changed who's running — re-evaluate
+                // whether the step cursor should jump.
+                self.maybe_follow_running();
             }
 
             Msg::ActionsLoaded { workflow, run_id, result } => {
+                let key = (workflow.clone(), run_id.clone());
+                self.inflight_actions.remove(&key);
                 match &result {
                     Ok(a) => self.status = format!("{} action(s)", a.len()),
                     Err(e) => self.status = format!("actions: {e}"),
                 }
-                self.actions.insert((workflow, run_id), slot_from(result));
+                self.insert_actions(key, slot_from(result));
                 self.action_cursor.select(Some(0));
             }
 
@@ -576,6 +611,9 @@ impl App {
                 }
                 self.runs.clear();
                 self.actions.clear();
+                self.actions_order.clear();
+                self.inflight_runs.clear();
+                self.inflight_actions.clear();
                 self.drilled = None;
                 self.spawn_chains();
                 return;
@@ -608,6 +646,16 @@ impl App {
                     format!("live: on ({}s refresh)", self.watch_interval_secs)
                 } else {
                     "live: paused (press w to resume)".into()
+                };
+                return;
+            }
+            KeyCode::Char('f') => {
+                self.follow_running = !self.follow_running;
+                self.status = if self.follow_running {
+                    self.last_manual_step_move = None; // re-arm immediately
+                    "follow: on — cursor tracks running workflow".into()
+                } else {
+                    "follow: off".into()
                 };
                 return;
             }
@@ -654,10 +702,13 @@ impl App {
         match key.code {
             KeyCode::Down | KeyCode::Char('j') => {
                 move_cursor_n(&mut self.step_cursor, step_count, 1);
+                // User just took manual control — pause auto-follow.
+                self.last_manual_step_move = Some(std::time::Instant::now());
                 self.ensure_runs_for_focused_step();
             }
             KeyCode::Up | KeyCode::Char('k') => {
                 move_cursor_n(&mut self.step_cursor, step_count, -1);
+                self.last_manual_step_move = Some(std::time::Instant::now());
                 self.ensure_runs_for_focused_step();
             }
             KeyCode::Left | KeyCode::Char('h') => self.focus = Focus::Chains,
@@ -707,7 +758,39 @@ impl App {
         self.step_cursor.select(Some(0));
         self.run_cursor.select(Some(0));
         self.drilled = None;
+        // Fresh chain — clear the auto-follow grace window so we land on a
+        // running workflow immediately (or stay on step 1 if all idle).
+        self.last_manual_step_move = None;
         self.ensure_runs_for_focused_step();
+    }
+
+    /// If a workflow inside the focused chain is running, move the step
+    /// cursor to it so the user sees what's executing. Honors a short grace
+    /// after manual cursor moves and never fires during action drill-in.
+    fn maybe_follow_running(&mut self) {
+        if !self.follow_running || !matches!(self.view, View::Browser) {
+            return;
+        }
+        if self.drilled.is_some() {
+            return;
+        }
+        if let Some(t) = self.last_manual_step_move {
+            if t.elapsed() < std::time::Duration::from_secs(self.follow_grace_secs) {
+                return;
+            }
+        }
+        let Some(chain) = self.current_chain() else { return };
+        // Earliest-in-chain-order — most natural reading direction. If two
+        // steps are running, we land on the upstream one.
+        let target = chain
+            .steps
+            .iter()
+            .position(|s| running_count(&self.runs, &s.workflow) > 0);
+        let Some(idx) = target else { return };
+        if self.step_cursor.selected() != Some(idx) {
+            self.step_cursor.select(Some(idx));
+            self.ensure_runs_for_focused_step();
+        }
     }
 
     fn refresh_focused(&mut self) {
@@ -1031,6 +1114,12 @@ impl App {
     }
 
     fn spawn_runs(&mut self, workflow: String) {
+        // Dedup — if a fetch for this workflow is already in flight, skip.
+        // Prevents the watch-mode tick from queueing duplicate tasks when
+        // Azure responds slower than the tick interval.
+        if self.inflight_runs.contains(&workflow) {
+            return;
+        }
         let (Some(sub), Some(rg), Some(app)) = (
             self.config.subscription.clone(),
             self.config.resource_group.clone(),
@@ -1042,9 +1131,12 @@ impl App {
         // fresh fetch happens in the background. Makes relaunch feel instant.
         if let Some(cached) = runs_cache::load(&sub, &app, &workflow) {
             self.runs.insert(workflow.clone(), Slot::Loaded(cached));
-        } else {
+        } else if !self.runs.contains_key(&workflow) {
+            // Only flash Loading on cold start — silent refresh otherwise so
+            // watch mode doesn't strobe the panel.
             self.runs.insert(workflow.clone(), Slot::Loading);
         }
+        self.inflight_runs.insert(workflow.clone());
         let tx = self.tx.clone();
         let wf = workflow.clone();
         tokio::task::spawn_blocking(move || {
@@ -1054,6 +1146,10 @@ impl App {
     }
 
     fn spawn_actions(&mut self, workflow: String, run_id: String) {
+        let key = (workflow.clone(), run_id.clone());
+        if self.inflight_actions.contains(&key) {
+            return;
+        }
         let (Some(sub), Some(rg), Some(app)) = (
             self.config.subscription.clone(),
             self.config.resource_group.clone(),
@@ -1061,7 +1157,8 @@ impl App {
         ) else {
             return;
         };
-        self.actions.insert((workflow.clone(), run_id.clone()), Slot::Loading);
+        self.insert_actions(key.clone(), Slot::Loading);
+        self.inflight_actions.insert(key);
         let tx = self.tx.clone();
         let wf = workflow.clone();
         let rid = run_id.clone();
@@ -1073,6 +1170,22 @@ impl App {
                 result: r,
             });
         });
+    }
+
+    /// Bounded `actions` insert. Evicts the oldest entry when over cap.
+    fn insert_actions(&mut self, key: (String, String), slot: Slot<Vec<ActionInfo>>) {
+        // If we're refreshing an existing key, update the order so it
+        // counts as "fresh" — most-recently-touched is what we want to keep.
+        if self.actions.contains_key(&key) {
+            self.actions_order.retain(|k| k != &key);
+        }
+        self.actions_order.push_back(key.clone());
+        self.actions.insert(key, slot);
+        while self.actions_order.len() > ACTIONS_CAP {
+            if let Some(old) = self.actions_order.pop_front() {
+                self.actions.remove(&old);
+            }
+        }
     }
 
     fn spawn_chains(&mut self) {
@@ -1176,6 +1289,17 @@ impl App {
                 Style::default().fg(Color::DarkGray),
             )
         };
+        let follow_span = if self.follow_running {
+            Span::styled(
+                "  ·  ▶ follow",
+                Style::default().fg(Color::Cyan),
+            )
+        } else {
+            Span::styled(
+                "  ·  ▷ manual",
+                Style::default().fg(Color::DarkGray),
+            )
+        };
         frame.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(
@@ -1186,6 +1310,7 @@ impl App {
                 login_span,
                 app_span,
                 watch_span,
+                follow_span,
             ])),
             area,
         );
@@ -1780,7 +1905,8 @@ impl App {
                     Line::raw("    Enter      drill into run"),
                     Line::raw("    /          filter chains"),
                     Line::raw("    m          rename focused chain"),
-                    Line::raw("    w          toggle watch mode (auto-refresh runs)"),
+                    Line::raw("    w          pause / resume live refresh"),
+                    Line::raw("    f          toggle auto-follow (jump cursor to running step)"),
                     Line::raw("    g          Event Grid panel"),
                     Line::raw("    r / R      refresh focused / hard reload"),
                     Line::raw("    c          change subscription / logic app"),
@@ -1933,6 +2059,8 @@ impl App {
                 Span::raw(" rename  "),
                 Span::styled("w", Style::default().fg(Color::Yellow)),
                 Span::raw(" pause/resume  "),
+                Span::styled("f", Style::default().fg(Color::Yellow)),
+                Span::raw(" follow  "),
                 Span::styled("g", Style::default().fg(Color::Yellow)),
                 Span::raw(" eg  "),
                 Span::styled("?", Style::default().fg(Color::Yellow)),

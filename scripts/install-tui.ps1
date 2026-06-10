@@ -1,8 +1,8 @@
 # ais-monitor-tui Windows installer.
 #
-# Usage (one-liner, paste into any modern PowerShell):
+# Usage (one-liner, paste into PowerShell):
 #
-#   iwr https://raw.githubusercontent.com/Bennekrouf/ais-monitor/master/scripts/install-tui.ps1 | iex
+#   Invoke-WebRequest https://raw.githubusercontent.com/Bennekrouf/ais-monitor/master/scripts/install-tui.ps1 -UseBasicParsing | Invoke-Expression
 #
 # What this does:
 #   1. Fetches the latest GitHub Release.
@@ -24,13 +24,31 @@ $Asset = "ais-monitor-tui-x86_64-pc-windows-msvc.exe"
 $InstallDir = Join-Path $env:USERPROFILE "bin"
 $Target = Join-Path $InstallDir "ais-monitor-tui.exe"
 
+# Detect whether we were launched into our own window (powershell -File ...,
+# or right-click Run with PowerShell) vs. piped into an already-open shell
+# (Invoke-Expression). In the standalone case the window closes the instant
+# the script exits, hiding any errors — so we Pause at the end.
+$Standalone = -not [string]::IsNullOrEmpty($MyInvocation.MyCommand.Path)
+
 function Info($msg)  { Write-Host "==> $msg" -ForegroundColor Cyan }
 function Warn($msg)  { Write-Host "!!  $msg" -ForegroundColor Yellow }
-function Ok($msg)    { Write-Host "✓   $msg" -ForegroundColor Green }
-function Bad($msg)   { Write-Host "✗   $msg" -ForegroundColor Red }
+function Ok($msg)    { Write-Host "OK  $msg" -ForegroundColor Green }
+function Bad($msg)   { Write-Host "XX  $msg" -ForegroundColor Red }
+
+function Pause-IfStandalone {
+    if ($Standalone) {
+        Write-Host ""
+        Write-Host "Press Enter to close this window..." -ForegroundColor DarkGray
+        try { [void](Read-Host) } catch {}
+    }
+}
+
+# ── Wrap everything in a top-level try/finally so errors are SEEN, not flashed
+# off-screen on the way out. Every failure path falls through to the pause.
+try {
 
 # ── 1. Resolve latest release ────────────────────────────────────────────────
-Info "Querying latest ais-monitor release…"
+Info "Querying latest ais-monitor release..."
 try {
     $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" `
                                  -UseBasicParsing `
@@ -38,21 +56,29 @@ try {
 } catch {
     Bad  "Could not reach GitHub: $($_.Exception.Message)"
     Bad  "If you're behind a corporate proxy, set HTTPS_PROXY and retry."
-    exit 1
+    throw "github-unreachable"
 }
 $tag = $release.tag_name
 $url = $release.assets | Where-Object { $_.name -eq $Asset } | Select-Object -ExpandProperty browser_download_url
 if (-not $url) {
     Bad  "Release $tag has no asset named '$Asset'."
-    Bad  "Possible: the Windows TUI binary wasn't built for this release."
-    Bad  "Fallback: cargo install --git https://github.com/$Repo ais-monitor-tui"
-    exit 1
+    Bad  ""
+    Bad  "This usually means: the Windows TUI binary wasn't built for this"
+    Bad  "release yet - only the desktop installer was attached."
+    Bad  ""
+    Bad  "Workarounds:"
+    Bad  "  1. Push a new tag so CI builds the Windows TUI binary."
+    Bad  "  2. cargo install --git https://github.com/$Repo ais-monitor-tui"
+    Bad  ""
+    Bad  "Assets actually in release $tag :"
+    $release.assets | ForEach-Object { Bad ("  - " + $_.name) }
+    throw "asset-missing"
 }
 Ok   "Latest release: $tag"
 
 # ── 2. Download ──────────────────────────────────────────────────────────────
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-Info "Downloading $Asset to $Target …"
+Info "Downloading $Asset to $Target ..."
 # `Invoke-WebRequest` is fine for a single binary; -UseBasicParsing keeps it
 # light even on Windows PowerShell 5.1.
 Invoke-WebRequest -Uri $url -OutFile $Target -UseBasicParsing
@@ -64,7 +90,7 @@ try {
     Ok "Cleared SmartScreen mark."
 } catch {
     Warn "Could not Unblock-File ($($_.Exception.Message))."
-    Warn "First run may show a SmartScreen prompt — click 'More info → Run anyway'."
+    Warn "First run may show a SmartScreen prompt - click 'More info > Run anyway'."
 }
 
 # ── 4. Ensure %USERPROFILE%\bin is on user PATH ──────────────────────────────
@@ -72,7 +98,7 @@ $userPath = [Environment]::GetEnvironmentVariable("PATH", "User")
 if (-not $userPath) { $userPath = "" }
 $onPath = $userPath.Split(';') | Where-Object { $_ -eq $InstallDir }
 if (-not $onPath) {
-    Info "Adding $InstallDir to user PATH…"
+    Info "Adding $InstallDir to user PATH..."
     $newPath = if ($userPath) { "$InstallDir;$userPath" } else { $InstallDir }
     [Environment]::SetEnvironmentVariable("PATH", $newPath, "User")
     Ok   "User PATH updated. Open a new terminal for it to take effect."
@@ -92,7 +118,7 @@ if ($azCmd) {
 
 # ── 6. Next steps ───────────────────────────────────────────────────────────
 Write-Host ""
-Write-Host "──────────────────────────────────────────────────────────" -ForegroundColor DarkGray
+Write-Host "----------------------------------------------------------" -ForegroundColor DarkGray
 Ok "ais-monitor-tui $tag installed."
 Write-Host ""
 Write-Host "Next:" -ForegroundColor White
@@ -104,4 +130,18 @@ Write-Host "ais-monitor-tui" -ForegroundColor Cyan
 Write-Host ""
 Write-Host "If your machine has no browser (Server Core, SSH session), use:" -ForegroundColor DarkGray
 Write-Host "  ais-monitor-tui --device-code" -ForegroundColor DarkGray
-Write-Host "──────────────────────────────────────────────────────────" -ForegroundColor DarkGray
+Write-Host "----------------------------------------------------------" -ForegroundColor DarkGray
+
+} catch {
+    # Already-printed errors throw a known string; only print unexpected ones.
+    $known = @("github-unreachable", "asset-missing")
+    if ($_.Exception.Message -notin $known) {
+        Bad ""
+        Bad "Installer aborted: $($_.Exception.Message)"
+        if ($_.ScriptStackTrace) {
+            Write-Host $_.ScriptStackTrace -ForegroundColor DarkGray
+        }
+    }
+} finally {
+    Pause-IfStandalone
+}
