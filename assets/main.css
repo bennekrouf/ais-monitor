@@ -1243,35 +1243,66 @@ body {
 .link-invoke  { color: var(--blue); }
 .link-other   { color: var(--text3); }
 
-/* ── Queue section ────────────────────────────────────────────────── */
-.queue-section { margin-top: 16px; }
-.queue-section h3 {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--text2);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    margin-bottom: 8px;
+/* ── Queues table — mirrors the Workflow steps-table styling ──────── */
+.queues-table {
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    margin-top: 16px;
+    margin-bottom: 20px;
 }
-
+.queues-header {
+    display: flex;
+    padding: 8px 12px;
+    background: var(--bg1);
+    border-bottom: 1px solid var(--border);
+    font-size: 11px;
+    color: var(--text3);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 600;
+}
 .queue-row {
     display: flex;
     align-items: center;
-    gap: 16px;
-    padding: 6px 0;
-    font-size: 12px;
+    padding: 8px 12px;
+    font-size: 13px;
     border-bottom: 1px solid var(--border2);
+    transition: background 0.1s;
 }
 .queue-row:last-child { border-bottom: none; }
+.queue-row:hover { background: var(--bg1); }
 
-.queue-name {
-    color: var(--text1);
-    min-width: 250px;
+.qcol {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
 }
-.queue-active    { color: var(--text2); }
-.queue-dl        { color: var(--text2); }
-.queue-dl.warn   { color: var(--red); font-weight: 600; }
-.queue-pending   { color: var(--text3); }
+.qcol-name {
+    flex: 1;
+    min-width: 0;
+    color: var(--text1);
+    font-weight: 500;
+}
+.qcol-active,
+.qcol-dl {
+    width: 100px;
+    flex-shrink: 0;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    color: var(--text2);
+}
+.qcol-dl.warn    { color: var(--red); font-weight: 700; }
+.qcol-pending    { color: var(--text3); }
+.qcol-actions {
+    width: 80px;
+    flex-shrink: 0;
+    text-align: right;
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 4px;
+}
 
 /* Send message to queue */
 .sb-send-btn { font-size: 13px; cursor: pointer; opacity: .6; margin-left: auto; }

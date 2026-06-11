@@ -33,7 +33,11 @@ DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 AllowNoIcons=yes
 OutputDir=..\dist
-OutputBaseFilename=ais-monitor-setup-{#MyAppVersion}
+; No version in the filename — stable name lets the same download URL
+; ("…/releases/latest/download/ais-monitor-setup.exe") always work. Version
+; info is still visible in the installer wizard, exe properties, and the
+; app's own title bar / TUI header.
+OutputBaseFilename=ais-monitor-setup
 Compression=lzma2
 SolidCompression=yes
 WizardStyle=modern
@@ -43,6 +47,11 @@ ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0.17763
 UninstallDisplayName={#MyAppName} {#MyAppVersion}
 CloseApplications=yes
+; Branding — uses assets\icon.ico if present. Skipped silently otherwise.
+#if FileExists(AddBackslash(SourcePath) + "..\assets\icon.ico")
+SetupIconFile=..\assets\icon.ico
+UninstallDisplayIcon={app}\icon.ico
+#endif
 
 [Languages]
 Name: "english"; MessagesFile: "compiler:Default.isl"
@@ -56,11 +65,23 @@ Name: "desktopicon"; \
 Source: "..\target\release\ais-monitor.exe";     DestDir: "{app}"; Flags: ignoreversion
 Source: "..\target\release\WebView2Loader.dll";   DestDir: "{app}"; Flags: ignoreversion
 Source: "..\scripts\setup-windows.ps1";           DestDir: "{app}"; Flags: ignoreversion
+; Ship the .ico alongside the .exe so shortcuts can point at it explicitly —
+; otherwise some Windows builds fail to extract the embedded icon for shortcut
+; display, leaving a generic icon on the Start menu / desktop.
+#if FileExists(AddBackslash(SourcePath) + "..\assets\icon.ico")
+Source: "..\assets\icon.ico";                     DestDir: "{app}"; Flags: ignoreversion
+#endif
 
 [Icons]
+#if FileExists(AddBackslash(SourcePath) + "..\assets\icon.ico")
+Name: "{group}\{#MyAppName}";           Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\icon.ico"
+Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
+Name: "{commondesktop}\{#MyAppName}";   Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\icon.ico"; Tasks: desktopicon
+#else
 Name: "{group}\{#MyAppName}";           Filename: "{app}\{#MyAppExeName}"
 Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
 Name: "{commondesktop}\{#MyAppName}";   Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+#endif
 
 [Run]
 ; Installer already runs elevated — script installs Node, Azure CLI, func,

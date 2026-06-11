@@ -1,6 +1,6 @@
 [package]
 name = "ais-monitor-tui"
-version = "0.1.0"
+version.workspace = true
 edition = "2021"
 description = "Terminal UI for AIS Monitor — chain discovery, runs, KPIs"
 license = "MIT OR Apache-2.0"

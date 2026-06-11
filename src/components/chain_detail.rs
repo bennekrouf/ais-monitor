@@ -1082,30 +1082,40 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                 }
             }
 
-            // Queue status
+            // Queue status — bordered table to match the Workflow steps table above.
             if !chain.queues.is_empty() {
-                div { class: "queue-section",
-                    h3 { "Queues" }
+                div { class: "queues-table",
+                    div { class: "queues-header",
+                        span { class: "qcol qcol-name", "Queue" }
+                        span { class: "qcol qcol-active", title: "Active messages", "Active" }
+                        span { class: "qcol qcol-dl", title: "Dead-letter messages", "Dead-Letter" }
+                        span { class: "qcol qcol-actions" }
+                    }
                     for q in chain.queues.iter() {
                         {
                             let qs = queue_statuses.read().get(q).cloned();
                             let (active, dl) = qs.map(|s| (s.active, s.dead_letter)).unwrap_or((-1, -1));
-                            let dl_class = if dl > 0 { "queue-dl warn" } else { "queue-dl" };
                             let q_send = q.clone();
                             let q_target = q.clone();
                             let q_peek = q.clone();
                             let is_open = send_queue.read().as_deref() == Some(q.as_str());
                             let is_peek_open = peek_queue.read().as_deref() == Some(q.as_str());
                             let az_send = az.clone();
+                            // Compose status cells. Until the chain has been
+                            // checked, active/dl are -1 → render an em-dash so
+                            // the column line-up stays consistent across rows.
+                            let active_text = if active >= 0 { active.to_string() } else { "—".into() };
+                            let dl_text     = if dl >= 0     { dl.to_string()     } else { "—".into() };
+                            let active_cls  = if active >= 0 { "qcol qcol-active" } else { "qcol qcol-active qcol-pending" };
+                            let dl_cls      = if dl > 0 { "qcol qcol-dl warn" }
+                                              else if dl == 0 { "qcol qcol-dl" }
+                                              else { "qcol qcol-dl qcol-pending" };
                             rsx! {
                                 div { class: "queue-row",
-                                    span { class: "queue-name", "{q}" }
-                                    if active >= 0 {
-                                        span { class: "queue-active", "active: {active}" }
-                                        span { class: "{dl_class}", "dead-letter: {dl}" }
-                                    } else {
-                                        span { class: "queue-pending", "—" }
-                                    }
+                                    span { class: "qcol qcol-name", title: "{q}", "{q}" }
+                                    span { class: "{active_cls}", "{active_text}" }
+                                    span { class: "{dl_cls}", "{dl_text}" }
+                                    span { class: "qcol qcol-actions",
                                     if let Some(ref a) = az {
                                         // Fall back to the MainScreen-discovered namespace if the
                                         // profile didn't have one configured.
@@ -1223,6 +1233,7 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                                             "📨"
                                         }
                                     }
+                                    } // close qcol-actions
                                 }
                                 // ── Dead-letter peek panel ─────────────────
                                 if is_peek_open {

@@ -1303,7 +1303,7 @@ impl App {
         frame.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(
-                    " ais-monitor-tui ",
+                    concat!(" ais-monitor-tui v", env!("CARGO_PKG_VERSION"), " "),
                     Style::default().add_modifier(Modifier::BOLD).bg(Color::DarkGray),
                 ),
                 Span::raw("  "),
