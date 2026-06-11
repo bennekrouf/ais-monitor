@@ -625,6 +625,187 @@ body {
     word-break: break-word;
 }
 
+/* Dead-letter peek-lock panel — appears inline below a queue row. */
+.sb-peek-btn {
+    margin-left: 4px;
+}
+.sb-peek-btn.active {
+    color: var(--red);
+    border-color: var(--red);
+}
+.sb-peek-panel {
+    margin: 4px 0 10px;
+    padding: 8px 12px;
+    background: color-mix(in srgb, var(--red) 6%, var(--bg1));
+    border-left: 3px solid var(--red);
+    border-radius: 4px;
+}
+.sb-peek-header {
+    font-size: 11px;
+    color: var(--text2);
+    margin-bottom: 6px;
+}
+.sb-peek-header strong { color: var(--text1); font-weight: 600; margin-right: 4px; }
+.sb-peek-meta { color: var(--text3); font-size: 10px; }
+.sb-peek-loading, .sb-peek-error {
+    font-size: 11px;
+    color: var(--text2);
+    padding: 6px 0;
+    font-style: italic;
+}
+.sb-peek-error { color: var(--red); font-style: normal; }
+
+.sb-dl-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 5px 8px;
+    border: 1px solid var(--border2);
+    border-radius: 4px;
+    background: var(--bg2);
+    margin-bottom: 4px;
+    font-size: 11px;
+    cursor: pointer;
+}
+.sb-dl-row:hover { background: var(--bg3); border-color: var(--border); }
+.sb-dl-row.expanded { border-color: var(--red); }
+.sb-dl-idx { color: var(--text3); width: 26px; flex-shrink: 0; font-variant-numeric: tabular-nums; }
+.sb-dl-reason {
+    color: var(--red);
+    font-weight: 600;
+    flex: 0 0 auto;
+    max-width: 200px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.sb-dl-when { color: var(--text2); flex: 1; }
+.sb-dl-delivery {
+    color: var(--text2);
+    font-variant-numeric: tabular-nums;
+    flex-shrink: 0;
+}
+.sb-dl-expand-hint { color: var(--text3); font-size: 9px; flex-shrink: 0; }
+
+.sb-dl-detail {
+    margin: 0 0 8px;
+    padding: 8px 10px;
+    background: var(--bg0);
+    border: 1px solid var(--border2);
+    border-radius: 4px;
+}
+.sb-dl-error-block { margin-bottom: 10px; }
+.sb-dl-error-block pre {
+    margin: 4px 0 0;
+    padding: 6px 8px;
+    background: color-mix(in srgb, var(--red) 8%, var(--bg2));
+    border-radius: 3px;
+    font-family: 'SF Mono', monospace;
+    font-size: 11px;
+    color: var(--red);
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+.sb-dl-body-block { }
+.sb-dl-body-header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-bottom: 4px;
+}
+.sb-dl-body-header button { margin-left: auto; }
+.sb-dl-label {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--text3);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+}
+.sb-dl-mid {
+    font-family: monospace;
+    font-size: 10px;
+    color: var(--text3);
+}
+.sb-dl-body {
+    margin: 0;
+    padding: 8px;
+    background: var(--bg2);
+    border-radius: 3px;
+    font-family: 'SF Mono', monospace;
+    font-size: 11px;
+    color: var(--text1);
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 260px;
+    overflow-y: auto;
+}
+
+/* Per-chain sparkline drawn inline next to the health badges. */
+.chain-sparkline-wrap {
+    display: inline-flex;
+    align-items: center;
+    margin-left: 6px;
+    flex-shrink: 0;
+    cursor: help;
+}
+.chain-sparkline {
+    display: inline-block;
+    vertical-align: middle;
+}
+.chain-sparkline .spark-baseline {
+    stroke: var(--border);
+    stroke-width: 0.5;
+    stroke-dasharray: 1 1;
+}
+.chain-sparkline .spark-line {
+    stroke-width: 1.4;
+    fill: none;
+    vector-effect: non-scaling-stroke;
+}
+.chain-sparkline .spark-dot {
+    stroke: var(--bg1);
+    stroke-width: 0.6;
+}
+.chain-sparkline.spark-up   .spark-line { stroke: var(--green); }
+.chain-sparkline.spark-up   .spark-dot  { fill:   var(--green); }
+.chain-sparkline.spark-flat .spark-line { stroke: var(--text2); }
+.chain-sparkline.spark-flat .spark-dot  { fill:   var(--text2); }
+.chain-sparkline.spark-down .spark-line { stroke: var(--red); }
+.chain-sparkline.spark-down .spark-dot  { fill:   var(--red); }
+
+/* Open-in-Portal mini buttons sprinkled through the UI.
+   Small unobtrusive icon that stop_propagation()s in click handlers. */
+.portal-link {
+    font: inherit;
+    background: none;
+    border: 1px solid transparent;
+    color: var(--text3);
+    cursor: pointer;
+    padding: 0 4px;
+    margin-left: 4px;
+    border-radius: 4px;
+    font-size: 11px;
+    line-height: 1.4;
+    opacity: 0.55;
+    transition: opacity 0.12s, color 0.12s, border-color 0.12s;
+}
+.portal-link:hover {
+    opacity: 1;
+    color: var(--blue);
+    border-color: var(--blue);
+}
+/* Slightly more prominent button at the top of the chain detail header */
+.portal-link-header {
+    border-color: var(--border);
+    background: var(--bg2);
+    color: var(--text2);
+    opacity: 0.85;
+    padding: 0 8px;
+    height: 26px;
+    display: inline-flex;
+    align-items: center;
+}
+
 /* Freshness indicator beside the "Chains" tab label */
 .freshness-dot {
     display: inline-block;

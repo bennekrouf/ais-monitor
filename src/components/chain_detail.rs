@@ -1,6 +1,6 @@
 use dioxus::prelude::*;
 use crate::services::chain::ChainDetail;
-use crate::services::{azure, azure::EgLink, kpi, names};
+use crate::services::{azure, azure::EgLink, history_cache, kpi, names};
 use crate::components::trigger_panel::TriggerPanel;
 use std::collections::HashMap;
 
@@ -30,6 +30,14 @@ pub struct ChainDetailProps {
     /// and individual chain checks use identical depth and produce identical KPIs.
     #[props(default)]
     pub run_depth: Option<Signal<u32>>,
+    /// Site location discovered by MainScreen — feeds the workflow Portal
+    /// deep-link (which Azure rejects without an explicit region).
+    #[props(default)]
+    pub discovered_location: Signal<Option<String>>,
+    /// SB namespace — falls back from `az_config.sb_namespace` to a value
+    /// discovered by MainScreen if the profile didn't have one configured.
+    #[props(default)]
+    pub discovered_sb_namespace: Signal<Option<String>>,
 }
 
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -73,6 +81,12 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
 
     // Send message to queue
     let mut send_queue: Signal<Option<String>> = use_signal(|| None);
+    // Peek-DL state — which queue's DL preview is open, the loaded messages,
+    // and a loading/error flag.
+    let mut peek_queue: Signal<Option<String>> = use_signal(|| None);
+    let mut peek_messages: Signal<Vec<azure::DeadLetterMessage>> = use_signal(Vec::new);
+    let mut peek_loading: Signal<bool> = use_signal(|| false);
+    let mut peek_error: Signal<Option<String>> = use_signal(|| None);
     let mut send_body: Signal<String> = use_signal(|| "{}".to_string());
     let mut send_status: Signal<Option<String>> = use_signal(|| None);
     let mut sending: Signal<bool> = use_signal(|| false);
@@ -119,6 +133,7 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
         let steps = chain_steps.clone();
         let queues = chain_queues.clone();
         let label_for_health = chain_label.clone();
+        let dir_for_history = dir.clone();
         move || {
             let is_on = *auto_poll.read();
             let interval_secs = *poll_interval.read();
@@ -128,6 +143,7 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                 None => return,
             };
             let steps = steps.clone();
+            let dir_poll = dir_for_history.clone();
             let queues = queues.clone();
             let top = *run_depth.read();
             let lbl = label_for_health.clone();
@@ -181,10 +197,10 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                         }
                     }
                     queue_statuses.set(q_statuses.clone());
+                    let health = compute_health(&runs_map, &q_statuses);
                     if let Some(mut health_sig) = chain_health_signal {
-                        let health = compute_health(&runs_map, &q_statuses);
                         let mut map = health_sig.read().clone();
-                        map.insert(lbl.clone(), health);
+                        map.insert(lbl.clone(), health.clone());
                         health_sig.set(map);
                     }
                     if let Some(mut lc) = last_checked_signal {
@@ -192,6 +208,8 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                         map.insert(lbl.clone(), epoch_now());
                         lc.set(map);
                     }
+                    // Append a history point for the sparkline.
+                    append_history_point(&dir_poll, &lbl, &health);
                     loading.set(false);
                 }
             });
@@ -325,6 +343,21 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                                 "✉ {q}"
                             }
                         }
+                        if let Some(ref a) = az {
+                            {
+                                let url = crate::services::portal_links::logic_app(
+                                    &a.tenant, &a.subscription, &a.resource_group, &a.app_name,
+                                );
+                                rsx! {
+                                    button {
+                                        class: "portal-link portal-link-header",
+                                        title: "Open Logic App in Azure Portal",
+                                        onclick: move |_| crate::services::portal_links::open_in_browser(&url),
+                                        "🔗 Portal"
+                                    }
+                                }
+                            }
+                        }
                         div { class: "detail-spacer" }
                     }
                 }
@@ -358,12 +391,14 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                             let steps = chain_steps.clone();
                             let queues = chain_queues.clone();
                             let label_for_health = chain_label.clone();
+                            let dir_for_check = dir.clone();
                             move |_| {
                                 let az = az.clone();
                                 let steps = steps.clone();
                                 let queues = queues.clone();
                                 let top = *run_depth.read();
                                 let lbl = label_for_health.clone();
+                                let dir_check = dir_for_check.clone();
                                 loading.set(true);
                                 spawn(async move {
                                     let mut statuses = HashMap::new();
@@ -411,10 +446,10 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                                         }
                                     }
                                     queue_statuses.set(q_statuses.clone());
+                                    let health = compute_health(&runs_map, &q_statuses);
                                     if let Some(mut health_sig) = chain_health_signal {
-                                        let health = compute_health(&runs_map, &q_statuses);
                                         let mut map = health_sig.read().clone();
-                                        map.insert(lbl.clone(), health);
+                                        map.insert(lbl.clone(), health.clone());
                                         health_sig.set(map);
                                     }
                                     if let Some(mut lc) = last_checked_signal {
@@ -422,6 +457,7 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                                         map.insert(lbl.clone(), epoch_now());
                                         lc.set(map);
                                     }
+                                    append_history_point(&dir_check, &lbl, &health);
                                     loading.set(false);
                                 });
                             }
@@ -506,11 +542,13 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                                     let steps = steps_refresh.clone();
                                     let queues = queues_refresh.clone();
                                     let lbl = chain_label.clone();
+                                    let dir_for_refresh = dir.clone();
                                     move |_| {
                                         let az = az.clone();
                                         let steps = steps.clone();
                                         let queues = queues.clone();
                                         let lbl = lbl.clone();
+                                        let dir_refresh = dir_for_refresh.clone();
                                         loading.set(true);
                                         spawn(async move {
                                             let mut statuses = HashMap::new();
@@ -558,10 +596,10 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                                                 }
                                             }
                                             queue_statuses.set(q_statuses.clone());
+                                            let health = compute_health(&runs_map, &q_statuses);
                                             if let Some(mut health_sig) = chain_health_signal {
-                                                let health = compute_health(&runs_map, &q_statuses);
                                                 let mut map = health_sig.read().clone();
-                                                map.insert(lbl.clone(), health);
+                                                map.insert(lbl.clone(), health.clone());
                                                 health_sig.set(map);
                                             }
                                             if let Some(mut lc) = last_checked_signal {
@@ -569,6 +607,7 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                                                 map.insert(lbl.clone(), epoch_now());
                                                 lc.set(map);
                                             }
+                                            append_history_point(&dir_refresh, &lbl, &health);
                                             loading.set(false);
                                         });
                                     }
@@ -810,6 +849,29 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                                         if is_expanded { "▼ " } else { "▶ " }
                                     }
                                     "{step.workflow}"
+                                    // Portal link — stop_propagation so the row
+                                    // doesn't toggle expansion when the icon is clicked.
+                                    if let Some(ref a) = az {
+                                        {
+                                            let loc = props.discovered_location.read().clone();
+                                            let url = crate::services::portal_links::workflow(
+                                                &a.tenant, &a.subscription, &a.resource_group,
+                                                &a.app_name, &step.workflow,
+                                                loc.as_deref(),
+                                            );
+                                            rsx! {
+                                                button {
+                                                    class: "portal-link",
+                                                    title: "Open this workflow in the Azure Portal",
+                                                    onclick: move |e: Event<MouseData>| {
+                                                        e.stop_propagation();
+                                                        crate::services::portal_links::open_in_browser(&url);
+                                                    },
+                                                    "🔗"
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                                 span { class: "col col-link {link_class}", "{link_display}" }
                                 {
@@ -1031,7 +1093,9 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                             let dl_class = if dl > 0 { "queue-dl warn" } else { "queue-dl" };
                             let q_send = q.clone();
                             let q_target = q.clone();
+                            let q_peek = q.clone();
                             let is_open = send_queue.read().as_deref() == Some(q.as_str());
+                            let is_peek_open = peek_queue.read().as_deref() == Some(q.as_str());
                             let az_send = az.clone();
                             rsx! {
                                 div { class: "queue-row",
@@ -1041,6 +1105,108 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                                         span { class: "{dl_class}", "dead-letter: {dl}" }
                                     } else {
                                         span { class: "queue-pending", "—" }
+                                    }
+                                    if let Some(ref a) = az {
+                                        // Fall back to the MainScreen-discovered namespace if the
+                                        // profile didn't have one configured.
+                                        {
+                                            let ns = if !a.sb_namespace.is_empty() {
+                                                Some(a.sb_namespace.clone())
+                                            } else {
+                                                props.discovered_sb_namespace.read().clone()
+                                            };
+                                            if let Some(ns) = ns {
+                                                let url = crate::services::portal_links::sb_queue(
+                                                    &a.tenant, &a.subscription, &a.resource_group,
+                                                    &ns, q,
+                                                );
+                                                rsx! {
+                                                    button {
+                                                        class: "portal-link",
+                                                        title: "Open queue in Azure Portal (peek messages, DL contents, …)",
+                                                        onclick: move |_| crate::services::portal_links::open_in_browser(&url),
+                                                        "🔗"
+                                                    }
+                                                }
+                                            } else { rsx! {} }
+                                        }
+                                    }
+                                    // Peek dead-letter button — only shown when DL count > 0
+                                    if az.is_some() && dl > 0 {
+                                        {
+                                            let az_peek = az.clone();
+                                            rsx! {
+                                                button {
+                                                    class: if is_peek_open { "btn-icon sb-peek-btn active" } else { "btn-icon sb-peek-btn" },
+                                                    title: "Peek dead-letter messages (non-destructive)",
+                                                    onclick: move |_| {
+                                                        if is_peek_open {
+                                                            peek_queue.set(None);
+                                                            peek_messages.set(Vec::new());
+                                                            peek_error.set(None);
+                                                            return;
+                                                        }
+                                                        let q_name = q_peek.clone();
+                                                        let cached_conn = sb_conn_str.read().clone();
+                                                        let az_ref = az_peek.clone();
+                                                        peek_queue.set(Some(q_name.clone()));
+                                                        peek_messages.set(Vec::new());
+                                                        peek_error.set(None);
+                                                        peek_loading.set(true);
+                                                        spawn(async move {
+                                                            if let Some(ref a) = az_ref {
+                                                                let rg = a.resource_group.clone();
+                                                                // Resolve namespace from config or discover.
+                                                                let ns = if !a.sb_namespace.is_empty() { a.sb_namespace.clone() } else {
+                                                                    let sub2 = a.subscription.clone();
+                                                                    let rg2 = rg.clone();
+                                                                    match tokio::task::spawn_blocking(move || azure::list_service_bus_namespaces(&sub2, &rg2)).await {
+                                                                        Ok(Ok(mut list)) => list.drain(..).next().unwrap_or_default(),
+                                                                        _ => String::new(),
+                                                                    }
+                                                                };
+                                                                if ns.is_empty() {
+                                                                    peek_error.set(Some("No Service Bus namespace configured for this profile".into()));
+                                                                    peek_loading.set(false);
+                                                                    return;
+                                                                }
+                                                                let conn = if let Some(c) = cached_conn { Ok(c) } else {
+                                                                    let rg2 = rg.clone();
+                                                                    let ns2 = ns.clone();
+                                                                    tokio::task::spawn_blocking(move || azure::sb_get_connection_string(&rg2, &ns2))
+                                                                        .await.unwrap_or_else(|e| Err(format!("{e}")))
+                                                                };
+                                                                match conn {
+                                                                    Ok(cs) => {
+                                                                        sb_conn_str.set(Some(cs.clone()));
+                                                                        match azure::sb_peek_dead_letters(&cs, &q_name, 10).await {
+                                                                            Ok(msgs) => {
+                                                                                crate::services::activity::info(
+                                                                                    "Peeked dead-letter messages",
+                                                                                    format!("queue:{} ({} msg)", q_name, msgs.len()),
+                                                                                );
+                                                                                peek_messages.set(msgs);
+                                                                            }
+                                                                            Err(e) => {
+                                                                                crate::services::activity::error(
+                                                                                    "Peek DL failed",
+                                                                                    format!("queue:{}", q_name),
+                                                                                    e.clone(),
+                                                                                );
+                                                                                peek_error.set(Some(e));
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                    Err(e) => peek_error.set(Some(format!("Auth: {e}"))),
+                                                                }
+                                                            }
+                                                            peek_loading.set(false);
+                                                        });
+                                                    },
+                                                    "🔍"
+                                                }
+                                            }
+                                        }
                                     }
                                     if az.is_some() {
                                         button {
@@ -1055,6 +1221,36 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                                                 }
                                             },
                                             "📨"
+                                        }
+                                    }
+                                }
+                                // ── Dead-letter peek panel ─────────────────
+                                if is_peek_open {
+                                    {
+                                        let loading = *peek_loading.read();
+                                        let err = peek_error.read().clone();
+                                        let msgs = peek_messages.read().clone();
+                                        rsx! {
+                                            div { class: "sb-peek-panel",
+                                                div { class: "sb-peek-header",
+                                                    span { "🔍 Dead-letter messages — " }
+                                                    strong { "{q}" }
+                                                    span { class: "sb-peek-meta", " (peek-lock, non-destructive)" }
+                                                }
+                                                if loading {
+                                                    div { class: "sb-peek-loading", "Peeking…" }
+                                                } else if let Some(e) = err {
+                                                    div { class: "sb-peek-error", "❌ {e}" }
+                                                } else if msgs.is_empty() {
+                                                    div { class: "sb-peek-loading",
+                                                        "No messages visible right now. Some may be locked by other consumers."
+                                                    }
+                                                } else {
+                                                    for (i, m) in msgs.iter().enumerate() {
+                                                        DeadLetterRow { idx: i, msg: m.clone() }
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -1275,4 +1471,89 @@ fn epoch_now() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+/// One dead-letter row with expand-on-click to reveal the body.
+#[derive(Props, Clone, PartialEq)]
+struct DeadLetterRowProps {
+    idx: usize,
+    msg: azure::DeadLetterMessage,
+}
+
+#[component]
+fn DeadLetterRow(props: DeadLetterRowProps) -> Element {
+    let mut expanded = use_signal(|| false);
+    let is_exp = *expanded.read();
+    let m = &props.msg;
+    let reason = if m.dead_letter_reason.is_empty() { "—" } else { m.dead_letter_reason.as_str() };
+    let when = if m.enqueued_time.is_empty() { String::new() } else {
+        run_time_short(&m.enqueued_time)
+    };
+    let copy_payload = m.body.clone();
+
+    rsx! {
+        div {
+            class: if is_exp { "sb-dl-row expanded" } else { "sb-dl-row" },
+            onclick: move |_| { let v = !*expanded.peek(); expanded.set(v); },
+            span { class: "sb-dl-idx", "#{props.idx + 1}" }
+            span { class: "sb-dl-reason", title: "DeadLetterReason", "{reason}" }
+            span { class: "sb-dl-when", "{when}" }
+            span { class: "sb-dl-delivery", title: "Delivery count", "⤴ {m.delivery_count}" }
+            span { class: "sb-dl-expand-hint", if is_exp { "▼" } else { "▶" } }
+        }
+        if is_exp {
+            div { class: "sb-dl-detail",
+                if !m.dead_letter_description.is_empty() {
+                    div { class: "sb-dl-error-block",
+                        div { class: "sb-dl-label", "Error description" }
+                        pre { "{m.dead_letter_description}" }
+                    }
+                }
+                div { class: "sb-dl-body-block",
+                    div { class: "sb-dl-body-header",
+                        span { class: "sb-dl-label", "Body" }
+                        if !m.message_id.is_empty() {
+                            span { class: "sb-dl-mid", "MessageId: {m.message_id}" }
+                        }
+                        button {
+                            class: "btn btn-small",
+                            title: "Copy body to clipboard",
+                            onclick: move |e: Event<MouseData>| {
+                                e.stop_propagation();
+                                let payload = copy_payload.clone();
+                                spawn(async move {
+                                    tokio::task::spawn_blocking(move || {
+                                        if let Ok(mut cb) = arboard::Clipboard::new() {
+                                            let _ = cb.set_text(payload);
+                                        }
+                                    }).await.ok();
+                                });
+                            },
+                            "⎘"
+                        }
+                    }
+                    pre { class: "sb-dl-body", "{m.body}" }
+                }
+            }
+        }
+    }
+}
+
+/// Append a per-chain history point so the chain list can draw a sparkline.
+/// Cheap — bounded to MAX_PER_CHAIN entries on disk.
+fn append_history_point(workspace_dir: &str, chain_label: &str, health: &ChainHealth) {
+    if workspace_dir.is_empty() { return; }
+    let point = history_cache::HealthPoint {
+        ts: epoch_now(),
+        success_rate: health.success_rate,
+        dead_letters: health.dead_letters,
+        stuck_count: health.stuck_count,
+        failure_streak: health.failure_streak,
+    };
+    let dir = workspace_dir.to_string();
+    let label = chain_label.to_string();
+    // Disk write is small but we still detach so we don't block the UI thread.
+    std::thread::spawn(move || {
+        history_cache::append(&dir, &label, point);
+    });
 }

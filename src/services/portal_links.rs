@@ -1,0 +1,186 @@
+//! URL builders + opener for the Azure portal.
+//!
+//! Every chain step, queue, function app, etc. gets a one-click 🔗 button that
+//! deep-links into the Portal so users can jump straight into the official UI
+//! for the deep-dive operations ais-monitor doesn't cover (cost, app settings,
+//! peek-DL messages in Service Bus Explorer, etc.).
+//!
+//! The links use the portal's `#@{tenant}/resource/<resource-id>` fragment so
+//! they open the correct directory automatically. `tenant` falls back to
+//! "default" — the portal will still resolve a logged-in session correctly,
+//! it just doesn't pre-select the directory.
+
+const PORTAL_BASE: &str = "https://portal.azure.com";
+
+/// Returns either `#@{tenant}/` (with trailing slash) or `#` — the use sites
+/// concatenate `{frag}resource/...` so a missing tenant produces a clean
+/// `#resource/...` instead of the bad `#/resource/...` URL that silently
+/// routes to the Portal home page.
+fn tenant_fragment(tenant: &str) -> String {
+    if tenant.is_empty() { "#".to_string() } else { format!("#@{tenant}/") }
+}
+
+/// Logic App Standard site (the app, not a specific workflow).
+///
+/// Lands on the site Overview blade; the user clicks "Workflows" from the
+/// left nav to drill in. Tried `.../sites/{app}/workflows` but the trailing
+/// `/workflows` segment isn't a standard resource sub-path and the Portal
+/// silently dropped it.
+pub fn logic_app(tenant: &str, subscription: &str, rg: &str, app: &str) -> String {
+    format!(
+        "{base}/{frag}resource/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.Web/sites/{app}",
+        base = PORTAL_BASE,
+        frag = tenant_fragment(tenant),
+        sub = subscription,
+        rg = rg,
+        app = app,
+    )
+}
+
+/// A specific workflow inside a Logic App Standard site.
+///
+/// Logic Apps Standard workflows are NOT a first-class ARM resource type, so
+/// the generic `#@{tenant}/resource/<id>` form falls through to the Portal
+/// landing page. They live inside the EMA blade extension and are reached
+/// via a deep-link of the form:
+///
+///   https://portal.azure.com/#view/Microsoft_Azure_EMA/WorkflowMenuBlade/
+///     ~/runHistory/resourceId/<id>/location/<region>/isReadOnly~/false/
+///     kind/Stateful
+///
+/// The Portal validates `location` server-side and refuses to render the
+/// blade without it (`ErrorInitializing: missing 'location'`). The caller
+/// passes it in once we've discovered the parent site's region.
+///
+/// If `location` is `None` we fall back to the site Overview URL — better
+/// to land somewhere navigable than to throw an error page at the user.
+///
+/// The tenant fragment is intentionally dropped — the `#view/...` form
+/// doesn't support `#@{tenant}/`; Azure resolves the active session's tenant
+/// automatically.
+pub fn workflow(
+    tenant: &str,
+    subscription: &str,
+    rg: &str,
+    app: &str,
+    workflow: &str,
+    location: Option<&str>,
+) -> String {
+    let Some(loc) = location.filter(|l| !l.is_empty()) else {
+        return logic_app(tenant, subscription, rg, app);
+    };
+    let resource_id = format!(
+        "/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.Web/sites/{app}/workflows/{wf}",
+        sub = subscription, rg = rg, app = app, wf = workflow,
+    );
+    let encoded_id = urlencoding::encode(&resource_id);
+    let encoded_loc = urlencoding::encode(loc);
+    format!(
+        "{base}/#view/Microsoft_Azure_EMA/WorkflowMenuBlade/~/runHistory/resourceId/{encoded_id}/location/{encoded_loc}/isReadOnly~/false/kind/Stateful",
+        base = PORTAL_BASE,
+    )
+}
+
+/// A Service Bus queue blade.
+///
+/// Landed on `/explorer` (the Service Bus Explorer tab) instead of the
+/// default Overview, because monitor users coming from a DL alert almost
+/// always want to peek/repair messages — saving the extra click into
+/// "Service Bus Explorer" in the left nav.
+pub fn sb_queue(tenant: &str, subscription: &str, rg: &str, namespace: &str, queue: &str) -> String {
+    format!(
+        "{base}/{frag}resource/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.ServiceBus/namespaces/{ns}/queues/{q}/explorer",
+        base = PORTAL_BASE,
+        frag = tenant_fragment(tenant),
+        sub = subscription,
+        rg = rg,
+        ns = namespace,
+        q = queue,
+    )
+}
+
+/// Service Bus namespace overview.
+#[allow(dead_code)]
+pub fn sb_namespace(tenant: &str, subscription: &str, rg: &str, namespace: &str) -> String {
+    format!(
+        "{base}/{frag}resource/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.ServiceBus/namespaces/{ns}",
+        base = PORTAL_BASE,
+        frag = tenant_fragment(tenant),
+        sub = subscription,
+        rg = rg,
+        ns = namespace,
+    )
+}
+
+/// A Function App overview.
+pub fn function_app(tenant: &str, subscription: &str, rg: &str, app: &str) -> String {
+    format!(
+        "{base}/{frag}resource/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.Web/sites/{app}",
+        base = PORTAL_BASE,
+        frag = tenant_fragment(tenant),
+        sub = subscription,
+        rg = rg,
+        app = app,
+    )
+}
+
+/// A single Function inside a Function App. Lands on the **Invocations** tab,
+/// directly equivalent to the workflow run-history view. Like `workflow()`,
+/// this uses the blade-extension `#view/...` form (no tenant prefix).
+pub fn function(_tenant: &str, subscription: &str, rg: &str, app: &str, function_name: &str) -> String {
+    let resource_id = format!(
+        "/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.Web/sites/{app}/functions/{fn}",
+        sub = subscription, rg = rg, app = app, fn = function_name,
+    );
+    let encoded = urlencoding::encode(&resource_id);
+    format!(
+        "{base}/#view/WebsitesExtension/FunctionTabMenuBlade/~/invocations/resourceId/{encoded}",
+        base = PORTAL_BASE,
+    )
+}
+
+/// Open the URL in the user's default browser. Falls back to logging an
+/// activity error if the OS open fails (rare but worth surfacing).
+pub fn open_in_browser(url: &str) {
+    // Spawn so a slow open(1) doesn't block the UI thread.
+    let url = url.to_string();
+    std::thread::spawn(move || {
+        if let Err(e) = open_url(&url) {
+            crate::services::activity::error(
+                "Failed to open Portal link",
+                url.clone(),
+                e,
+            );
+        } else {
+            crate::services::activity::info("Opened Portal link", url);
+        }
+    });
+}
+
+#[cfg(target_os = "macos")]
+fn open_url(url: &str) -> Result<(), String> {
+    let status = std::process::Command::new("open")
+        .arg(url)
+        .status()
+        .map_err(|e| format!("{e}"))?;
+    if status.success() { Ok(()) } else { Err(format!("`open` exited {}", status)) }
+}
+
+#[cfg(target_os = "windows")]
+fn open_url(url: &str) -> Result<(), String> {
+    // `start` is a cmd builtin, not an exe, so route via cmd /c.
+    let status = std::process::Command::new("cmd")
+        .args(["/c", "start", "", url])
+        .status()
+        .map_err(|e| format!("{e}"))?;
+    if status.success() { Ok(()) } else { Err(format!("`start` exited {}", status)) }
+}
+
+#[cfg(all(unix, not(target_os = "macos")))]
+fn open_url(url: &str) -> Result<(), String> {
+    let status = std::process::Command::new("xdg-open")
+        .arg(url)
+        .status()
+        .map_err(|e| format!("{e}"))?;
+    if status.success() { Ok(()) } else { Err(format!("`xdg-open` exited {}", status)) }
+}

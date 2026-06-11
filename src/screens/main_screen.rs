@@ -7,7 +7,7 @@ use crate::components::{
     graph_panel::GraphPanel,
     functions_panel::FunctionsPanel,
 };
-use crate::services::{activity, azure, azure::EgLink, chain, health_cache, kpi, remote_chain};
+use crate::services::{activity, azure, azure::EgLink, chain, health_cache, history_cache, kpi, remote_chain};
 use std::collections::HashMap;
 
 #[derive(Props, Clone, PartialEq)]
@@ -33,6 +33,14 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     let chain_names = use_signal(|| HashMap::<String, String>::new());
     let mut chain_health  = use_signal(|| HashMap::<String, ChainHealth>::new());
     let mut last_checked: Signal<HashMap<String, u64>> = use_signal(HashMap::new);
+    let mut chain_history: Signal<HashMap<String, Vec<history_cache::HealthPoint>>> =
+        use_signal(HashMap::new);
+    // Discovered site metadata used to build proper Portal deep-links:
+    //   • Logic Apps Standard workflow deep-link requires the site `location`.
+    //   • Service Bus queue link needs a namespace; profile may not have one set.
+    // Both fetched once on mount via az CLI; None until the call returns.
+    let mut discovered_location: Signal<Option<String>> = use_signal(|| None);
+    let mut discovered_sb_namespace: Signal<Option<String>> = use_signal(|| None);
     let mut view_mode = use_signal(|| ViewMode::Chains);
     // Mirrors `view_mode == Graph` as a plain bool signal so the (always-mounted)
     // GraphPanel can react to becoming visible and re-measure its container.
@@ -72,6 +80,47 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
         });
     });
 
+    // Discover site location + SB namespace once on mount. Both feed the
+    // Portal deep-links (workflow URL needs location, queue URL needs ns).
+    // Fire-and-forget — links degrade gracefully (workflow → site overview,
+    // queue → no link button) until these populate.
+    use_effect({
+        let az = az.clone();
+        move || {
+            let az = az.clone();
+            spawn(async move {
+                let sub = az.subscription.clone();
+                let rg  = az.resource_group.clone();
+                let app = az.app_name.clone();
+                // Site location for the Logic App site.
+                let sub_loc = sub.clone();
+                let rg_loc  = rg.clone();
+                let app_loc = app.clone();
+                if let Ok(Ok(loc)) = tokio::task::spawn_blocking(move || {
+                    azure::get_site_location(&sub_loc, &rg_loc, &app_loc)
+                }).await {
+                    discovered_location.set(Some(loc));
+                }
+                // SB namespace — only discover if profile didn't have one set.
+                if az.sb_namespace.is_empty() {
+                    let sub2 = sub.clone();
+                    let rg2  = rg.clone();
+                    if let Ok(Ok(mut list)) = tokio::task::spawn_blocking(move || {
+                        azure::list_service_bus_namespaces(&sub2, &rg2)
+                    }).await {
+                        if let Some(ns) = list.drain(..).next() {
+                            discovered_sb_namespace.set(Some(ns));
+                        }
+                    }
+                } else {
+                    // Profile already configured one — surface it through the
+                    // same signal so call sites have a single read path.
+                    discovered_sb_namespace.set(Some(az.sb_namespace.clone()));
+                }
+            });
+        }
+    });
+
     // Per-workspace directory used for cached health/last_checked snapshots and
     // any other on-disk artifacts. Same convention used in chain_detail.rs.
     let workspace_dir: String = dirs::config_dir()
@@ -100,7 +149,24 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
             if !snap.last_checked.is_empty() {
                 last_checked.set(snap.last_checked);
             }
+            // Load sparkline history at the same time.
+            let hist = history_cache::load(&dir);
+            if !hist.chains.is_empty() {
+                chain_history.set(hist.chains);
+            }
             hydrated.set(true);
+        }
+    });
+
+    // Re-read history from disk whenever last_checked changes — that's the
+    // signal that a chain check just appended a new point.
+    use_effect({
+        let dir = workspace_dir.clone();
+        move || {
+            // Subscribe to last_checked so this effect re-runs on changes.
+            let _ = last_checked.read().len();
+            let hist = history_cache::load(&dir);
+            chain_history.set(hist.chains);
         }
     });
 
@@ -427,11 +493,14 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                             class: "btn btn-small",
                             disabled: is_busy || chains.read().is_empty(),
                             title: "Run health checks on all chains (success rate, dead letters, stuck runs)",
-                            onclick: move |_| {
+                            onclick: {
+                                let workspace_dir_outer = workspace_dir.clone();
+                                move |_| {
                                 let az      = az2.clone();
                                 let all     = chains.read().clone();
                                 let total_n = all.len();
                                 let depth   = *run_depth.read();
+                                let workspace_dir_history = workspace_dir_outer.clone();
                                 checking_all.set(true);
                                 check_progress.set((0, total_n));
                                 activity::info(
@@ -490,6 +559,20 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                             failed_chains.push((label_for_log.clone(), errors.join("\n")));
                                         }
 
+                                        // Append a history point so the chain list can draw a sparkline.
+                                        let point = history_cache::HealthPoint {
+                                            ts: epoch_now(),
+                                            success_rate: health.success_rate,
+                                            dead_letters: health.dead_letters,
+                                            stuck_count: health.stuck_count,
+                                            failure_streak: health.failure_streak,
+                                        };
+                                        let dir_for_history = workspace_dir_history.clone();
+                                        let label_for_history = label_for_log.clone();
+                                        tokio::task::spawn_blocking(move || {
+                                            history_cache::append(&dir_for_history, &label_for_history, point);
+                                        }).await.ok();
+
                                         // Write result into the shared health map
                                         let mut map = chain_health.read().clone();
                                         map.insert(label.clone(), health);
@@ -514,6 +597,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                         activity::warn("Check all completed with errors", summary, detail);
                                     }
                                 });
+                                }
                             },
                             if *checking_all.read() {
                                 "Checking {done}/{total}…"
@@ -581,6 +665,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                     chain_names: chain_names.read().clone(),
                                     chain_health: chain_health.read().clone(),
                                     last_checked: last_checked.read().clone(),
+                                    chain_history: chain_history.read().clone(),
                                 }
                                 div { class: "resize-handle", id: "resize-handle" }
                                 div { class: "detail-pane",
@@ -597,6 +682,8 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                             last_checked: Some(last_checked),
                                             eg_links: eg_links,
                                             run_depth: Some(run_depth),
+                                            discovered_location: discovered_location,
+                                            discovered_sb_namespace: discovered_sb_namespace,
                                         }
                                     } else {
                                         div { class: "detail-empty",

@@ -251,6 +251,19 @@ pub fn FunctionsPanel(props: FunctionsPanelProps) -> Element {
                                     span { class: "func-app-count",
                                         "{app_funcs.len()} functions"
                                     }
+                                    {
+                                        let url = crate::services::portal_links::function_app(
+                                            &az.tenant, &az.subscription, &az.resource_group, &app_name,
+                                        );
+                                        rsx! {
+                                            button {
+                                                class: "portal-link",
+                                                title: "Open Function App in Azure Portal",
+                                                onclick: move |_| crate::services::portal_links::open_in_browser(&url),
+                                                "🔗"
+                                            }
+                                        }
+                                    }
                                 }
 
                                 if app_funcs.is_empty() {
@@ -282,9 +295,21 @@ pub fn FunctionsPanel(props: FunctionsPanelProps) -> Element {
                                                     let mut fetch_errors = fetch_errors.clone();
                                                     let an = app_name.clone();
                                                     let fn2 = fn_name.clone();
+                                                    let portal_fn_url = crate::services::portal_links::function(
+                                                        &az.tenant, &az.subscription, &az.resource_group,
+                                                        &app_name, &fn_name,
+                                                    );
                                                     rsx! {
                                                         tr { class: "func-row{disabled_class}",
-                                                            td { class: "func-name", "{fn_name}" }
+                                                            td { class: "func-name",
+                                                                "{fn_name}"
+                                                                button {
+                                                                    class: "portal-link",
+                                                                    title: "Open this function's invocations in Azure Portal",
+                                                                    onclick: move |_| crate::services::portal_links::open_in_browser(&portal_fn_url),
+                                                                    "🔗"
+                                                                }
+                                                            }
                                                             td { class: "func-lang",
                                                                 span { class: "func-lang-badge", "{func.language}" }
                                                             }

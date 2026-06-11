@@ -146,6 +146,28 @@ pub fn list_logic_apps(sub: &str, rg: &str) -> Result<Vec<String>, String> {
         .collect())
 }
 
+/// Returns the Azure region of a `Microsoft.Web/sites` resource, e.g.
+/// `"Switzerland North"` or `"westeurope"`. Required for the Logic Apps
+/// `WorkflowMenuBlade` deep-link — without it the Portal fails the blade
+/// init with `ErrorInitializing: missing 'location'`.
+pub fn get_site_location(sub: &str, rg: &str, site: &str) -> Result<String, String> {
+    let output = az_command(&[
+        "webapp", "show",
+        "--subscription", sub,
+        "--resource-group", rg,
+        "--name", site,
+        "--query", "location",
+        "--output", "tsv",
+    ])
+    .output()
+    .map_err(|e| format!("az webapp show failed: {e}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    let loc = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if loc.is_empty() { Err("empty location returned by az".into()) } else { Ok(loc) }
+}
+
 pub fn list_service_bus_namespaces(sub: &str, rg: &str) -> Result<Vec<String>, String> {
     let output = az_command(&[
             "servicebus", "namespace", "list",
@@ -699,6 +721,140 @@ pub async fn sb_send_message(conn_str: &str, queue: &str, body: &str) -> Result<
     } else {
         Err(format!("SB returned {}: {}", status, text))
     }
+}
+
+/// One peeked dead-letter message.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct DeadLetterMessage {
+    /// Message body — typically the JSON envelope. We truncate at fetch time
+    /// to 8 KB; longer payloads are best inspected via Service Bus Explorer.
+    pub body: String,
+    pub message_id: String,
+    pub enqueued_time: String,
+    /// `DeadLetterReason` from the BrokerProperties — e.g. "MessageProcessingFailed",
+    /// "MaxDeliveryCountExceeded", "MessageLockTokenInvalid".
+    pub dead_letter_reason: String,
+    /// `DeadLetterErrorDescription` — typically the exception message from the
+    /// consumer that abandoned the message.
+    pub dead_letter_description: String,
+    /// How many times the message was attempted before being dead-lettered.
+    pub delivery_count: i64,
+}
+
+/// Peek (non-destructively) up to `max` dead-letter messages from a queue's
+/// `$DeadLetterQueue` sub-queue. Each call to the SB REST `POST /head` endpoint
+/// returns a single locked message which we don't acknowledge — the lock auto-
+/// releases after the queue's default lock duration (typically 60s) so this is
+/// safe to call repeatedly for browsing.
+pub async fn sb_peek_dead_letters(
+    conn_str: &str,
+    queue: &str,
+    max: usize,
+) -> Result<Vec<DeadLetterMessage>, String> {
+    // Parse connection string (same logic as sb_send_message)
+    let mut endpoint = "";
+    let mut key_name = "";
+    let mut key = "";
+    for part in conn_str.split(';') {
+        let part = part.trim();
+        if let Some(v) = part.strip_prefix("Endpoint=sb://") {
+            endpoint = v.trim_end_matches('/');
+        } else if let Some(v) = part.strip_prefix("SharedAccessKeyName=") {
+            key_name = v;
+        } else if let Some(v) = part.strip_prefix("SharedAccessKey=") {
+            key = v;
+        }
+    }
+    if endpoint.is_empty() || key.is_empty() {
+        return Err("Invalid Service Bus connection string".into());
+    }
+
+    let resource_path = format!("{}/$DeadLetterQueue", queue);
+    let url = format!("https://{}/{}/messages/head?timeout=5", endpoint, resource_path);
+
+    // SAS token covering the whole DLQ path (same shape as the send path).
+    let expiry = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() + 300;
+    let resource_uri = format!("https://{}/{}", endpoint, resource_path).to_lowercase();
+    let encoded_resource = lowercase_url_encode(&resource_uri);
+    let to_sign = format!("{}\n{}", encoded_resource, expiry);
+
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    type HmacSha256 = Hmac<Sha256>;
+    let decoded_key = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, key)
+        .map_err(|e| format!("base64 decode: {e}"))?;
+    let mut mac = HmacSha256::new_from_slice(&decoded_key)
+        .map_err(|e| format!("hmac: {e}"))?;
+    mac.update(to_sign.as_bytes());
+    let sig_bytes = mac.finalize().into_bytes();
+    let signature = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, sig_bytes);
+    let encoded_sig = lowercase_url_encode(&signature);
+    let token = format!(
+        "SharedAccessSignature sr={}&sig={}&se={}&skn={}",
+        encoded_resource, encoded_sig, expiry, key_name
+    );
+
+    let client = reqwest::Client::new();
+    let mut out = Vec::with_capacity(max);
+
+    // We peek up to `max` messages. Each request locks the next one in the queue
+    // — Azure rotates internal cursors so repeated calls advance through the
+    // visible messages. (Locked messages are skipped on subsequent peek-locks.)
+    for _ in 0..max {
+        let resp = client
+            .post(&url)
+            .header("Authorization", &token)
+            // No Content-Type since this is an empty POST.
+            .body(Vec::<u8>::new())
+            .send()
+            .await
+            .map_err(|e| format!("HTTP error: {e}"))?;
+
+        let status = resp.status();
+        // 204 No Content = empty (no more messages currently visible).
+        if status.as_u16() == 204 { break; }
+
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            if status.as_u16() == 401 && text.is_empty() {
+                return Err("401 — your IP is not in the Service Bus firewall allowlist. Connect to VPN or add your IP in the Azure portal (SB namespace → Networking).".into());
+            }
+            return Err(format!("SB returned {}: {}", status, text));
+        }
+
+        // BrokerProperties is sent back as a JSON header — that's where the
+        // dead-letter reason and delivery count live.
+        let broker_props = resp.headers()
+            .get("BrokerProperties")
+            .and_then(|h| h.to_str().ok())
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        // DeadLetterReason / DeadLetterErrorDescription are custom properties
+        // promoted to top-level headers when present.
+        let dl_reason = resp.headers().get("DeadLetterReason")
+            .and_then(|h| h.to_str().ok()).unwrap_or("").to_string();
+        let dl_desc = resp.headers().get("DeadLetterErrorDescription")
+            .and_then(|h| h.to_str().ok()).unwrap_or("").to_string();
+
+        let body_bytes = resp.bytes().await.unwrap_or_default();
+        // Truncate at 8 KB to keep the UI snappy and the memory bounded.
+        let body = String::from_utf8_lossy(&body_bytes[..body_bytes.len().min(8192)]).to_string();
+
+        let bp: serde_json::Value = serde_json::from_str(&broker_props).unwrap_or(serde_json::json!({}));
+        out.push(DeadLetterMessage {
+            body,
+            message_id: bp.get("MessageId").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            enqueued_time: bp.get("EnqueuedTimeUtc").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            dead_letter_reason: dl_reason,
+            dead_letter_description: dl_desc,
+            delivery_count: bp.get("DeliveryCount").and_then(|v| v.as_i64()).unwrap_or(0),
+        });
+    }
+
+    Ok(out)
 }
 
 // ── EventGrid ────────────────────────────────────────────────────────────────
