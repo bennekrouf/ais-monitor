@@ -309,7 +309,10 @@ jobs:
           $version = "${{ github.ref_name }}".TrimStart("v")
           New-Item -ItemType Directory -Path dist -Force | Out-Null
           & $iscc /DMyAppVersion=$version installer\installer.iss
-          $exe = "ais-monitor-setup-$version.exe"
+          # Inno now emits a versionless filename so the "/releases/latest/download/"
+          # URL is stable across releases. Version info still lives inside the .exe
+          # (properties + wizard) and in the app's own title bar.
+          $exe = "ais-monitor-setup.exe"
           $hash = (Get-FileHash "dist\$exe" -Algorithm SHA256).Hash.ToLower()
           "$hash  $exe" | Out-File "dist\$exe.sha256" -Encoding ASCII
           Write-Host "Installer: dist\$exe ($([math]::Round((Get-Item dist\$exe).Length/1MB,1)) MB)"
@@ -351,8 +354,8 @@ jobs:
         with:
           name: ais-monitor-windows
           path: |
-            dist\ais-monitor-setup-*.exe
-            dist\ais-monitor-setup-*.exe.sha256
+            dist\ais-monitor-setup.exe
+            dist\ais-monitor-setup.exe.sha256
 
       # ── SignPath Foundation: code-sign the TUI .exe for free (OSS only) ────
       # Uncomment after SignPath Foundation has approved the project. Mirrors
@@ -544,7 +547,9 @@ jobs:
           Signed with Apple Developer ID and notarized — opens with a normal double-click.
 
           ### Windows
-          Download the `ais-monitor-setup-<version>.exe` from this release and run it.
+          Download `ais-monitor-setup.exe` from this release and run it. The same
+          URL also serves the latest version directly:
+          `https://github.com/${{ github.repository }}/releases/latest/download/ais-monitor-setup.exe`
 
           ### Linux (x86_64)
           ```bash
