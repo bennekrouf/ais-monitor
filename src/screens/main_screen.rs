@@ -32,6 +32,13 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     let mut deployed_workflows = use_signal(|| Vec::<String>::new());
     let chain_names = use_signal(|| HashMap::<String, String>::new());
     let mut chain_health  = use_signal(|| HashMap::<String, ChainHealth>::new());
+    // Per-chain, per-workflow raw run lists shared with ChainDetailView so
+    // that "Check all" populates the per-workflow KPI columns (Success / Runs /
+    // Avg / Streak) the same way an individual "Check" does. Without this the
+    // table cells would stay empty after Check all because the component-local
+    // `all_runs` signal is empty.
+    let mut chain_runs: Signal<HashMap<String, HashMap<String, Vec<azure::RunInfo>>>> =
+        use_signal(HashMap::new);
     let mut last_checked: Signal<HashMap<String, u64>> = use_signal(HashMap::new);
     let mut chain_history: Signal<HashMap<String, Vec<history_cache::HealthPoint>>> =
         use_signal(HashMap::new);
@@ -60,6 +67,10 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     });
     let mut loading_chains = use_signal(|| true);
     let mut load_error     = use_signal(|| Option::<String>::None);
+    // Gates the Refresh-button confirmation modal. Refresh clears the
+    // chain-discovery cache and re-fetches everything from Azure, which can
+    // take a while on large Logic Apps — better to ask first.
+    let mut confirm_refresh = use_signal(|| false);
     let mut checking_all   = use_signal(|| false);
     let mut check_progress = use_signal(|| (0usize, 0usize)); // (done, total)
     // Shared run-history sample size — both "Check all" and the per-chain
@@ -442,44 +453,13 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                         }
                     }
                 }
-                // Refresh button to clear cache and reload
+                // Refresh button — opens a confirm modal before doing the work,
+                // since clearing the cache and re-fetching every workflow can
+                // be a multi-minute round trip on a large Logic App.
                 button {
                     class: "btn btn-small",
                     disabled: *loading_chains.read(),
-                    onclick: {
-                        let az = az.clone();
-                        move |_| {
-                            let az = az.clone();
-                            loading_chains.set(true);
-                            load_error.set(None);
-                            spawn(async move {
-                                let sub = az.subscription.clone();
-                                let app = az.app_name.clone();
-                                let sub2 = sub.clone();
-                                let rg = az.resource_group.clone();
-                                let app2 = app.clone();
-                                let local_dir = az.local_dir.clone();
-                                tokio::task::spawn_blocking(move || {
-                                    remote_chain::clear_cache(&sub, &app);
-                                }).await.ok();
-                                let result = tokio::task::spawn_blocking(move || {
-                                    remote_chain::discover_chains_remote(&sub2, &rg, &app2, &local_dir)
-                                }).await;
-                                match result {
-                                    Ok(Ok(discovered)) => {
-                                        let deployed: Vec<String> = discovered.iter()
-                                            .flat_map(|c| c.steps.iter().map(|s| s.workflow.clone()))
-                                            .collect();
-                                        deployed_workflows.set(deployed);
-                                        chains.set(discovered);
-                                    }
-                                    Ok(Err(e)) => load_error.set(Some(e)),
-                                    Err(e) => load_error.set(Some(format!("{e}"))),
-                                }
-                                loading_chains.set(false);
-                            });
-                        }
-                    },
+                    onclick: move |_| confirm_refresh.set(true),
                     if *loading_chains.read() { "Refreshing…" } else { "Refresh" }
                 }
 
@@ -515,13 +495,19 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                         let sub  = az.subscription.clone();
                                         let rg   = az.resource_group.clone();
                                         let app  = az.app_name.clone();
-                                        let ns   = az.sb_namespace.clone();
+                                        // Fall back to the namespace MainScreen discovered post-mount
+                                        // when the profile doesn't have one configured.
+                                        let ns = if !az.sb_namespace.is_empty() {
+                                            az.sb_namespace.clone()
+                                        } else {
+                                            discovered_sb_namespace.read().clone().unwrap_or_default()
+                                        };
                                         let steps  = ch.steps.iter().map(|s| s.workflow.clone()).collect::<Vec<_>>();
                                         let queues = ch.queues.clone();
                                         let label  = ch.label.clone();
                                         let label_for_log = label.clone();
 
-                                        let (health, errors) = tokio::task::spawn_blocking(move || {
+                                        let (health, errors, runs_map) = tokio::task::spawn_blocking(move || {
                                             let mut errors: Vec<String> = Vec::new();
                                             // Run history for each workflow step
                                             let mut runs_map: HashMap<String, Vec<azure::RunInfo>> = HashMap::new();
@@ -552,8 +538,16 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                             } else { None };
                                             let stuck   = all_kpis.iter().map(|k| k.stuck_runs.len()).sum();
                                             let streak  = all_kpis.iter().map(|k| k.failure_streak).max().unwrap_or(0);
-                                            (ChainHealth { success_rate: rate, dead_letters: dl_total, stuck_count: stuck, failure_streak: streak }, errors)
-                                        }).await.unwrap_or((ChainHealth::default(), vec!["spawn_blocking panic".into()]));
+                                            (ChainHealth { success_rate: rate, dead_letters: dl_total, stuck_count: stuck, failure_streak: streak }, errors, runs_map)
+                                        }).await.unwrap_or((ChainHealth::default(), vec!["spawn_blocking panic".into()], HashMap::new()));
+
+                                        // Share the per-workflow runs with ChainDetailView so its
+                                        // per-workflow KPI columns can render after "Check all".
+                                        {
+                                            let mut map = chain_runs.read().clone();
+                                            map.insert(label.clone(), runs_map);
+                                            chain_runs.set(map);
+                                        }
 
                                         if !errors.is_empty() {
                                             failed_chains.push((label_for_log.clone(), errors.join("\n")));
@@ -679,6 +673,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                             az_config: Some(az.clone()),
                                             chain_names: chain_names,
                                             chain_health: Some(chain_health),
+                                            chain_runs: Some(chain_runs),
                                             last_checked: Some(last_checked),
                                             eg_links: eg_links,
                                             run_depth: Some(run_depth),
@@ -719,6 +714,66 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
             }
             // Floating activity log — visible above the main content.
             ActivityPanel {}
+
+            // Refresh confirmation modal — opened by the topbar Refresh button.
+            if *confirm_refresh.read() {
+                div { class: "modal-backdrop",
+                    onclick: move |_| confirm_refresh.set(false),
+                    div { class: "modal-card",
+                        onclick: move |e: Event<MouseData>| e.stop_propagation(),
+                        h3 { class: "modal-title", "Refresh chains?" }
+                        p { class: "modal-body",
+                            "This clears the chain-discovery cache and re-fetches every workflow from Azure. It can take a while on large Logic Apps."
+                        }
+                        div { class: "modal-actions",
+                            button {
+                                class: "btn btn-small",
+                                onclick: move |_| confirm_refresh.set(false),
+                                "Cancel"
+                            }
+                            button {
+                                class: "btn btn-small btn-primary",
+                                onclick: {
+                                    let az = az.clone();
+                                    move |_| {
+                                        confirm_refresh.set(false);
+                                        let az = az.clone();
+                                        loading_chains.set(true);
+                                        load_error.set(None);
+                                        spawn(async move {
+                                            let sub = az.subscription.clone();
+                                            let app = az.app_name.clone();
+                                            let sub2 = sub.clone();
+                                            let rg = az.resource_group.clone();
+                                            let app2 = app.clone();
+                                            let local_dir = az.local_dir.clone();
+                                            tokio::task::spawn_blocking(move || {
+                                                remote_chain::clear_cache(&sub, &app);
+                                            }).await.ok();
+                                            let result = tokio::task::spawn_blocking(move || {
+                                                remote_chain::discover_chains_remote(&sub2, &rg, &app2, &local_dir)
+                                            }).await;
+                                            match result {
+                                                Ok(Ok(discovered)) => {
+                                                    let deployed: Vec<String> = discovered.iter()
+                                                        .flat_map(|c| c.steps.iter().map(|s| s.workflow.clone()))
+                                                        .collect();
+                                                    deployed_workflows.set(deployed);
+                                                    chains.set(discovered);
+                                                }
+                                                Ok(Err(e)) => load_error.set(Some(e)),
+                                                Err(e) => load_error.set(Some(format!("{e}"))),
+                                            }
+                                            loading_chains.set(false);
+                                        });
+                                    }
+                                },
+                                "Refresh"
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 }

@@ -21,6 +21,11 @@ pub struct ChainDetailProps {
     pub chain_names: Signal<HashMap<String, String>>,
     #[props(default)]
     pub chain_health: Option<Signal<HashMap<String, ChainHealth>>>,
+    /// Per-chain, per-workflow raw run lists shared with MainScreen so
+    /// "Check all" populates the per-workflow KPI columns the same way an
+    /// individual "Check" does.
+    #[props(default)]
+    pub chain_runs: Option<Signal<HashMap<String, HashMap<String, Vec<azure::RunInfo>>>>>,
     #[props(default)]
     pub last_checked: Option<Signal<HashMap<String, u64>>>,
     /// Event Grid links: queue name → EG topic/subscription info
@@ -67,6 +72,10 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
     let mut run_statuses = use_signal(|| HashMap::<String, RunStatus>::new());
     let mut all_runs = use_signal(|| HashMap::<String, Vec<azure::RunInfo>>::new());
     let mut queue_statuses = use_signal(|| HashMap::<String, QueueStatus>::new());
+    // Per-queue error message from the last check_queue() attempt. Lets the UI
+    // tell the user *why* the active / dead-letter counts are missing (IP
+    // restriction, RBAC, namespace gone, etc.) instead of silently showing "—".
+    let mut queue_errors = use_signal(|| HashMap::<String, String>::new());
     let mut loading = use_signal(|| false);
     // Prefer the parent-provided run_depth signal so "Check all" sees the same
     // value. Fall back to a local signal if no parent passed one (e.g. tests).
@@ -103,7 +112,32 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
     let mut loading_actions = use_signal(|| Option::<(String, String)>::None);
 
     let chain_health_signal = props.chain_health;
+    let chain_runs_signal = props.chain_runs;
     let last_checked_signal = props.last_checked;
+    // Signal is Copy — capture once and re-read inside each spawn closure so
+    // queue checks pick up the namespace discovered after mount even when the
+    // profile didn't have `sb_namespace` configured.
+    let discovered_ns_sig = props.discovered_sb_namespace;
+
+    // Hydrate local `all_runs` from the parent-owned `chain_runs` map (populated
+    // by "Check all") so the per-workflow KPI columns render without the user
+    // having to press the per-chain "Check" again. Re-runs whenever the parent
+    // map updates or the user switches chain.
+    {
+        let label_for_hydrate = chain.label.clone();
+        use_effect(move || {
+            if let Some(parent) = chain_runs_signal {
+                if all_runs.read().is_empty() {
+                    if let Some(runs_for_chain) = parent.read().get(&label_for_hydrate).cloned() {
+                        if !runs_for_chain.is_empty() {
+                            all_runs.set(runs_for_chain);
+                        }
+                    }
+                }
+            }
+        });
+    }
+
 
     let az = props.az_config.clone();
     let chain_steps: Vec<String> = chain.steps.iter().map(|s| s.workflow.clone()).collect();
@@ -180,23 +214,45 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                     }
                     run_statuses.set(statuses);
                     all_runs.set(runs_map.clone());
+                    // Share with the parent so "Check all" and the chain list see it too.
+                    if let Some(mut parent) = chain_runs_signal {
+                        let mut m = parent.read().clone();
+                        m.insert(lbl.clone(), runs_map.clone());
+                        parent.set(m);
+                    }
 
                     let mut q_statuses = HashMap::new();
+                    let mut q_errors: HashMap<String, String> = HashMap::new();
                     for q in &queues {
                         let az = az.clone();
                         let q_name = q.clone();
                         let q_key = q.clone();
-                        let result = tokio::task::spawn_blocking(move || {
-                            azure::check_queue(&az.sb_namespace, &az.resource_group, &q_name)
-                        }).await;
-                        if let Ok(Ok(info)) = result {
-                            q_statuses.insert(q_key, QueueStatus {
-                                active: info.active,
-                                dead_letter: info.dead_letter,
-                            });
+                        let ns = if !az.sb_namespace.is_empty() {
+                            az.sb_namespace.clone()
+                        } else {
+                            discovered_ns_sig.read().clone().unwrap_or_default()
+                        };
+                        let rg = az.resource_group.clone();
+                        let result = if ns.is_empty() {
+                            Ok(Err("Service Bus namespace not configured for this profile and not discovered yet".to_string()))
+                        } else {
+                            tokio::task::spawn_blocking(move || {
+                                azure::check_queue(&ns, &rg, &q_name)
+                            }).await
+                        };
+                        match result {
+                            Ok(Ok(info)) => {
+                                q_statuses.insert(q_key, QueueStatus {
+                                    active: info.active,
+                                    dead_letter: info.dead_letter,
+                                });
+                            }
+                            Ok(Err(e)) => { q_errors.insert(q_key, e); }
+                            Err(e) => { q_errors.insert(q_key, format!("task: {e}")); }
                         }
                     }
                     queue_statuses.set(q_statuses.clone());
+                    queue_errors.set(q_errors);
                     let health = compute_health(&runs_map, &q_statuses);
                     if let Some(mut health_sig) = chain_health_signal {
                         let mut map = health_sig.read().clone();
@@ -358,6 +414,76 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                                 }
                             }
                         }
+                        // Inline KPI chips — fill the gap between Portal and Trigger.
+                        // Prefer fresh data from `all_runs` / `queue_statuses`;
+                        // fall back to the cached health from "Check all".
+                        {
+                            let runs_data = all_runs.read();
+                            let qs = queue_statuses.read();
+                            let cached = chain_health_signal
+                                .and_then(|sig| sig.read().get(&chain_label).cloned());
+
+                            let (rate_opt, streak, dead_letters): (Option<f64>, usize, i64) =
+                                if !runs_data.is_empty() {
+                                    let mut total = 0usize;
+                                    let mut ok = 0usize;
+                                    let mut max_streak = 0usize;
+                                    for s in chain.steps.iter() {
+                                        if let Some(runs) = runs_data.get(&s.workflow) {
+                                            let k = kpi::compute_workflow_kpi(runs);
+                                            total += k.total_runs;
+                                            ok += k.succeeded;
+                                            if k.failure_streak > max_streak { max_streak = k.failure_streak; }
+                                        }
+                                    }
+                                    let rate = if total > 0 { Some((ok as f64 / total as f64) * 100.0) } else { None };
+                                    let dl: i64 = qs.values().map(|q| q.dead_letter).sum();
+                                    (rate, max_streak, dl)
+                                } else if let Some(h) = cached.as_ref() {
+                                    (h.success_rate, h.failure_streak, h.dead_letters)
+                                } else {
+                                    (None, 0, 0)
+                                };
+
+                            let have_any = rate_opt.is_some() || !runs_data.is_empty() || cached.is_some();
+                            let rate_cls = match rate_opt {
+                                Some(r) if r >= 95.0 => "header-kpi-val kpi-good",
+                                Some(r) if r >= 80.0 => "header-kpi-val kpi-warn",
+                                Some(_) => "header-kpi-val kpi-bad",
+                                None => "header-kpi-val",
+                            };
+                            let dl_cls = if dead_letters == 0 { "header-kpi-val kpi-good" } else { "header-kpi-val kpi-bad" };
+                            let streak_cls = if streak == 0 { "header-kpi-val kpi-good" }
+                                else if streak <= 2 { "header-kpi-val kpi-warn" }
+                                else { "header-kpi-val kpi-bad" };
+
+                            rsx! {
+                                if have_any {
+                                    div { class: "header-kpis",
+                                        span { class: "header-kpi", title: "Success rate across the sampled run history",
+                                            span { class: "header-kpi-lbl", "Succ" }
+                                            span { class: "{rate_cls}",
+                                                {match rate_opt {
+                                                    Some(r) => format!("{:.1}%", r),
+                                                    None => "—".into(),
+                                                }}
+                                            }
+                                        }
+                                        span { class: "header-kpi", title: "Dead-letter messages across this chain's queues",
+                                            span { class: "header-kpi-lbl", "DL" }
+                                            span { class: "{dl_cls}", "{dead_letters}" }
+                                        }
+                                        span { class: "header-kpi", title: "Longest consecutive recent-failure streak across the chain's workflows",
+                                            span { class: "header-kpi-lbl", "Streak" }
+                                            span { class: "{streak_cls}", "{streak}" }
+                                        }
+                                        if *loading.read() {
+                                            span { class: "header-kpi-spinner", title: "Refreshing…", "" }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                         div { class: "detail-spacer" }
                     }
                 }
@@ -429,23 +555,44 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                                     }
                                     run_statuses.set(statuses);
                                     all_runs.set(runs_map.clone());
+                                    if let Some(mut parent) = chain_runs_signal {
+                                        let mut m = parent.read().clone();
+                                        m.insert(lbl.clone(), runs_map.clone());
+                                        parent.set(m);
+                                    }
 
                                     let mut q_statuses = HashMap::new();
+                                    let mut q_errors: HashMap<String, String> = HashMap::new();
                                     for q in &queues {
                                         let az = az.clone();
                                         let q_name = q.clone();
                                         let q_key = q.clone();
-                                        let result = tokio::task::spawn_blocking(move || {
-                                            azure::check_queue(&az.sb_namespace, &az.resource_group, &q_name)
-                                        }).await;
-                                        if let Ok(Ok(info)) = result {
-                                            q_statuses.insert(q_key, QueueStatus {
-                                                active: info.active,
-                                                dead_letter: info.dead_letter,
-                                            });
+                                        let ns = if !az.sb_namespace.is_empty() {
+                                            az.sb_namespace.clone()
+                                        } else {
+                                            discovered_ns_sig.read().clone().unwrap_or_default()
+                                        };
+                                        let rg = az.resource_group.clone();
+                                        let result = if ns.is_empty() {
+                                            Ok(Err("Service Bus namespace not configured for this profile and not discovered yet".to_string()))
+                                        } else {
+                                            tokio::task::spawn_blocking(move || {
+                                                azure::check_queue(&ns, &rg, &q_name)
+                                            }).await
+                                        };
+                                        match result {
+                                            Ok(Ok(info)) => {
+                                                q_statuses.insert(q_key, QueueStatus {
+                                                    active: info.active,
+                                                    dead_letter: info.dead_letter,
+                                                });
+                                            }
+                                            Ok(Err(e)) => { q_errors.insert(q_key, e); }
+                                            Err(e) => { q_errors.insert(q_key, format!("task: {e}")); }
                                         }
                                     }
                                     queue_statuses.set(q_statuses.clone());
+                                    queue_errors.set(q_errors);
                                     let health = compute_health(&runs_map, &q_statuses);
                                     if let Some(mut health_sig) = chain_health_signal {
                                         let mut map = health_sig.read().clone();
@@ -579,23 +726,44 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                                             }
                                             run_statuses.set(statuses);
                                             all_runs.set(runs_map.clone());
+                                            if let Some(mut parent) = chain_runs_signal {
+                                                let mut m = parent.read().clone();
+                                                m.insert(lbl.clone(), runs_map.clone());
+                                                parent.set(m);
+                                            }
 
                                             let mut q_statuses = HashMap::new();
+                                            let mut q_errors: HashMap<String, String> = HashMap::new();
                                             for q in &queues {
                                                 let az = az.clone();
                                                 let q_name = q.clone();
                                                 let q_key = q.clone();
-                                                let result = tokio::task::spawn_blocking(move || {
-                                                    azure::check_queue(&az.sb_namespace, &az.resource_group, &q_name)
-                                                }).await;
-                                                if let Ok(Ok(info)) = result {
-                                                    q_statuses.insert(q_key, QueueStatus {
-                                                        active: info.active,
-                                                        dead_letter: info.dead_letter,
-                                                    });
+                                                let ns = if !az.sb_namespace.is_empty() {
+                                                    az.sb_namespace.clone()
+                                                } else {
+                                                    discovered_ns_sig.read().clone().unwrap_or_default()
+                                                };
+                                                let rg = az.resource_group.clone();
+                                                let result = if ns.is_empty() {
+                                                    Ok(Err("Service Bus namespace not configured for this profile and not discovered yet".to_string()))
+                                                } else {
+                                                    tokio::task::spawn_blocking(move || {
+                                                        azure::check_queue(&ns, &rg, &q_name)
+                                                    }).await
+                                                };
+                                                match result {
+                                                    Ok(Ok(info)) => {
+                                                        q_statuses.insert(q_key, QueueStatus {
+                                                            active: info.active,
+                                                            dead_letter: info.dead_letter,
+                                                        });
+                                                    }
+                                                    Ok(Err(e)) => { q_errors.insert(q_key, e); }
+                                                    Err(e) => { q_errors.insert(q_key, format!("task: {e}")); }
                                                 }
                                             }
                                             queue_statuses.set(q_statuses.clone());
+                                            queue_errors.set(q_errors);
                                             let health = compute_health(&runs_map, &q_statuses);
                                             if let Some(mut health_sig) = chain_health_signal {
                                                 let mut map = health_sig.read().clone();
@@ -629,11 +797,6 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                             runs_data.get(&s.workflow).map(|runs| (&s.workflow, kpi::compute_workflow_kpi(runs)))
                         })
                         .collect();
-                    let total_runs: usize = workflow_kpis.iter().map(|(_, k)| k.total_runs).sum();
-                    let total_succeeded: usize = workflow_kpis.iter().map(|(_, k)| k.succeeded).sum();
-                    let total_failed: usize = workflow_kpis.iter().map(|(_, k)| k.failed).sum();
-                    let overall_rate = if total_runs > 0 { (total_succeeded as f64 / total_runs as f64) * 100.0 } else { 0.0 };
-                    let max_streak = workflow_kpis.iter().map(|(_, k)| k.failure_streak).max().unwrap_or(0);
                     let avg_durations: Vec<f64> = workflow_kpis.iter().filter_map(|(_, k)| k.avg_duration_secs).collect();
                     let overall_avg = if avg_durations.is_empty() { None } else {
                         Some(avg_durations.iter().sum::<f64>() / avg_durations.len() as f64)
@@ -641,20 +804,8 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                     let p95_durations: Vec<f64> = workflow_kpis.iter().filter_map(|(_, k)| k.p95_duration_secs).collect();
                     let overall_p95 = p95_durations.iter().cloned().reduce(f64::max);
 
-                    let rate_class = if overall_rate >= 95.0 { "kpi-value kpi-good" }
-                        else if overall_rate >= 80.0 { "kpi-value kpi-warn" }
-                        else { "kpi-value kpi-bad" };
-                    let streak_class = if max_streak == 0 { "kpi-value kpi-good" }
-                        else if max_streak <= 2 { "kpi-value kpi-warn" }
-                        else { "kpi-value kpi-bad" };
-
                     rsx! {
                         div { class: "kpi-banner",
-                            div { class: "kpi-card",
-                                div { class: "kpi-label", "Success Rate" }
-                                div { class: "{rate_class}", "{overall_rate:.1}%" }
-                                div { class: "kpi-sub", "{total_succeeded}/{total_runs} runs" }
-                            }
                             div { class: "kpi-card",
                                 div { class: "kpi-label", "Avg Duration" }
                                 div { class: "kpi-value",
@@ -668,13 +819,6 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                                         Some(s) => format!("p95: {}", format_duration(s)),
                                         None => String::new(),
                                     }}
-                                }
-                            }
-                            div { class: "kpi-card",
-                                div { class: "kpi-label", "Failure Streak" }
-                                div { class: "{streak_class}", "{max_streak}" }
-                                div { class: "kpi-sub",
-                                    if total_failed > 0 { "{total_failed} failed total" } else { "all clear" }
                                 }
                             }
                             // Stuck runs
@@ -691,77 +835,12 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                                     }
                                 }
                             }
-                            // Dead letters
-                            {
-                                let qs = queue_statuses.read();
-                                let total_dl: i64 = qs.values().map(|q| q.dead_letter).sum();
-                                let dl_class = if total_dl == 0 { "kpi-value kpi-good" } else { "kpi-value kpi-bad" };
-                                if !qs.is_empty() {
-                                    rsx! {
-                                        div { class: "kpi-card",
-                                            div { class: "kpi-label", "Dead Letters" }
-                                            div { class: "{dl_class}", "{total_dl}" }
-                                            div { class: "kpi-sub",
-                                                if total_dl > 0 { "messages need attention" } else { "all clear" }
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    rsx! {}
-                                }
-                            }
-                            // Per-workflow KPIs are now shown in the steps table columns below
-                            // (Success / Runs / Avg / Streak), so no breakdown cards here.
                         }
                     }
                 } else {
-                    // No fresh data yet — show pre-computed health from "Check all" if available
-                    let cached_health = chain_health_signal
-                        .and_then(|sig| sig.read().get(&chain_label).cloned());
-                    if let Some(h) = cached_health {
-                        let rate_val = h.success_rate.unwrap_or(0.0);
-                        let rate_class = if rate_val >= 95.0 { "kpi-value kpi-good" }
-                            else if rate_val >= 80.0 { "kpi-value kpi-warn" }
-                            else { "kpi-value kpi-bad" };
-                        let streak_class = if h.failure_streak == 0 { "kpi-value kpi-good" }
-                            else if h.failure_streak <= 2 { "kpi-value kpi-warn" }
-                            else { "kpi-value kpi-bad" };
-                        rsx! {
-                            div { class: "kpi-banner",
-                                // Faint "cached" indicator
-                                div { style: "width:100%; font-size:10px; opacity:0.45; padding:0 4px 4px; font-style:italic;",
-                                    "from last check — loading fresh data…"
-                                }
-                                div { class: "kpi-card",
-                                    div { class: "kpi-label", "Success Rate" }
-                                    if let Some(rate) = h.success_rate {
-                                        div { class: "{rate_class}", "{rate:.1}%" }
-                                    } else {
-                                        div { class: "kpi-value", "—" }
-                                    }
-                                }
-                                div { class: "kpi-card",
-                                    div { class: "kpi-label", "Dead Letters" }
-                                    {
-                                        let dl_class = if h.dead_letters > 0 { "kpi-value kpi-bad" } else { "kpi-value kpi-good" };
-                                        rsx! { div { class: "{dl_class}", "{h.dead_letters}" } }
-                                    }
-                                }
-                                div { class: "kpi-card",
-                                    div { class: "kpi-label", "Failure Streak" }
-                                    div { class: "{streak_class}", "{h.failure_streak}" }
-                                }
-                                if h.stuck_count > 0 {
-                                    div { class: "kpi-card",
-                                        div { class: "kpi-label", "Stuck" }
-                                        div { class: "kpi-value kpi-bad", "{h.stuck_count}" }
-                                    }
-                                }
-                            }
-                        }
-                    } else {
-                        rsx! {}
-                    }
+                    // Success/DL/Streak now live in the header chips; nothing to show here
+                    // when there's no fresh run data yet.
+                    rsx! {}
                 }
             }
 
@@ -1084,6 +1163,35 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
 
             // Queue status — bordered table to match the Workflow steps table above.
             if !chain.queues.is_empty() {
+                // IP-restriction banner — fires when every queue check failed
+                // with a network/firewall-looking error. Most actionable cause
+                // of empty Active / Dead-Letter cells, so call it out explicitly.
+                {
+                    let errs = queue_errors.read();
+                    let ip_blocked: Vec<String> = errs.iter()
+                        .filter(|(_, e)| looks_like_ip_block(e))
+                        .map(|(q, _)| q.clone())
+                        .collect();
+                    if !ip_blocked.is_empty() {
+                        let sample = errs.values().find(|e| looks_like_ip_block(e))
+                            .cloned().unwrap_or_default();
+                        rsx! {
+                            div { class: "queue-ip-warn",
+                                title: "{sample}",
+                                "⚠ Active / Dead-Letter counts unavailable for {ip_blocked.len()} queue(s) — your client IP looks blocked by the Service Bus namespace's network rules. Add your IP to the namespace firewall allow-list (Azure Portal → Service Bus → Networking) and re-check."
+                            }
+                        }
+                    } else if !errs.is_empty() {
+                        // Non-IP errors — show a generic warning with the first error in tooltip.
+                        let sample = errs.values().next().cloned().unwrap_or_default();
+                        rsx! {
+                            div { class: "queue-ip-warn",
+                                title: "{sample}",
+                                "⚠ Could not read queue counts for {errs.len()} queue(s). Hover for details."
+                            }
+                        }
+                    } else { rsx! {} }
+                }
                 div { class: "queues-table",
                     div { class: "queues-header",
                         span { class: "qcol qcol-name", "Queue" }
@@ -1110,37 +1218,50 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                             let dl_cls      = if dl > 0 { "qcol qcol-dl warn" }
                                               else if dl == 0 { "qcol qcol-dl" }
                                               else { "qcol qcol-dl qcol-pending" };
+                            let q_err = queue_errors.read().get(q).cloned();
+                            let name_title = match &q_err {
+                                Some(e) => format!("{q}\n\n⚠ {e}"),
+                                None => q.clone(),
+                            };
                             rsx! {
                                 div { class: "queue-row",
-                                    span { class: "qcol qcol-name", title: "{q}", "{q}" }
+                                    span { class: "qcol qcol-name", title: "{name_title}",
+                                        "{q}"
+                                        if q_err.is_some() {
+                                            span { class: "queue-err-icon", "⚠" }
+                                        }
+                                        // Portal link — placed next to the queue name to match
+                                        // the workflow rows above.
+                                        if let Some(ref a) = az {
+                                            {
+                                                let ns = if !a.sb_namespace.is_empty() {
+                                                    Some(a.sb_namespace.clone())
+                                                } else {
+                                                    props.discovered_sb_namespace.read().clone()
+                                                };
+                                                if let Some(ns) = ns {
+                                                    let url = crate::services::portal_links::sb_queue(
+                                                        &a.tenant, &a.subscription, &a.resource_group,
+                                                        &ns, q,
+                                                    );
+                                                    rsx! {
+                                                        button {
+                                                            class: "portal-link",
+                                                            title: "Open queue in Azure Portal (peek messages, DL contents, …)",
+                                                            onclick: move |e: Event<MouseData>| {
+                                                                e.stop_propagation();
+                                                                crate::services::portal_links::open_in_browser(&url);
+                                                            },
+                                                            "🔗"
+                                                        }
+                                                    }
+                                                } else { rsx! {} }
+                                            }
+                                        }
+                                    }
                                     span { class: "{active_cls}", "{active_text}" }
                                     span { class: "{dl_cls}", "{dl_text}" }
                                     span { class: "qcol qcol-actions",
-                                    if let Some(ref a) = az {
-                                        // Fall back to the MainScreen-discovered namespace if the
-                                        // profile didn't have one configured.
-                                        {
-                                            let ns = if !a.sb_namespace.is_empty() {
-                                                Some(a.sb_namespace.clone())
-                                            } else {
-                                                props.discovered_sb_namespace.read().clone()
-                                            };
-                                            if let Some(ns) = ns {
-                                                let url = crate::services::portal_links::sb_queue(
-                                                    &a.tenant, &a.subscription, &a.resource_group,
-                                                    &ns, q,
-                                                );
-                                                rsx! {
-                                                    button {
-                                                        class: "portal-link",
-                                                        title: "Open queue in Azure Portal (peek messages, DL contents, …)",
-                                                        onclick: move |_| crate::services::portal_links::open_in_browser(&url),
-                                                        "🔗"
-                                                    }
-                                                }
-                                            } else { rsx! {} }
-                                        }
-                                    }
                                     // Peek dead-letter button — only shown when DL count > 0
                                     if az.is_some() && dl > 0 {
                                         {
@@ -1475,6 +1596,22 @@ struct ActionDetail {
     name: String,
     status: String,
     error: Option<String>,
+}
+
+/// Sniff a check_queue error message for tell-tale signs that the user's
+/// client IP is blocked by the Service Bus namespace's network rules.
+/// Returns `true` for both data-plane ("Ip has been prevented…") and
+/// control-plane ("Public network access is disabled" / firewall) variants,
+/// plus the generic Azure firewall denial wording.
+fn looks_like_ip_block(err: &str) -> bool {
+    let e = err.to_ascii_lowercase();
+    e.contains("ip has been prevented")
+        || e.contains("public network access is disabled")
+        || e.contains("not allowed to access")
+        || (e.contains("firewall") && e.contains("denied"))
+        || e.contains("ipnotallowed")
+        || e.contains("networkrulesetrestriction")
+        || e.contains("forbiddenip")
 }
 
 fn epoch_now() -> u64 {
