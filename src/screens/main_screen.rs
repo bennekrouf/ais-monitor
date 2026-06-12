@@ -2,7 +2,7 @@ use dioxus::prelude::*;
 use crate::components::{
     activity_panel::ActivityPanel,
     chain_list::ChainList,
-    chain_detail::{AzConfig, ChainDetailView, ChainHealth},
+    chain_detail::{AzConfig, ChainDetailView, ChainHealth, QueueStatus},
     eventgrid_panel::EventGridPanel,
     graph_panel::GraphPanel,
     functions_panel::FunctionsPanel,
@@ -38,6 +38,10 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     // table cells would stay empty after Check all because the component-local
     // `all_runs` signal is empty.
     let mut chain_runs: Signal<HashMap<String, HashMap<String, Vec<azure::RunInfo>>>> =
+        use_signal(HashMap::new);
+    // Per-chain queue counts so "Check all" can populate Active / Dead-Letter
+    // columns identically to individual "Check".
+    let mut chain_queue_statuses: Signal<HashMap<String, HashMap<String, QueueStatus>>> =
         use_signal(HashMap::new);
     let mut last_checked: Signal<HashMap<String, u64>> = use_signal(HashMap::new);
     let mut chain_history: Signal<HashMap<String, Vec<history_cache::HealthPoint>>> =
@@ -301,6 +305,22 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
         }
     });
 
+    // Content-first: keep a chain selected at all times so the user never
+    // lands on an empty detail pane. Re-runs whenever the chain list changes;
+    // picks the first chain when no valid selection exists. Also recovers
+    // from a stale selection (chain removed after a refresh).
+    use_effect(move || {
+        let chains_now = chains.read();
+        if chains_now.is_empty() { return; }
+        let needs_default = match selected_chain.read().as_ref() {
+            None => true,
+            Some(label) => !chains_now.iter().any(|c| &c.label == label),
+        };
+        if needs_default {
+            selected_chain.set(Some(chains_now[0].label.clone()));
+        }
+    });
+
     // ── Render ────────────────────────────────────────────────────────────
     let sel = selected_chain.read().clone();
     let selected_chain_detail = sel.as_ref().and_then(|label| {
@@ -507,7 +527,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                         let label  = ch.label.clone();
                                         let label_for_log = label.clone();
 
-                                        let (health, errors, runs_map) = tokio::task::spawn_blocking(move || {
+                                        let (health, errors, runs_map, q_statuses) = tokio::task::spawn_blocking(move || {
                                             let mut errors: Vec<String> = Vec::new();
                                             // Run history for each workflow step
                                             let mut runs_map: HashMap<String, Vec<azure::RunInfo>> = HashMap::new();
@@ -517,12 +537,21 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                                     Err(e) => errors.push(format!("list_runs {wf}: {e}")),
                                                 }
                                             }
-                                            // Queue dead-letter counts
+                                            // Queue counts — collect per-queue so the detail view's
+                                            // Active / Dead-Letter columns populate too, not just the
+                                            // aggregated dead-letter total.
                                             let mut dl_total: i64 = 0;
+                                            let mut q_statuses: HashMap<String, QueueStatus> = HashMap::new();
                                             if !ns.is_empty() {
                                                 for q in &queues {
                                                     match azure::check_queue(&ns, &rg, q) {
-                                                        Ok(qi) => dl_total += qi.dead_letter,
+                                                        Ok(qi) => {
+                                                            dl_total += qi.dead_letter;
+                                                            q_statuses.insert(q.clone(), QueueStatus {
+                                                                active: qi.active,
+                                                                dead_letter: qi.dead_letter,
+                                                            });
+                                                        }
                                                         Err(e) => errors.push(format!("check_queue {q}: {e}")),
                                                     }
                                                 }
@@ -538,8 +567,8 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                             } else { None };
                                             let stuck   = all_kpis.iter().map(|k| k.stuck_runs.len()).sum();
                                             let streak  = all_kpis.iter().map(|k| k.failure_streak).max().unwrap_or(0);
-                                            (ChainHealth { success_rate: rate, dead_letters: dl_total, stuck_count: stuck, failure_streak: streak }, errors, runs_map)
-                                        }).await.unwrap_or((ChainHealth::default(), vec!["spawn_blocking panic".into()], HashMap::new()));
+                                            (ChainHealth { success_rate: rate, dead_letters: dl_total, stuck_count: stuck, failure_streak: streak }, errors, runs_map, q_statuses)
+                                        }).await.unwrap_or((ChainHealth::default(), vec!["spawn_blocking panic".into()], HashMap::new(), HashMap::new()));
 
                                         // Share the per-workflow runs with ChainDetailView so its
                                         // per-workflow KPI columns can render after "Check all".
@@ -547,6 +576,12 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                             let mut map = chain_runs.read().clone();
                                             map.insert(label.clone(), runs_map);
                                             chain_runs.set(map);
+                                        }
+                                        // Same write-through for Active / Dead-Letter queue counts.
+                                        {
+                                            let mut map = chain_queue_statuses.read().clone();
+                                            map.insert(label.clone(), q_statuses);
+                                            chain_queue_statuses.set(map);
                                         }
 
                                         if !errors.is_empty() {
@@ -674,6 +709,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                             chain_names: chain_names,
                                             chain_health: Some(chain_health),
                                             chain_runs: Some(chain_runs),
+                                            chain_queue_statuses: Some(chain_queue_statuses),
                                             last_checked: Some(last_checked),
                                             eg_links: eg_links,
                                             run_depth: Some(run_depth),

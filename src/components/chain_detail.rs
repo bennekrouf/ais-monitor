@@ -26,6 +26,11 @@ pub struct ChainDetailProps {
     /// individual "Check" does.
     #[props(default)]
     pub chain_runs: Option<Signal<HashMap<String, HashMap<String, Vec<azure::RunInfo>>>>>,
+    /// Per-chain queue counts (active / dead-letter) shared with MainScreen
+    /// so "Check all" populates the Active / Dead-Letter columns the same
+    /// way an individual "Check" does.
+    #[props(default)]
+    pub chain_queue_statuses: Option<Signal<HashMap<String, HashMap<String, QueueStatus>>>>,
     #[props(default)]
     pub last_checked: Option<Signal<HashMap<String, u64>>>,
     /// Event Grid links: queue name → EG topic/subscription info
@@ -113,6 +118,7 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
 
     let chain_health_signal = props.chain_health;
     let chain_runs_signal = props.chain_runs;
+    let chain_queue_statuses_signal = props.chain_queue_statuses;
     let last_checked_signal = props.last_checked;
     // Signal is Copy — capture once and re-read inside each spawn closure so
     // queue checks pick up the namespace discovered after mount even when the
@@ -126,11 +132,31 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
     {
         let label_for_hydrate = chain.label.clone();
         use_effect(move || {
+            // `peek()` reads without subscribing — otherwise this effect would
+            // also re-run on its own write to `all_runs`, triggering Dioxus's
+            // "read+write in same reactive scope" infinite-loop guard.
             if let Some(parent) = chain_runs_signal {
-                if all_runs.read().is_empty() {
+                if all_runs.peek().is_empty() {
                     if let Some(runs_for_chain) = parent.read().get(&label_for_hydrate).cloned() {
                         if !runs_for_chain.is_empty() {
                             all_runs.set(runs_for_chain);
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // Same hydrate pattern for queue counts so the Active / Dead-Letter columns
+    // populate after "Check all".
+    {
+        let label_for_hydrate = chain.label.clone();
+        use_effect(move || {
+            if let Some(parent) = chain_queue_statuses_signal {
+                if queue_statuses.peek().is_empty() {
+                    if let Some(q_for_chain) = parent.read().get(&label_for_hydrate).cloned() {
+                        if !q_for_chain.is_empty() {
+                            queue_statuses.set(q_for_chain);
                         }
                     }
                 }
@@ -252,6 +278,11 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                         }
                     }
                     queue_statuses.set(q_statuses.clone());
+                    if let Some(mut parent_qs) = chain_queue_statuses_signal {
+                        let mut m = parent_qs.read().clone();
+                        m.insert(lbl.clone(), q_statuses.clone());
+                        parent_qs.set(m);
+                    }
                     queue_errors.set(q_errors);
                     let health = compute_health(&runs_map, &q_statuses);
                     if let Some(mut health_sig) = chain_health_signal {
@@ -592,6 +623,11 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                                         }
                                     }
                                     queue_statuses.set(q_statuses.clone());
+                                    if let Some(mut parent_qs) = chain_queue_statuses_signal {
+                                        let mut m = parent_qs.read().clone();
+                                        m.insert(lbl.clone(), q_statuses.clone());
+                                        parent_qs.set(m);
+                                    }
                                     queue_errors.set(q_errors);
                                     let health = compute_health(&runs_map, &q_statuses);
                                     if let Some(mut health_sig) = chain_health_signal {
@@ -763,6 +799,11 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                                                 }
                                             }
                                             queue_statuses.set(q_statuses.clone());
+                                            if let Some(mut parent_qs) = chain_queue_statuses_signal {
+                                                let mut m = parent_qs.read().clone();
+                                                m.insert(lbl.clone(), q_statuses.clone());
+                                                parent_qs.set(m);
+                                            }
                                             queue_errors.set(q_errors);
                                             let health = compute_health(&runs_map, &q_statuses);
                                             if let Some(mut health_sig) = chain_health_signal {
@@ -883,12 +924,7 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                             else if step.link_type == "invoke" { "link-invoke" }
                             else { "link-other" };
                         let time_short = run.as_ref()
-                            .map(|r| {
-                                r.last_time.split('T').nth(1)
-                                    .and_then(|t| t.split('.').next())
-                                    .unwrap_or(&r.last_time)
-                                    .to_string()
-                            })
+                            .map(|r| format_last_run(&r.last_time))
                             .unwrap_or_default();
 
                         let is_expanded = expanded_step.read().as_ref() == Some(&wf);
@@ -1188,6 +1224,21 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                             div { class: "queue-ip-warn",
                                 title: "{sample}",
                                 "⚠ Could not read queue counts for {errs.len()} queue(s). Hover for details."
+                            }
+                        }
+                    } else if queue_statuses.read().is_empty() {
+                        // No errors AND nothing fetched yet → the user just hasn't
+                        // run a check. Common source of "why is it empty" confusion.
+                        let ns_known = !az.as_ref().map(|a| a.sb_namespace.is_empty()).unwrap_or(true)
+                            || discovered_ns_sig.read().is_some();
+                        rsx! {
+                            div { class: "queue-hint",
+                                title: "Active / Dead-Letter counts are fetched on demand to avoid hammering Azure on every render.",
+                                if ns_known {
+                                    "ℹ Active / Dead-Letter counts are not loaded yet — press the Check button above to fetch them."
+                                } else {
+                                    "ℹ Service Bus namespace is still being discovered (or not configured for this profile). Counts will load after discovery completes; press Check to retry."
+                                }
                             }
                         }
                     } else { rsx! {} }
@@ -1586,9 +1637,9 @@ struct RunStatus {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct QueueStatus {
-    active: i64,
-    dead_letter: i64,
+pub struct QueueStatus {
+    pub active: i64,
+    pub dead_letter: i64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1612,6 +1663,29 @@ fn looks_like_ip_block(err: &str) -> bool {
         || e.contains("ipnotallowed")
         || e.contains("networkrulesetrestriction")
         || e.contains("forbiddenip")
+}
+
+/// Format a run's start timestamp for the "Last Run" column. Azure returns
+/// RFC3339 UTC; we display in the user's local timezone. If the run is from
+/// today we show just `HH:MM:SS` (compact); otherwise we prefix the date as
+/// `MM-DD HH:MM` so the user can spot stale runs at a glance without parsing
+/// a full timestamp.
+fn format_last_run(s: &str) -> String {
+    use chrono::{DateTime, Local};
+    let Ok(parsed) = DateTime::parse_from_rfc3339(s) else {
+        // Best-effort fallback: strip the 'T' and fractional / timezone tail
+        // so the cell stays readable even if Azure returns something odd.
+        let cleaned = s.replace('T', " ");
+        let cut = cleaned.find('.').or_else(|| cleaned.find('+')).or_else(|| cleaned.find('Z'));
+        let trimmed = cut.map(|i| &cleaned[..i]).unwrap_or(&cleaned);
+        return trimmed.to_string();
+    };
+    let local = parsed.with_timezone(&Local);
+    if local.date_naive() == Local::now().date_naive() {
+        local.format("%H:%M:%S").to_string()
+    } else {
+        local.format("%m-%d %H:%M").to_string()
+    }
 }
 
 fn epoch_now() -> u64 {

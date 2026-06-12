@@ -1344,6 +1344,21 @@ body {
     cursor: help;
 }
 
+/* Neutral hint above the queues table when no check has been run yet. */
+.queue-hint {
+    margin-top: 16px;
+    margin-bottom: -8px;
+    padding: 6px 10px;
+    border: 1px dashed var(--border);
+    background: var(--bg2);
+    border-radius: 6px;
+    font-size: 12px;
+    color: var(--text3);
+    cursor: help;
+    line-height: 1.4;
+    font-style: italic;
+}
+
 /* ── Queues table — mirrors the Workflow steps-table styling ──────── */
 .queues-table {
     border: 1px solid var(--border);
