@@ -807,7 +807,11 @@ pub async fn sb_peek_dead_letters(
         let resp = client
             .post(&url)
             .header("Authorization", &token)
-            // No Content-Type since this is an empty POST.
+            // No Content-Type since this is an empty POST. Explicit
+            // Content-Length: 0 — reqwest otherwise sends Transfer-Encoding:
+            // chunked for an empty body, and the Service Bus gateway rejects
+            // that with HTTP 411 "Length Required".
+            .header("Content-Length", "0")
             .body(Vec::<u8>::new())
             .send()
             .await

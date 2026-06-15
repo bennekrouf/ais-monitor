@@ -312,7 +312,9 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     use_effect(move || {
         let chains_now = chains.read();
         if chains_now.is_empty() { return; }
-        let needs_default = match selected_chain.read().as_ref() {
+        // `peek()` reads without subscribing — the effect should re-run on
+        // chain-list changes, not on its own write to `selected_chain`.
+        let needs_default = match selected_chain.peek().as_ref() {
             None => true,
             Some(label) => !chains_now.iter().any(|c| &c.label == label),
         };
