@@ -133,14 +133,44 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                         span { "Azure CLI not found" }
                                     }
                                     p { style: "margin:8px 0 0; font-size:12px; color:var(--red);",
-                                        "The 'az' command was not found. Install Azure CLI from "
-                                        a { href: "https://aka.ms/installazurecliwindows", target: "_blank",
-                                            "aka.ms/installazurecliwindows"
+                                        {
+                                            #[cfg(target_os = "macos")]
+                                            { rsx! {
+                                                "The 'az' command was not found. Install Azure CLI with "
+                                                code { "brew install azure-cli" }
+                                                " (or from "
+                                                a { href: "https://learn.microsoft.com/cli/azure/install-azure-cli-macos", target: "_blank",
+                                                    "Microsoft Docs"
+                                                }
+                                                ") then restart the app."
+                                            } }
+                                            #[cfg(target_os = "linux")]
+                                            { rsx! {
+                                                "The 'az' command was not found. Install Azure CLI from "
+                                                a { href: "https://aka.ms/installazurecli-linux", target: "_blank",
+                                                    "aka.ms/installazurecli-linux"
+                                                }
+                                                " then restart the app."
+                                            } }
+                                            #[cfg(target_os = "windows")]
+                                            { rsx! {
+                                                "The 'az' command was not found. Install Azure CLI from "
+                                                a { href: "https://aka.ms/installazurecliwindows", target: "_blank",
+                                                    "aka.ms/installazurecliwindows"
+                                                }
+                                                " then restart the app."
+                                            } }
                                         }
-                                        " then restart the app."
                                     }
                                     p { style: "margin:4px 0 0; font-size:11px; opacity:0.7;",
-                                        "On Windows, close and reopen your terminal after installing to refresh the PATH."
+                                        {
+                                            #[cfg(target_os = "macos")]
+                                            { "If installed, the GUI app may not see your shell PATH — relaunch via Launchpad after install." }
+                                            #[cfg(target_os = "linux")]
+                                            { "If installed, restart this app so the new PATH is picked up." }
+                                            #[cfg(target_os = "windows")]
+                                            { "On Windows, close and reopen your terminal after installing to refresh the PATH." }
+                                        }
                                     }
                                 },
                                 AzLoginState::Expired | AzLoginState::NotLoggedIn => {

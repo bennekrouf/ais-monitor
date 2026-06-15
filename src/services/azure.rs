@@ -24,8 +24,42 @@ fn resolve_az_windows() -> String {
     "az".to_string()
 }
 
+/// On macOS, apps launched from Finder/Dock inherit a minimal PATH
+/// (`/usr/bin:/bin:/usr/sbin:/sbin`) and miss Homebrew's bin dirs. On Linux,
+/// pip-user / snap installs also live outside the GUI PATH. Probe known
+/// install locations and return the first hit so `Command::new` works.
+#[cfg(not(target_os = "windows"))]
+fn resolve_az_unix() -> String {
+    let mut candidates: Vec<std::path::PathBuf> = vec![
+        "/opt/homebrew/bin/az".into(),   // brew on Apple Silicon
+        "/usr/local/bin/az".into(),      // brew on Intel / manual
+        "/usr/bin/az".into(),            // distro package
+        "/snap/bin/az".into(),           // snap
+    ];
+    if let Ok(home) = std::env::var("HOME") {
+        candidates.push(std::path::Path::new(&home).join(".local/bin/az"));
+    }
+    for c in &candidates {
+        if c.is_file() {
+            return c.to_string_lossy().to_string();
+        }
+    }
+    "az".to_string()
+}
+
+fn az_not_found_message() -> String {
+    #[cfg(target_os = "macos")]
+    { "Azure CLI not found. Install with `brew install azure-cli` then restart the app.".to_string() }
+    #[cfg(target_os = "linux")]
+    { "Azure CLI not found. Install from https://aka.ms/installazurecli-linux then restart the app.".to_string() }
+    #[cfg(target_os = "windows")]
+    { "Azure CLI not found. Install it from https://aka.ms/installazurecliwindows then restart the app.".to_string() }
+}
+
 /// Build a `Command` that invokes the Azure CLI cross-platform.
 /// On Windows it wraps with `cmd /c az` and injects the CLI directory into PATH.
+/// On macOS/Linux it resolves `az` against known install dirs that GUI apps
+/// don't otherwise see in PATH.
 pub fn az_command(args: &[&str]) -> Command {
     #[cfg(target_os = "windows")]
     {
@@ -42,8 +76,15 @@ pub fn az_command(args: &[&str]) -> Command {
     }
     #[cfg(not(target_os = "windows"))]
     {
-        let mut cmd = Command::new("az");
+        let az_path = resolve_az_unix();
+        let mut cmd = Command::new(&az_path);
         cmd.args(args);
+        if az_path != "az" {
+            if let Some(dir) = std::path::Path::new(&az_path).parent() {
+                let current = std::env::var("PATH").unwrap_or_default();
+                cmd.env("PATH", format!("{}:{}", dir.display(), current));
+            }
+        }
         cmd
     }
 }
@@ -260,7 +301,7 @@ pub fn open_login(tenant: Option<&str>) -> Result<(), String> {
         .map(|_| ())
         .map_err(|e| {
             if e.kind() == std::io::ErrorKind::NotFound {
-                "Azure CLI not found. Install it from https://aka.ms/installazurecliwindows then restart the app.".to_string()
+                az_not_found_message()
             } else {
                 format!("Failed to start 'az login': {e}")
             }

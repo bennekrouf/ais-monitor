@@ -99,9 +99,21 @@ pub fn discover_chains_remote(
         }
     }
 
-    // Load manual links from .ais-chain file in the local workspace (EventGrid,
-    // dynamic queue routing that isn't visible in the deployed workflow JSON).
-    let manual_links = load_manual_links(local_dir);
+    // Load manual links (EventGrid, dynamic queue routing not visible in the
+    // deployed workflow JSON). Precedence:
+    //   1. A local `logic_apps/.ais-chain` file under `local_dir`, when the
+    //      user has a workspace pointed at it. Lets developers iterate on
+    //      topology changes without rebuilding ais-monitor.
+    //   2. The defaults embedded in the ais-monitor binary itself. Every
+    //      install ships with a known-good set — Windows users who never
+    //      clone the repo still get the full chain. Update by editing
+    //      `src/services/default-ais-chain.txt` and shipping a new release.
+    let local_links = load_manual_links(local_dir);
+    let manual_links = if local_links.is_empty() {
+        embedded_manual_links()
+    } else {
+        local_links
+    };
     let graph = ais_chain::graph::build(&resolved_workflows, &manual_links);
     let raw_chains = graph.find_chains();
 
@@ -202,6 +214,22 @@ fn resolve_appsetting(s: &str, settings: &std::collections::HashMap<String, Stri
         }
     }
     s.to_string()
+}
+
+/// Manual chain links baked into the binary at compile time. This is the
+/// source of truth that ships to every customer — Windows users with no
+/// `ais_tom_platform` clone still get the full chain after a reinstall +
+/// Refresh. To update topology, edit `default-ais-chain.txt` and cut a
+/// release.
+const EMBEDDED_AIS_CHAIN: &str = include_str!("default-ais-chain.txt");
+
+fn embedded_manual_links() -> Vec<String> {
+    EMBEDDED_AIS_CHAIN
+        .lines()
+        .map(|l| l.trim().trim_start_matches('\u{feff}'))
+        .filter(|l| !l.is_empty() && !l.starts_with('#'))
+        .map(|l| l.to_string())
+        .collect()
 }
 
 fn load_manual_links(local_dir: &str) -> Vec<String> {
@@ -359,6 +387,19 @@ mod tests {
             resolve_appsetting("@appsetting('MISSING')", &settings),
             "@appsetting('MISSING')"
         );
+    }
+
+    // ── embedded_manual_links ─────────────────────────────────────────────
+
+    #[test]
+    fn embedded_manual_links_parses_known_topology() {
+        let links = embedded_manual_links();
+        // Comments and blanks must be stripped.
+        assert!(links.iter().all(|l| !l.starts_with('#') && !l.is_empty()));
+        // Sanity: the JDE chain depends on these two EventGrid hops — if the
+        // file gets clobbered, this test catches it before customers do.
+        assert!(links.iter().any(|l| l == "Rcv-Event-Pivot->Routing-Pivot-Invoice:EventGrid"));
+        assert!(links.iter().any(|l| l == "Rcv-Event-Pivot->Routing-Pivot-Counterparty:EventGrid"));
     }
 
     #[test]

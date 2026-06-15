@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ais-monitor app icon.
+  Azure-inspired: stylized "A" mark on a rounded squircle with the
+  cyan→deep-blue gradient that defines the Microsoft Azure brand.
+  A subtle pulse line under the mark hints at monitoring.
+  Designed at 1024 to read cleanly down to 16x16.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <!-- Background: deep navy → Azure cyan, diagonal -->
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%"  stop-color="#0078D4"/>
+      <stop offset="55%" stop-color="#0062AD"/>
+      <stop offset="100%" stop-color="#003B73"/>
+    </linearGradient>
+    <!-- A-mark: white with a hint of cyan tint at the bottom -->
+    <linearGradient id="mark" x1="0.5" y1="0" x2="0.5" y2="1">
+      <stop offset="0%"  stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#D6F0FF"/>
+    </linearGradient>
+    <!-- Soft inner glow on the mark -->
+    <filter id="glow" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="6" result="b"/>
+      <feMerge>
+        <feMergeNode in="b"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Squircle background (macOS-style continuous corner) -->
+  <rect x="64" y="64" width="896" height="896" rx="224" ry="224" fill="url(#bg)"/>
+
+  <!-- Azure "A": two triangles meeting at the apex.
+       Outer (lighter, left-leaning) and inner (right-leaning) shape
+       create the signature notched negative space. -->
+  <g filter="url(#glow)" fill="url(#mark)">
+    <!-- Outer A silhouette -->
+    <path d="
+      M 512 220
+      L 800 804
+      L 668 804
+      L 512 480
+      L 400 720
+      L 512 720
+      L 568 804
+      L 224 804
+      Z"/>
+  </g>
+
+  <!-- Monitoring pulse: a thin heartbeat line crossing the base.
+       Subtle so the silhouette stays an 'A' at small sizes. -->
+  <g stroke="#7FD7FF" stroke-width="14" stroke-linecap="round" stroke-linejoin="round" fill="none" opacity="0.9">
+    <path d="
+      M 160 880
+      L 360 880
+      L 400 836
+      L 460 920
+      L 520 836
+      L 580 880
+      L 864 880"/>
+  </g>
+</svg>
