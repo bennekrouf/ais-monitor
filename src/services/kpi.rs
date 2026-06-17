@@ -42,7 +42,7 @@ pub fn compute_workflow_kpi(runs: &[RunInfo]) -> ChainKpi {
     };
 
     let p95 = if durations.is_empty() { None } else {
-        durations.sort_by(|a, b| a.partial_cmp(b).unwrap());
+        durations.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         let idx = ((durations.len() as f64 * 0.95).ceil() as usize).min(durations.len()) - 1;
         Some(durations[idx])
     };

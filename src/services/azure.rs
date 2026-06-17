@@ -99,6 +99,97 @@ pub enum AzLoginState {
     AzNotFound,
 }
 
+/// Classification of Azure-side errors that the UI surfaces specially.
+/// Distinguishing these matters because the remedies are different:
+/// re-logging in only fixes `TokenExpired`; `MissingPermission` requires an
+/// RBAC role assignment from a subscription/resource owner.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AzAuthKind {
+    /// The access token is expired, revoked, or the user isn't signed in.
+    /// Recovery: `az login`.
+    TokenExpired,
+    /// The signed-in principal is authenticated but lacks the required RBAC
+    /// role on the target scope. Recovery: ask an Owner / User Access
+    /// Administrator to grant a role on the Logic App or its resource group.
+    MissingPermission,
+}
+
+/// Classify a raw `az rest` stderr (or any wrapped error) into a
+/// re-authable category. Returns `None` for unrelated errors.
+///
+/// Note: `AuthorizationFailed` is *RBAC* in Azure — distinct from
+/// `AuthenticationFailed` / `Expired…Token` which are token issues.
+/// We previously lumped both as "auth" which sent users in circles
+/// re-signing-in for what was a permissions problem.
+pub fn classify_auth_error(s: &str) -> Option<AzAuthKind> {
+    // Token / sign-in problems — re-login fixes these.
+    const TOKEN_NEEDLES: &[&str] = &[
+        "ExpiredAuthenticationToken",
+        "InvalidAuthenticationToken",
+        "TokenExpired",
+        "access token has expired",
+        "Please run 'az login'",
+        "AuthenticationFailed",
+        "AADSTS70043",   // token expired
+        "AADSTS50173",   // session expired due to inactivity
+        "AADSTS700082",  // refresh token expired
+        "AADSTS50058",   // silent sign-in failed
+        "AADSTS50076",   // MFA required
+    ];
+    if TOKEN_NEEDLES.iter().any(|n| s.contains(n)) {
+        return Some(AzAuthKind::TokenExpired);
+    }
+
+    // RBAC denial — re-login won't help; user needs a role assignment.
+    const RBAC_NEEDLES: &[&str] = &[
+        "AuthorizationFailed",
+        "does not have authorization to perform action",
+        "\"code\":\"Forbidden\"",
+        "Forbidden(",
+        "InsufficientPrivileges",
+    ];
+    if RBAC_NEEDLES.iter().any(|n| s.contains(n)) {
+        return Some(AzAuthKind::MissingPermission);
+    }
+
+    None
+}
+
+/// Convenience wrapper kept for any caller that just needs "is this auth-ish?".
+#[allow(dead_code)]
+pub fn is_auth_error(s: &str) -> bool {
+    classify_auth_error(s).is_some()
+}
+
+/// Turn a raw `az rest` stderr blob into a short, user-readable message.
+/// Falls back to the raw text if no known pattern is recognised. Always
+/// keeps the underlying detail so the diagnostic log/tooltip can show it.
+fn friendly_az_error(stderr: &str) -> String {
+    match classify_auth_error(stderr) {
+        Some(AzAuthKind::TokenExpired) => {
+            let detail = extract_inner_message(stderr).unwrap_or_else(|| stderr.trim().to_string());
+            format!("Azure session expired or invalid — sign in again.\n\nDetails: {detail}")
+        }
+        Some(AzAuthKind::MissingPermission) => {
+            let detail = extract_inner_message(stderr).unwrap_or_else(|| stderr.trim().to_string());
+            format!(
+                "Signed-in account is missing the role required to read this Logic App.\n\nDetails: {detail}"
+            )
+        }
+        None => format!("az rest error: {}", stderr.trim()),
+    }
+}
+
+/// Pull the inner `"message"` value out of Azure's wrapped JSON error so the
+/// friendly banner doesn't show the surrounding `Forbidden({...})` envelope.
+fn extract_inner_message(stderr: &str) -> Option<String> {
+    let line = stderr.lines().find(|l| l.contains("\"message\""))?;
+    let start = line.find("\"message\":\"")? + "\"message\":\"".len();
+    let rest = &line[start..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 pub struct AzAccount {
     #[serde(default)]
@@ -332,7 +423,7 @@ pub fn list_deployed_workflows(sub: &str, rg: &str, app: &str) -> Result<Vec<Wor
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("az rest error: {stderr}"));
+        return Err(friendly_az_error(&stderr));
     }
 
     let body = String::from_utf8_lossy(&output.stdout);

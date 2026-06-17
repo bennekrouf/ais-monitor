@@ -1041,6 +1041,17 @@ body {
     font-size: 11px;
     color: var(--text3);
     margin-top: 3px;
+    /* Long trigger lists (queue:foo, queue:bar, …) used to wrap, making
+       row heights uneven and the column of trigger lines look jagged.
+       Truncate on a single line like .chain-name above. */
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.chain-health-badges {
+    /* Keep badges + sparkline on one line so rows stay the same height. */
+    flex-wrap: nowrap;
 }
 
 /* ══════════════════════════════════════════════

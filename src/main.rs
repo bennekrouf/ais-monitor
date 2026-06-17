@@ -188,7 +188,20 @@ fn App() -> Element {
         match config_val {
             None => rsx! {
                 Welcome {
-                    on_connect: move |config: AzConfig| az_config.set(Some(config)),
+                    on_connect: move |config: AzConfig| {
+                        // Reflect the active customer profile in the window title.
+                        let tag = if !config.label.is_empty() {
+                            config.label.clone()
+                        } else {
+                            config.app_name.clone()
+                        };
+                        dioxus::desktop::window().set_title(&format!(
+                            "AIS Monitor {} — {}",
+                            env!("CARGO_PKG_VERSION"),
+                            tag,
+                        ));
+                        az_config.set(Some(config));
+                    },
                 }
             },
             Some(config) => rsx! {
@@ -196,7 +209,12 @@ fn App() -> Element {
                     az_config: config,
                     is_light,
                     theme_overridden,
-                    on_back: move |_| az_config.set(None),
+                    on_back: move |_| {
+                        dioxus::desktop::window().set_title(
+                            concat!("AIS Monitor ", env!("CARGO_PKG_VERSION"))
+                        );
+                        az_config.set(None);
+                    },
                 }
             },
         }

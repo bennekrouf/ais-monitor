@@ -670,10 +670,125 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                         }
                     }
                 } else if let Some(e) = err {
-                    rsx! {
-                        div { class: "detail-pane",
-                            div { class: "detail-empty",
-                                div { class: "az-error", "{e}" }
+                    let auth_kind = azure::classify_auth_error(&e);
+                    if let Some(kind) = auth_kind {
+                        let detail = e.clone();
+                        let tenant = az.tenant.clone();
+                        let app_scope = format!(
+                            "/subscriptions/{}/resourceGroups/{}/providers/Microsoft.Web/sites/{}",
+                            az.subscription, az.resource_group, az.app_name
+                        );
+                        let scope_for_copy = app_scope.clone();
+                        let is_rbac = matches!(kind, azure::AzAuthKind::MissingPermission);
+                        let title = if is_rbac { "Missing Azure RBAC role" } else { "Azure session needs re-authentication" };
+                        let blurb = if is_rbac {
+                            "Your account is signed in, but it doesn't have the role required to read this Logic App's workflows. Re-signing in as the same user won't help — an Owner or User Access Administrator needs to assign you a role on this resource (or the resource group)."
+                        } else {
+                            "Your token expired or was revoked. Sign in again to refresh credentials."
+                        };
+                        let accent_bg = if is_rbac { "rgba(220,80,80,0.06)" } else { "rgba(255,170,0,0.05)" };
+
+                        rsx! {
+                            div { class: "detail-pane",
+                                div { class: "detail-empty",
+                                    div {
+                                        style: "max-width:620px; padding:24px; border:1px solid var(--border, #444); border-radius:10px; background:{accent_bg};",
+                                        h3 { style: "margin:0 0 8px; font-size:18px;", "{title}" }
+                                        p { style: "margin:0 0 16px; font-size:13px; opacity:0.85; line-height:1.5;", "{blurb}" }
+
+                                        if is_rbac {
+                                            div { style: "margin-bottom:16px; font-size:12px; line-height:1.6; padding:12px; background:rgba(0,0,0,0.15); border-radius:6px;",
+                                                div { style: "font-weight:600; margin-bottom:6px;", "Suggested roles (any one is enough):" }
+                                                ul { style: "margin:0 0 8px 18px; padding:0;",
+                                                    li { code { "Logic App Standard Operator" } " — read + run workflows" }
+                                                    li { code { "Logic App Contributor" } " — full management" }
+                                                    li { code { "Reader" } " + " code { "Logic App Standard Reader" } " — read-only" }
+                                                }
+                                                div { style: "font-weight:600; margin-top:10px; margin-bottom:4px;", "Scope to grant on:" }
+                                                code { style: "display:block; word-break:break-all; font-size:11px; padding:6px; background:rgba(0,0,0,0.25); border-radius:4px;",
+                                                    "{app_scope}"
+                                                }
+                                            }
+                                        }
+
+                                        div { style: "display:flex; gap:8px; align-items:center; flex-wrap:wrap;",
+                                            if is_rbac {
+                                                button {
+                                                    style: "padding:8px 14px; font-size:13px; background:transparent; color:inherit; border:1px solid var(--border, #555); border-radius:6px; cursor:pointer;",
+                                                    onclick: move |_| {
+                                                        let _ = arboard::Clipboard::new().and_then(|mut cb| cb.set_text(scope_for_copy.clone()));
+                                                    },
+                                                    "Copy scope"
+                                                }
+                                                button {
+                                                    style: "padding:8px 14px; font-size:13px; font-weight:600; background:#0078D4; color:white; border:none; border-radius:6px; cursor:pointer;",
+                                                    onclick: {
+                                                        let tenant_for_link = tenant.clone();
+                                                        let sub = az.subscription.clone();
+                                                        let rg  = az.resource_group.clone();
+                                                        let app = az.app_name.clone();
+                                                        move |_| {
+                                                            // Deep-link straight to the Logic App's
+                                                            // Access Control (IAM) blade so an admin
+                                                            // can assign a role one click in.
+                                                            let frag = if tenant_for_link.is_empty() {
+                                                                "#".to_string()
+                                                            } else {
+                                                                format!("#@{}/", tenant_for_link)
+                                                            };
+                                                            let url = format!(
+                                                                "https://portal.azure.com/{frag}resource/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.Web/sites/{app}/users",
+                                                            );
+                                                            crate::services::portal_links::open_in_browser(&url);
+                                                        }
+                                                    },
+                                                    "Open IAM in Portal"
+                                                }
+                                                button {
+                                                    style: "padding:8px 14px; font-size:13px; background:transparent; color:inherit; border:1px solid var(--border, #555); border-radius:6px; cursor:pointer;",
+                                                    onclick: move |_| {
+                                                        let t = if tenant.is_empty() { None } else { Some(tenant.clone()) };
+                                                        let _ = azure::open_login(t.as_deref());
+                                                        load_error.set(None);
+                                                    },
+                                                    title: "Try a different account that has the role",
+                                                    "Switch account"
+                                                }
+                                            } else {
+                                                button {
+                                                    style: "padding:8px 14px; font-size:13px; font-weight:600; background:#0078D4; color:white; border:none; border-radius:6px; cursor:pointer;",
+                                                    onclick: move |_| {
+                                                        let t = if tenant.is_empty() { None } else { Some(tenant.clone()) };
+                                                        let _ = azure::open_login(t.as_deref());
+                                                        load_error.set(None);
+                                                    },
+                                                    "Sign in again"
+                                                }
+                                            }
+                                            button {
+                                                style: "padding:8px 14px; font-size:13px; background:transparent; color:inherit; border:1px solid var(--border, #555); border-radius:6px; cursor:pointer;",
+                                                onclick: move |_| { load_error.set(None); },
+                                                "Dismiss"
+                                            }
+                                        }
+                                        details {
+                                            style: "margin-top:14px; font-size:11px; opacity:0.6;",
+                                            summary { style: "cursor:pointer;", "Show technical details" }
+                                            pre {
+                                                style: "white-space:pre-wrap; word-break:break-all; margin-top:8px; font-family:monospace; font-size:11px;",
+                                                "{detail}"
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        rsx! {
+                            div { class: "detail-pane",
+                                div { class: "detail-empty",
+                                    div { class: "az-error", "{e}" }
+                                }
                             }
                         }
                     }

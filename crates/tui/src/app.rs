@@ -99,6 +99,12 @@ enum Focus {
 pub struct App {
     pub config: Config,
     pub login: Slot<AzLoginState>,
+    /// When the most recent `check_login` call completed. The refresh token
+    /// (AADSTS / sign-in frequency policy) can expire while the app sits idle
+    /// for hours; without periodic re-checks the user only finds out when
+    /// every Azure call quietly stops returning data. We re-validate every
+    /// `LOGIN_RECHECK_SECS` seconds from `Msg::Tick`.
+    last_login_check: std::time::Instant,
 
     // picker state
     subs: Slot<Vec<AzSubscription>>,
@@ -236,6 +242,7 @@ impl App {
         Self {
             config,
             login: Slot::Idle,
+            last_login_check: std::time::Instant::now(),
             subs: Slot::Idle,
             sub_cursor,
             apps: Slot::Idle,
@@ -383,7 +390,20 @@ impl App {
                             runs_cache::save(sub, app, &workflow, rs);
                         }
                     }
-                    Err(e) => self.status = format!("runs {workflow}: {e}"),
+                    Err(e) => {
+                        self.status = format!("runs {workflow}: {e}");
+                        // If the failure looks like an auth error, surface it
+                        // immediately rather than waiting for the next periodic
+                        // re-check. Re-fires `react_to_login` so the existing
+                        // expired-session modal / banner kicks in.
+                        if Self::looks_like_auth_error(e)
+                            && matches!(self.login, Slot::Loaded(AzLoginState::LoggedIn { .. }))
+                        {
+                            self.login = Slot::Loaded(AzLoginState::Expired);
+                            self.last_login_check = std::time::Instant::now();
+                            self.react_to_login(&AzLoginState::Expired);
+                        }
+                    }
                 }
                 // Don't overwrite cached data with a Failed slot — keep showing
                 // the cache and surface the error in the status line.
@@ -433,6 +453,20 @@ impl App {
             }
 
             Msg::Tick => {
+                // Periodically revalidate the Azure CLI session. AADSTS / sign-in
+                // frequency policies expire refresh tokens silently while the app
+                // is open; without this, every Azure call from this point on
+                // returns auth errors but the login slot still says LoggedIn.
+                // ~5 minutes is a sane cadence — the call hits the local cache
+                // and the IMDS endpoint, so it's cheap and offline-friendly.
+                const LOGIN_RECHECK_SECS: u64 = 300;
+                let logged_in = matches!(self.login, Slot::Loaded(AzLoginState::LoggedIn { .. }));
+                if logged_in
+                    && self.last_login_check.elapsed() >= std::time::Duration::from_secs(LOGIN_RECHECK_SECS)
+                {
+                    self.spawn_login_check();
+                }
+
                 // Live refresh — pulls fresh runs for *every* step of the
                 // currently-focused chain, not just the focused step. So when
                 // the user Tabs around they see up-to-date data immediately,
@@ -995,10 +1029,23 @@ impl App {
 
     fn spawn_login_check(&mut self) {
         self.login = Slot::Loading;
+        self.last_login_check = std::time::Instant::now();
         let tx = self.tx.clone();
         tokio::task::spawn_blocking(move || {
             let _ = tx.send(Msg::LoginChecked(azure::check_login()));
         });
+    }
+
+    /// True if the given error string looks like an Azure AAD authentication
+    /// failure (expired refresh token, sign-in frequency policy, missing
+    /// session). When the live tick sees one of these, we treat the login as
+    /// expired immediately rather than waiting for the next periodic re-check.
+    fn looks_like_auth_error(err: &str) -> bool {
+        err.contains("AADSTS")
+            || err.contains("refresh token")
+            || err.contains("az login")
+            || err.contains("expired")
+            || err.contains("InteractionRequired")
     }
 
     fn spawn_subs(&mut self) {
