@@ -1,4 +1,5 @@
 pub mod activity;
+pub mod api_test;
 pub mod azure;
 pub mod chain;
 pub mod functions_cache;

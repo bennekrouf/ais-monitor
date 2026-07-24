@@ -6,6 +6,7 @@ use crate::components::{
     eventgrid_panel::EventGridPanel,
     graph_panel::GraphPanel,
     functions_panel::FunctionsPanel,
+    api_test_panel::ApiTestPanel,
 };
 use crate::services::{activity, azure, azure::EgLink, chain, health_cache, history_cache, kpi, remote_chain};
 use std::collections::HashMap;
@@ -67,6 +68,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
             ViewMode::EventGrid => { graph_visible.set(false); visited_eg.set(true); }
             ViewMode::Functions => { graph_visible.set(false); visited_fn.set(true); }
             ViewMode::Chains    => graph_visible.set(false),
+            ViewMode::ApiTest   => graph_visible.set(false),
         }
     });
     let mut loading_chains = use_signal(|| true);
@@ -427,6 +429,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                     let is_eg     = *view_mode.read() == ViewMode::EventGrid;
                     let is_graph  = *view_mode.read() == ViewMode::Graph;
                     let is_funcs  = *view_mode.read() == ViewMode::Functions;
+                    let is_api    = *view_mode.read() == ViewMode::ApiTest;
                     // Pick the most-recent last_checked timestamp across all chains
                     // and translate it into a freshness state. Subscribe to the
                     // minute-tick so the colour ages without user interaction.
@@ -471,6 +474,11 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                 class: if is_graph { "topbar-tab active" } else { "topbar-tab" },
                                 onclick: move |_| view_mode.set(ViewMode::Graph),
                                 "Graph"
+                            }
+                            button {
+                                class: if is_api { "topbar-tab active" } else { "topbar-tab" },
+                                onclick: move |_| view_mode.set(ViewMode::ApiTest),
+                                "API Test"
                             }
                         }
                     }
@@ -801,6 +809,13 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                     let eg_style        = if mode == ViewMode::EventGrid { "" } else { "display:none" };
                     let functions_style = if mode == ViewMode::Functions { "" } else { "display:none" };
                     let graph_style     = if mode == ViewMode::Graph     { "" } else { "display:none" };
+                    let api_style       = if mode == ViewMode::ApiTest  { "" } else { "display:none" };
+                    let api_save_dir = dirs::config_dir()
+                        .unwrap_or_else(|| std::path::PathBuf::from("."))
+                        .join("ais-monitor")
+                        .join(format!("{}_{}", az.resource_group, az.app_name))
+                        .to_string_lossy()
+                        .to_string();
                     rsx! {
                         div { class: "view-stack",
                             div { class: "main-content", style: "{chains_style}",
@@ -859,6 +874,14 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                     chains: chains.read().clone(),
                                     is_light: is_light,
                                     visible: graph_visible,
+                                }
+                            }
+                            div { class: "main-content", style: "{api_style}",
+                                div { class: "detail-pane",
+                                    ApiTestPanel {
+                                        save_dir: api_save_dir.clone(),
+                                        azure_subscription: az.subscription.clone(),
+                                    }
                                 }
                             }
                         }
@@ -944,4 +967,5 @@ enum ViewMode {
     EventGrid,
     Functions,
     Graph,
+    ApiTest,
 }

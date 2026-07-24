@@ -1793,6 +1793,163 @@ body {
 }
 
 /* ══════════════════════════════════════════════
+   API TEST PANEL (generic HTTP request tester)
+══════════════════════════════════════════════ */
+.api-url-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+.api-method-select {
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 6px 8px;
+    background: var(--bg0);
+    color: var(--text1);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+}
+.api-method-select:focus {
+    outline: none;
+    border-color: var(--blue);
+}
+
+.api-url-input {
+    flex: 1;
+    font-family: inherit;
+    font-size: 12px;
+    padding: 6px 10px;
+    background: var(--bg0);
+    color: var(--text1);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+}
+.api-url-input:focus {
+    outline: none;
+    border-color: var(--blue);
+}
+
+.api-headers-wrap {
+    margin-bottom: 12px;
+}
+
+.api-header-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 6px;
+}
+
+.api-header-key {
+    flex: 1;
+    font-family: inherit;
+    font-size: 12px;
+    padding: 5px 8px;
+    background: var(--bg0);
+    color: var(--text1);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+}
+
+.api-header-val {
+    flex: 2;
+    font-family: inherit;
+    font-size: 12px;
+    padding: 5px 8px;
+    background: var(--bg0);
+    color: var(--text1);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+}
+
+.api-header-key:focus,
+.api-header-val:focus {
+    outline: none;
+    border-color: var(--blue);
+}
+
+.api-header-remove {
+    flex-shrink: 0;
+    color: var(--text3);
+}
+.api-header-remove:hover {
+    color: var(--red);
+    border-color: var(--red);
+}
+
+.api-preview-wrap {
+    margin-bottom: 12px;
+}
+
+.api-preview {
+    font-size: 11px;
+    line-height: 1.5;
+    padding: 8px 10px;
+    margin-top: 4px;
+    background: var(--bg0);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    color: var(--text2);
+    overflow-x: auto;
+    white-space: pre;
+}
+
+.api-preview-warn {
+    margin-top: 6px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--yellow);
+}
+
+.api-apim-wrap {
+    margin-bottom: 16px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
+}
+
+.api-apim-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.api-apim-input {
+    flex: 1;
+    font-family: inherit;
+    font-size: 12px;
+    padding: 6px 10px;
+    background: var(--bg0);
+    color: var(--text1);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+}
+.api-apim-input:focus {
+    outline: none;
+    border-color: var(--blue);
+}
+
+.spinner {
+    display: inline-block;
+    width: 10px;
+    height: 10px;
+    margin-right: 6px;
+    vertical-align: -1px;
+    border: 2px solid currentColor;
+    border-right-color: transparent;
+    border-radius: 50%;
+    opacity: 0.6;
+    animation: spinner-rotate 0.7s linear infinite;
+}
+
+@keyframes spinner-rotate {
+    to { transform: rotate(360deg); }
+}
+
+/* ══════════════════════════════════════════════
    EVENTGRID TOPOLOGY (Phase E)
 ══════════════════════════════════════════════ */
 .eg-panel {

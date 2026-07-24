@@ -6,3 +6,4 @@ pub mod trigger_panel;
 pub mod eventgrid_panel;
 pub mod graph_panel;
 pub mod functions_panel;
+pub mod api_test_panel;

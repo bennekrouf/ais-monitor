@@ -100,19 +100,35 @@ pub fn discover_chains_remote(
     }
 
     // Load manual links (EventGrid, dynamic queue routing not visible in the
-    // deployed workflow JSON). Precedence:
-    //   1. A local `logic_apps/.ais-chain` file under `local_dir`, when the
-    //      user has a workspace pointed at it. Lets developers iterate on
-    //      topology changes without rebuilding ais-monitor.
-    //   2. The defaults embedded in the ais-monitor binary itself. Every
-    //      install ships with a known-good set — Windows users who never
-    //      clone the repo still get the full chain. Update by editing
-    //      `src/services/default-ais-chain.txt` and shipping a new release.
-    let local_links = load_manual_links(local_dir);
-    let manual_links = if local_links.is_empty() {
+    // deployed workflow JSON). Precedence — strictly tool-side, never the
+    // customer repo (a legacy repo .ais-chain is honored read-only and
+    // migrated to ~/.ais/chains/ by the shared loader):
+    //   1. ~/.ais/chains/<project-key>.txt via ais_chain::links::load, keyed
+    //      by local_dir when the user has a workspace, else by the remote
+    //      sub/app identity so remote-only installs get their own file.
+    //   2. TRANSITIONAL: the defaults embedded in the binary. On first use
+    //      they are migrated into the tool home; the embedded copy is
+    //      scheduled for removal — customer topology must not ship in a
+    //      generic release binary.
+    let links_key: std::path::PathBuf = if local_dir.is_empty() {
+        std::path::PathBuf::from(format!("/remote/{sub}/{app}"))
+    } else {
+        let base = std::path::Path::new(local_dir);
+        if base.join("logic_apps").exists() { base.join("logic_apps") }
+        else if base.join("logic-apps").exists() { base.join("logic-apps") }
+        else { base.to_path_buf() }
+    };
+    let loaded = ais_chain::links::load(&links_key);
+    for w in &loaded.warnings {
+        eprintln!("[ais-chain links] {w}");
+    }
+    let manual_links = if loaded.links.is_empty() {
+        // Migrate embedded defaults into the tool home so the next release
+        // can drop them from the binary.
+        let _ = ais_chain::links::save(&links_key, EMBEDDED_AIS_CHAIN);
         embedded_manual_links()
     } else {
-        local_links
+        loaded.links
     };
     let graph = ais_chain::graph::build(&resolved_workflows, &manual_links);
     let raw_chains = graph.find_chains();
@@ -227,29 +243,6 @@ fn embedded_manual_links() -> Vec<String> {
     EMBEDDED_AIS_CHAIN
         .lines()
         .map(|l| l.trim().trim_start_matches('\u{feff}'))
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .map(|l| l.to_string())
-        .collect()
-}
-
-fn load_manual_links(local_dir: &str) -> Vec<String> {
-    if local_dir.is_empty() { return Vec::new(); }
-    let base = std::path::Path::new(local_dir);
-    // Mirror ais-runner: look for .ais-chain inside logic_apps/ subfolder first
-    let dir = if base.join("logic_apps").exists() {
-        base.join("logic_apps")
-    } else if base.join("logic-apps").exists() {
-        base.join("logic-apps")
-    } else {
-        base.to_path_buf()
-    };
-    let path = dir.join(".ais-chain");
-    let content = match std::fs::read_to_string(&path) {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
-    content.lines()
-        .map(|l| l.trim())
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
         .map(|l| l.to_string())
         .collect()
