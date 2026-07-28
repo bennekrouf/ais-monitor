@@ -65,7 +65,21 @@ pub fn az_command(args: &[&str]) -> Command {
     {
         let az_path = resolve_az_windows();
         let mut cmd = Command::new("cmd");
-        cmd.args(["/c", "az"]).args(args);
+        cmd.args(["/c", "az"]);
+        // `cmd /c` doesn't behave like a normal argv-receiving process: it
+        // reassembles everything after `/c` into one line and re-tokenizes
+        // it with cmd.exe's own rules, where bare `&`, `|`, `<`, `>` always
+        // act as command separators/redirects — even inside what looks like
+        // a single argument — UNLESS that argument is wrapped in literal
+        // quotes. Rust's own Windows arg-quoting only adds quotes when an
+        // argument contains whitespace, so a space-free URL/query like
+        // `...?api-version=X&$top=20` sails through unquoted and gets
+        // split at the `&`, producing errors like "'$top' is not
+        // recognized as an internal or external command". Force-quote
+        // every argument here to close that gap regardless of content.
+        for a in args {
+            cmd.arg(format!("\"{a}\""));
+        }
         if az_path != "az" {
             if let Some(dir) = std::path::Path::new(&az_path).parent() {
                 let current = std::env::var("PATH").unwrap_or_default();
