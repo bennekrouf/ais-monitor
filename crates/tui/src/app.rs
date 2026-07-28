@@ -1250,7 +1250,8 @@ impl App {
             // Empty local dir — no `.ais-chain` manual-links file to load
             // (online-only tool). `discover_chains_remote` early-returns
             // empty manual links on "".
-            let r = remote_chain::discover_chains_remote(&sub, &rg, &app, "");
+            let r = remote_chain::discover_chains_remote(&sub, &rg, &app, "")
+                .map(|discovery| discovery.chains);
             let _ = tx.send(Msg::ChainsLoaded(r));
         });
     }
@@ -2102,6 +2103,8 @@ impl App {
                 Span::raw(" drill  "),
                 Span::styled("/", Style::default().fg(Color::Yellow)),
                 Span::raw(" filter  "),
+                Span::styled("r/R", Style::default().fg(Color::Yellow)),
+                Span::raw(" refresh/reload  "),
                 Span::styled("m", Style::default().fg(Color::Yellow)),
                 Span::raw(" rename  "),
                 Span::styled("w", Style::default().fg(Color::Yellow)),

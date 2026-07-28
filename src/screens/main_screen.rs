@@ -31,6 +31,12 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     let mut chains = use_signal(|| Vec::<chain::ChainDetail>::new());
     let mut selected_chain = use_signal(|| Option::<String>::None);
     let mut deployed_workflows = use_signal(|| Vec::<String>::new());
+    // Workflows deployed to Azure but with no detected chain link (queue,
+    // EventGrid, direct call, or manual link) — surfaced instead of silently
+    // dropped, since that usually means a missing manual link rather than a
+    // genuinely standalone workflow.
+    let mut unlinked_workflows = use_signal(|| Vec::<remote_chain::UnlinkedWorkflow>::new());
+    let mut show_unlinked = use_signal(|| false);
     let chain_names = use_signal(|| HashMap::<String, String>::new());
     let mut chain_health  = use_signal(|| HashMap::<String, ChainHealth>::new());
     // Per-chain, per-workflow raw run lists shared with ChainDetailView so
@@ -263,17 +269,22 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                 }).await;
 
                 match result {
-                    Ok(Ok(discovered)) => {
+                    Ok(Ok(discovery)) => {
+                        let discovered = discovery.chains;
                         // Extract deployed workflow names
                         let deployed: Vec<String> = discovered.iter()
                             .flat_map(|c| c.steps.iter().map(|s| s.workflow.clone()))
                             .collect();
                         activity::info(
                             "Discovered chains",
-                            format!("{} chain(s), {} workflow(s)", discovered.len(), deployed.len()),
+                            format!(
+                                "{} chain(s), {} workflow(s), {} unlinked",
+                                discovered.len(), deployed.len(), discovery.unlinked.len(),
+                            ),
                         );
                         deployed_workflows.set(deployed);
                         chains.set(discovered);
+                        unlinked_workflows.set(discovery.unlinked);
                     }
                     Ok(Err(e)) => {
                         activity::error("Chain discovery failed", "", e.clone());
@@ -483,6 +494,69 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                         }
                     }
                 }
+                // Recompute links — rebuilds the chain graph from already-fetched
+                // workflow definitions plus a fresh read of the manual-links
+                // file (~/.ais/chains/*.txt), skipping the expensive per-workflow
+                // re-fetch. No confirm needed — it doesn't touch Azure data.
+                // Use this after editing the links file; use Refresh when the
+                // workflows themselves changed in Azure.
+                button {
+                    class: "btn btn-small",
+                    disabled: *loading_chains.read(),
+                    title: "Rebuild chains from the manual-links file without re-fetching workflows from Azure",
+                    onclick: {
+                        let az = az.clone();
+                        move |_| {
+                            let az = az.clone();
+                            loading_chains.set(true);
+                            load_error.set(None);
+                            spawn(async move {
+                                let sub = az.subscription.clone();
+                                let app = az.app_name.clone();
+                                let sub2 = sub.clone();
+                                let rg = az.resource_group.clone();
+                                let app2 = app.clone();
+                                let local_dir = az.local_dir.clone();
+                                tokio::task::spawn_blocking(move || {
+                                    remote_chain::recompute_chains(&sub, &app);
+                                }).await.ok();
+                                let result = tokio::task::spawn_blocking(move || {
+                                    remote_chain::discover_chains_remote(&sub2, &rg, &app2, &local_dir)
+                                }).await;
+                                match result {
+                                    Ok(Ok(discovery)) => {
+                                        let discovered = discovery.chains;
+                                        let deployed: Vec<String> = discovered.iter()
+                                            .flat_map(|c| c.steps.iter().map(|s| s.workflow.clone()))
+                                            .collect();
+                                        activity::info(
+                                            "Recomputed chains",
+                                            format!(
+                                                "{} chain(s), {} unlinked",
+                                                discovered.len(), discovery.unlinked.len(),
+                                            ),
+                                        );
+                                        deployed_workflows.set(deployed);
+                                        chains.set(discovered);
+                                        unlinked_workflows.set(discovery.unlinked);
+                                    }
+                                    Ok(Err(e)) => {
+                                        activity::error("Recompute chains failed", "", e.clone());
+                                        load_error.set(Some(e));
+                                    }
+                                    Err(e) => {
+                                        let s = format!("{e}");
+                                        activity::error("Recompute chains panic", "", s.clone());
+                                        load_error.set(Some(s));
+                                    }
+                                }
+                                loading_chains.set(false);
+                            });
+                        }
+                    },
+                    if *loading_chains.read() { "Recomputing…" } else { "Recompute links" }
+                }
+
                 // Refresh button — opens a confirm modal before doing the work,
                 // since clearing the cache and re-fetching every workflow can
                 // be a multi-minute round trip on a large Logic App.
@@ -818,7 +892,38 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                         .to_string();
                     rsx! {
                         div { class: "view-stack",
-                            div { class: "main-content", style: "{chains_style}",
+                            div { class: "chains-tab-wrap", style: "{chains_style}",
+                                // Workflows deployed to Azure but with no detected
+                                // chain link — usually a missing manual link
+                                // (EventGrid routing, dynamic queue name) rather
+                                // than a genuinely standalone workflow. Collapsed
+                                // by default so it doesn't crowd the normal view.
+                                if !unlinked_workflows.read().is_empty() {
+                                    div { class: "unlinked-banner",
+                                        button {
+                                            class: "unlinked-banner-toggle",
+                                            onclick: move |_| { let v = *show_unlinked.read(); show_unlinked.set(!v); },
+                                            span { class: "unlinked-banner-icon", "⚠" }
+                                            span {
+                                                "{unlinked_workflows.read().len()} unlinked workflow(s) — deployed but no detected chain link"
+                                            }
+                                            span { class: "unlinked-banner-caret", if *show_unlinked.read() { "▾" } else { "▸" } }
+                                        }
+                                        if *show_unlinked.read() {
+                                            div { class: "unlinked-banner-list",
+                                                for wf in unlinked_workflows.read().iter() {
+                                                    div { class: "unlinked-banner-row",
+                                                        span { class: "unlinked-banner-name", "{wf.name}" }
+                                                        span { class: "unlinked-banner-trigger",
+                                                            if wf.trigger_info.is_empty() { "no trigger info" } else { "{wf.trigger_info}" }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            div { class: "main-content",
                                 ChainList {
                                     chains: chains.read().clone(),
                                     selected: selected_chain.read().clone(),
@@ -854,6 +959,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                         }
                                     }
                                 }
+                            }
                             }
                             div { class: "main-content", style: "{eg_style}",
                                 div { class: "detail-pane",
@@ -930,12 +1036,14 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                                 remote_chain::discover_chains_remote(&sub2, &rg, &app2, &local_dir)
                                             }).await;
                                             match result {
-                                                Ok(Ok(discovered)) => {
+                                                Ok(Ok(discovery)) => {
+                                                    let discovered = discovery.chains;
                                                     let deployed: Vec<String> = discovered.iter()
                                                         .flat_map(|c| c.steps.iter().map(|s| s.workflow.clone()))
                                                         .collect();
                                                     deployed_workflows.set(deployed);
                                                     chains.set(discovered);
+                                                    unlinked_workflows.set(discovery.unlinked);
                                                 }
                                                 Ok(Err(e)) => load_error.set(Some(e)),
                                                 Err(e) => load_error.set(Some(format!("{e}"))),

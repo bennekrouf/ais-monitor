@@ -3,6 +3,22 @@ use crate::services::chain::{ChainDetail, StepDetail};
 use std::collections::HashSet;
 use std::path::PathBuf;
 
+/// A workflow with no detected edge (queue producer/consumer, EventGrid, or
+/// manual link) to any other workflow — invisible in the Chains view since a
+/// 1-node "chain" carries no useful topology to show.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct UnlinkedWorkflow {
+    pub name: String,
+    /// Trigger summary (e.g. "queue:ais.ignite.kyriba.payment") so the user
+    /// can see *what* it's waiting on without opening the workflow itself.
+    pub trigger_info: String,
+}
+
+pub struct ChainDiscovery {
+    pub chains: Vec<ChainDetail>,
+    pub unlinked: Vec<UnlinkedWorkflow>,
+}
+
 /// Discover chains by fetching workflow definitions from Azure.
 /// The final chain graph is cached to disk so subsequent launches are instant.
 /// Call `clear_cache` (already wired to the Refresh button) to force a re-fetch.
@@ -11,10 +27,11 @@ pub fn discover_chains_remote(
     rg: &str,
     app: &str,
     local_dir: &str,
-) -> Result<Vec<ChainDetail>, String> {
+) -> Result<ChainDiscovery, String> {
     // Return the cached chain graph immediately if available.
     if let Some(cached) = load_chains_result(sub, app) {
-        return Ok(cached);
+        let unlinked = load_unlinked_result(sub, app).unwrap_or_default();
+        return Ok(ChainDiscovery { chains: cached, unlinked });
     }
 
     let cache_dir = cache_path(sub, app);
@@ -135,6 +152,27 @@ pub fn discover_chains_remote(
 
     // If no multi-step chains, surface a diagnostic instead of silently returning empty
     let multi_step: Vec<_> = raw_chains.iter().filter(|c| c.steps.len() > 1).collect();
+
+    // Single-node chains are workflows with no detected edge in or out — they
+    // used to just vanish from the UI. Surface them instead so a missing
+    // manual link (or a genuinely standalone utility workflow) is visible
+    // rather than silently dropped.
+    let unlinked: Vec<UnlinkedWorkflow> = raw_chains.iter()
+        .filter(|c| c.steps.len() == 1)
+        .map(|c| {
+            let name = c.steps[0].workflow.clone();
+            let trigger_info = resolved_workflows.iter()
+                .find(|w| w.name == name)
+                .map(|w| {
+                    w.triggers.iter()
+                        .map(|t| format!("{}:{}", t.kind, t.target))
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                })
+                .unwrap_or_default();
+            UnlinkedWorkflow { name, trigger_info }
+        })
+        .collect();
     if multi_step.is_empty() && !raw_chains.is_empty() {
         // There are workflows but no connections detected — useful diagnostic
         let wf_names: Vec<_> = resolved_workflows.iter().map(|w| {
@@ -189,7 +227,8 @@ pub fn discover_chains_remote(
         .collect();
 
     save_chains_result(sub, app, &chains);
-    Ok(chains)
+    save_unlinked_result(sub, app, &unlinked);
+    Ok(ChainDiscovery { chains, unlinked })
 }
 
 /// Extract the Service Bus queue name encoded in an Azure trigger name.
@@ -265,10 +304,39 @@ fn save_chains_result(sub: &str, app: &str, chains: &[ChainDetail]) {
     }
 }
 
+fn unlinked_result_path(sub: &str, app: &str) -> PathBuf {
+    cache_path(sub, app).join("_unlinked.json")
+}
+
+fn load_unlinked_result(sub: &str, app: &str) -> Option<Vec<UnlinkedWorkflow>> {
+    let path = unlinked_result_path(sub, app);
+    let content = std::fs::read_to_string(&path).ok()?;
+    serde_json::from_str(&content).ok()
+}
+
+fn save_unlinked_result(sub: &str, app: &str, unlinked: &[UnlinkedWorkflow]) {
+    let path = unlinked_result_path(sub, app);
+    if let Ok(json) = serde_json::to_string(unlinked) {
+        let _ = std::fs::write(path, json);
+    }
+}
+
 /// Invalidate the cache for a specific app, forcing a fresh fetch next time.
 pub fn clear_cache(sub: &str, app: &str) {
     let dir = cache_path(sub, app);
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Invalidate just the computed chain graph (`_chains.json` / `_unlinked.json`),
+/// leaving the per-workflow definition cache untouched. `discover_chains_remote`
+/// then rebuilds the graph from already-fetched workflow definitions plus a
+/// fresh read of the manual-links file, skipping the expensive per-workflow
+/// re-fetch (still makes the two cheap list/app-settings calls). Use this
+/// after editing `~/.ais/chains/*.txt`; use `clear_cache` when the workflows
+/// themselves changed in Azure and need re-fetching.
+pub fn recompute_chains(sub: &str, app: &str) {
+    let _ = std::fs::remove_file(chains_result_path(sub, app));
+    let _ = std::fs::remove_file(unlinked_result_path(sub, app));
 }
 
 fn cache_path(sub: &str, app: &str) -> PathBuf {

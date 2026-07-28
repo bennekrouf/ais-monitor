@@ -1,0 +1,7 @@
+[alias]
+# Shorthand for `cargo run -p ais-monitor-tui` during local dev. The package
+# itself stays named `ais-monitor-tui` — that name is load-bearing for
+# `cargo binstall`, scripts/install-tui.sh, and the release workflow's
+# published asset names, so it can't be renamed without breaking those.
+tui = "run -p ais-monitor-tui"
+t = "run -p ais-monitor-tui"

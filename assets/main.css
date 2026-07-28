@@ -918,6 +918,79 @@ body {
     overflow: hidden;
 }
 
+.chains-tab-wrap {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+}
+
+/* ── Unlinked workflows banner ────────────────────────────────────── */
+.unlinked-banner {
+    flex-shrink: 0;
+    border-bottom: 1px solid var(--border);
+    background: color-mix(in srgb, var(--yellow) 8%, var(--bg1));
+}
+
+.unlinked-banner-toggle {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 14px;
+    font: inherit;
+    font-size: 12px;
+    color: var(--text1);
+    background: none;
+    border: none;
+    cursor: pointer;
+    text-align: left;
+}
+.unlinked-banner-toggle:hover {
+    background: color-mix(in srgb, var(--yellow) 14%, var(--bg1));
+}
+
+.unlinked-banner-icon {
+    color: var(--yellow);
+}
+
+.unlinked-banner-caret {
+    margin-left: auto;
+    color: var(--text3);
+}
+
+.unlinked-banner-list {
+    max-height: 160px;
+    overflow-y: auto;
+    padding: 0 14px 10px;
+}
+
+.unlinked-banner-row {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 4px 0;
+    font-size: 11px;
+    border-top: 1px solid color-mix(in srgb, var(--yellow) 20%, transparent);
+}
+.unlinked-banner-row:first-child {
+    border-top: none;
+}
+
+.unlinked-banner-name {
+    font-weight: 600;
+    color: var(--text1);
+    flex-shrink: 0;
+}
+
+.unlinked-banner-trigger {
+    color: var(--text3);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
 /* ── Chain list (left panel) ──────────────────────────────────────── */
 .chain-list {
     width: 280px;

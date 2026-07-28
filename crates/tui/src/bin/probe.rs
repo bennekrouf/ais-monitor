@@ -128,9 +128,9 @@ fn cmd_chains(args: &[String]) -> Result<(), String> {
     let rg = args.get(2).ok_or("missing <rg>")?;
     let app = args.get(3).ok_or("missing <app>")?;
     let dir = args.get(4).ok_or("missing <local_dir>")?;
-    let chains = remote_chain::discover_chains_remote(sub, rg, app, dir)?;
-    println!("{} chain(s) discovered:", chains.len());
-    for c in chains {
+    let discovery = remote_chain::discover_chains_remote(sub, rg, app, dir)?;
+    println!("{} chain(s) discovered:", discovery.chains.len());
+    for c in &discovery.chains {
         let steps: Vec<&str> = c.steps.iter().map(|s| s.workflow.as_str()).collect();
         println!("  [{}] {}", c.label, steps.join(" -> "));
         if !c.queues.is_empty() {
@@ -138,6 +138,12 @@ fn cmd_chains(args: &[String]) -> Result<(), String> {
         }
         if !c.parallel_entries.is_empty() {
             println!("    parallel: {}", c.parallel_entries.join(", "));
+        }
+    }
+    if !discovery.unlinked.is_empty() {
+        println!("\n{} unlinked workflow(s):", discovery.unlinked.len());
+        for u in &discovery.unlinked {
+            println!("  {} (trigger: {})", u.name, if u.trigger_info.is_empty() { "none" } else { &u.trigger_info });
         }
     }
     Ok(())
