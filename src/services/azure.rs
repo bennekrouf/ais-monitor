@@ -70,15 +70,25 @@ pub fn az_command(args: &[&str]) -> Command {
         // reassembles everything after `/c` into one line and re-tokenizes
         // it with cmd.exe's own rules, where bare `&`, `|`, `<`, `>` always
         // act as command separators/redirects — even inside what looks like
-        // a single argument — UNLESS that argument is wrapped in literal
-        // quotes. Rust's own Windows arg-quoting only adds quotes when an
-        // argument contains whitespace, so a space-free URL/query like
-        // `...?api-version=X&$top=20` sails through unquoted and gets
-        // split at the `&`, producing errors like "'$top' is not
-        // recognized as an internal or external command". Force-quote
-        // every argument here to close that gap regardless of content.
+        // a single argument — UNLESS escaped. Wrapping the whole argument in
+        // quotes was tried and reverted: `az.cmd`'s own `%*` batch-parameter
+        // forwarding doesn't strip added quotes, so `az` ends up receiving
+        // the literal text `"account"` instead of `account`. Caret-escaping
+        // just the metacharacters is consumed entirely by cmd.exe's own
+        // parsing layer and never reaches `az.cmd` or Python, so plain
+        // arguments are unaffected and `&`-bearing URLs/queries no longer
+        // get split mid-argument (e.g. `...?api-version=X&$top=20`).
         for a in args {
-            cmd.arg(format!("\"{a}\""));
+            let escaped: String = a.chars()
+                .flat_map(|c| {
+                    if matches!(c, '&' | '|' | '<' | '>' | '^') {
+                        vec!['^', c]
+                    } else {
+                        vec![c]
+                    }
+                })
+                .collect();
+            cmd.arg(escaped);
         }
         if az_path != "az" {
             if let Some(dir) = std::path::Path::new(&az_path).parent() {
