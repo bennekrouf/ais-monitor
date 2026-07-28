@@ -56,40 +56,32 @@ fn az_not_found_message() -> String {
     { "Azure CLI not found. Install it from https://aka.ms/installazurecliwindows then restart the app.".to_string() }
 }
 
-/// Build a `Command` that invokes the Azure CLI cross-platform.
-/// On Windows it wraps with `cmd /c az` and injects the CLI directory into PATH.
-/// On macOS/Linux it resolves `az` against known install dirs that GUI apps
-/// don't otherwise see in PATH.
+/// Build a `Command` that invokes the Azure CLI cross-platform. On both
+/// platforms this resolves `az` against known install dirs that GUI apps
+/// don't otherwise see in PATH, then hands the path straight to
+/// `Command::new` — including on Windows, where `az` is a `.cmd` batch
+/// file; Rust's std library (1.77.2+) detects that and applies its own
+/// correct, security-hardened escaping, so no manual `cmd /c` wrapping is
+/// needed or safe to hand-roll (see the comment in the Windows branch).
 pub fn az_command(args: &[&str]) -> Command {
     #[cfg(target_os = "windows")]
     {
         let az_path = resolve_az_windows();
-        let mut cmd = Command::new("cmd");
-        cmd.args(["/c", "az"]);
-        // `cmd /c` doesn't behave like a normal argv-receiving process: it
-        // reassembles everything after `/c` into one line and re-tokenizes
-        // it with cmd.exe's own rules, where bare `&`, `|`, `<`, `>` always
-        // act as command separators/redirects — even inside what looks like
-        // a single argument — UNLESS escaped. Wrapping the whole argument in
-        // quotes was tried and reverted: `az.cmd`'s own `%*` batch-parameter
-        // forwarding doesn't strip added quotes, so `az` ends up receiving
-        // the literal text `"account"` instead of `account`. Caret-escaping
-        // just the metacharacters is consumed entirely by cmd.exe's own
-        // parsing layer and never reaches `az.cmd` or Python, so plain
-        // arguments are unaffected and `&`-bearing URLs/queries no longer
-        // get split mid-argument (e.g. `...?api-version=X&$top=20`).
-        for a in args {
-            let escaped: String = a.chars()
-                .flat_map(|c| {
-                    if matches!(c, '&' | '|' | '<' | '>' | '^') {
-                        vec!['^', c]
-                    } else {
-                        vec![c]
-                    }
-                })
-                .collect();
-            cmd.arg(escaped);
-        }
+        // Manually wrapping with `cmd /c az ...` and hand-escaping metachars
+        // was tried and reverted twice: `az` is a `.cmd` batch file, and
+        // batch files re-parse their own body (including `%*` parameter
+        // expansion) through cmd.exe a second time, so a single layer of
+        // `^`-escaping gets consumed by the outer `cmd /c` and the bare
+        // metachar (e.g. `&` in `...?api-version=X&$top=20`) reappears and
+        // splits the command again at the inner layer. This exact class of
+        // bug — safely invoking `.bat`/`.cmd` files with argument content
+        // cmd.exe treats specially — is what Rust's std library fixed for
+        // real in 1.77.2 (the "BatBadBut" advisory, GHSA-q455-hj7f-vrqg):
+        // `Command::new`/`.args()` now detects a `.bat`/`.cmd` target and
+        // applies correct, security-hardened escaping itself. So just hand
+        // it the path and args directly — no manual `cmd /c` needed.
+        let mut cmd = Command::new(&az_path);
+        cmd.args(args);
         if az_path != "az" {
             if let Some(dir) = std::path::Path::new(&az_path).parent() {
                 let current = std::env::var("PATH").unwrap_or_default();
