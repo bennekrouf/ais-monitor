@@ -7,6 +7,7 @@ pub mod health_cache;
 pub mod history_cache;
 pub mod kpi;
 pub mod names;
+pub mod msg_template;
 pub mod payload;
 pub mod portal_links;
 pub mod remote_chain;

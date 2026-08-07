@@ -1520,6 +1520,17 @@ body {
 }
 .sb-send-header strong { color: var(--text1); }
 .sb-send-ns { color: var(--text3); font-size: 11px; }
+.sb-send-tpl {
+    display: flex; align-items: center; gap: 8px;
+    flex-wrap: wrap; margin-bottom: 8px;
+}
+.sb-send-tpl-input {
+    flex: 1 1 260px; min-width: 0;
+    font-family: var(--font-mono, monospace);
+    font-size: 12px; padding: 6px 8px;
+    background: var(--bg0); color: var(--text1);
+    border: 1px solid var(--border); border-radius: 6px;
+}
 .sb-send-body {
     width: 100%; box-sizing: border-box;
     font-family: var(--font-mono, monospace);

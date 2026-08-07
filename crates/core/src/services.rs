@@ -9,6 +9,8 @@ pub mod chain;
 pub mod kpi;
 #[path = "../../../src/services/names.rs"]
 pub mod names;
+#[path = "../../../src/services/msg_template.rs"]
+pub mod msg_template;
 #[path = "../../../src/services/payload.rs"]
 pub mod payload;
 #[path = "../../../src/services/remote_chain.rs"]

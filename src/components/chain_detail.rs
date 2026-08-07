@@ -103,6 +103,22 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
     let mut peek_error: Signal<Option<String>> = use_signal(|| None);
     let mut send_body: Signal<String> = use_signal(|| "{}".to_string());
     let mut send_status: Signal<Option<String>> = use_signal(|| None);
+    // Filename-driven body composition: most event-driven queues take a message
+    // that merely *references* a blob, so the whole body is derivable from the
+    // filename. Templates come from the project's own
+    // `.ais-runner/message-templates` folder — the same ones ais-runner reads,
+    // so a payload composed locally and one sent against real Azure agree.
+    let mut tpl_filename: Signal<String> = use_signal(String::new);
+    let msg_templates: Signal<Vec<crate::services::msg_template::MessageTemplate>> = {
+        let dir = props
+            .az_config
+            .as_ref()
+            .map(|a| a.local_dir.clone())
+            .unwrap_or_default();
+        use_signal(move || {
+            crate::services::msg_template::discover(std::path::Path::new(&dir)).0
+        })
+    };
     let mut sending: Signal<bool> = use_signal(|| false);
     // Cache the connection string so we only fetch it once per session
     let mut sb_conn_str: Signal<Option<String>> = use_signal(|| None);
@@ -1452,6 +1468,58 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                                                 " ({a.sb_namespace})"
                                             }
                                         }
+                                    }
+                                    // Only templates aimed at *this* queue are offered, so the
+                                    // buttons can't silently compose a body for a different one.
+                                    {
+                                        let for_this_queue: Vec<(String, String)> = msg_templates
+                                            .read()
+                                            .iter()
+                                            .filter(|t| t.queue == target_q)
+                                            .map(|t| (t.name.clone(), t.name.clone()))
+                                            .collect();
+                                        let fname = tpl_filename.read().clone();
+                                        (!for_this_queue.is_empty()).then(|| rsx! {
+                                            div { class: "sb-send-tpl",
+                                                input {
+                                                    class: "sb-send-tpl-input",
+                                                    r#type: "text",
+                                                    placeholder: "Filename to announce, e.g. ORYX.NC4.IMPORT.…xlsx",
+                                                    value: "{fname}",
+                                                    oninput: move |e| tpl_filename.set(e.value()),
+                                                }
+                                                for (label, key) in for_this_queue {
+                                                    button {
+                                                        class: "btn btn-small",
+                                                        title: "Compose the body for this filename",
+                                                        onclick: move |_| {
+                                                            let name = key.clone();
+                                                            let file = tpl_filename.read().clone();
+                                                            if file.trim().is_empty() {
+                                                                send_status.set(Some("Enter a filename first".into()));
+                                                                return;
+                                                            }
+                                                            let ctx = crate::services::msg_template::RenderContext {
+                                                                env: String::new(),
+                                                                blob_endpoint: String::new(),
+                                                            };
+                                                            let rendered = msg_templates.read().iter()
+                                                                .find(|t| t.name == name)
+                                                                .ok_or_else(|| "template not found".to_string())
+                                                                .and_then(|t| t.render(file.trim(), &ctx));
+                                                            match rendered {
+                                                                Ok(body) => {
+                                                                    send_body.set(body);
+                                                                    send_status.set(Some(format!("Composed from '{name}' — review, then Send")));
+                                                                }
+                                                                Err(e) => send_status.set(Some(format!("❌ {e}"))),
+                                                            }
+                                                        },
+                                                        "⚡ {label}"
+                                                    }
+                                                }
+                                            }
+                                        })
                                     }
                                     textarea {
                                         class: "sb-send-body",
