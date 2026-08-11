@@ -3,6 +3,40 @@ use crate::services::azure::{self, FunctionApp, FunctionDetail, FunctionMetrics,
 use crate::services::functions_cache;
 use crate::components::chain_detail::AzConfig;
 
+#[derive(Clone, Debug, PartialEq)]
+enum LifecycleAction {
+    Start,
+    Stop,
+    Restart,
+    SyncTriggers,
+}
+
+impl LifecycleAction {
+    fn label(&self) -> &'static str {
+        match self {
+            LifecycleAction::Start => "Start",
+            LifecycleAction::Stop => "Stop",
+            LifecycleAction::Restart => "Restart",
+            LifecycleAction::SyncTriggers => "Sync triggers",
+        }
+    }
+    fn az_command(&self, rg: &str, app: &str) -> String {
+        let verb = match self {
+            LifecycleAction::Start => "functionapp start",
+            LifecycleAction::Stop => "functionapp stop",
+            LifecycleAction::Restart => "functionapp restart",
+            LifecycleAction::SyncTriggers => "functionapp sync-function-triggers",
+        };
+        format!("az {verb} --resource-group {rg} --name {app}")
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct PendingLifecycleAction {
+    app_name: String,
+    action: LifecycleAction,
+}
+
 #[derive(Props, Clone, PartialEq)]
 pub struct FunctionsPanelProps {
     pub az_config: AzConfig,
@@ -24,6 +58,9 @@ pub fn FunctionsPanel(props: FunctionsPanelProps) -> Element {
     let mut error_key: Signal<Option<(String, String)>> = use_signal(|| None);
     let mut error_details: Signal<Vec<FunctionError>> = use_signal(Vec::new);
     let mut error_details_loading: Signal<bool> = use_signal(|| false);
+    let mut pending_action: Signal<Option<PendingLifecycleAction>> = use_signal(|| None);
+    let mut action_running: Signal<bool> = use_signal(|| false);
+    let mut action_error: Signal<Option<String>> = use_signal(|| None);
 
     // Auto-discover on mount: paint cached snapshot instantly, then refresh.
     use_effect({
@@ -182,6 +219,60 @@ pub fn FunctionsPanel(props: FunctionsPanelProps) -> Element {
         }
     };
 
+    // Run a confirmed lifecycle action, then re-list function apps so the
+    // state dot / running badge reflects the new state.
+    let run_action = {
+        let az = az.clone();
+        move |pending: PendingLifecycleAction| {
+            let az = az.clone();
+            action_running.set(true);
+            action_error.set(None);
+            spawn(async move {
+                let sub = az.subscription.clone();
+                let rg = az.resource_group.clone();
+                let app_name = pending.app_name.clone();
+                let action = pending.action.clone();
+                let rg2 = rg.clone();
+                let sub2 = sub.clone();
+                let app2 = app_name.clone();
+                let result: Result<(), String> = tokio::task::spawn_blocking(move || {
+                    match action {
+                        LifecycleAction::Start => azure::functionapp_start(&sub2, &rg2, &app2),
+                        LifecycleAction::Stop => azure::functionapp_stop(&sub2, &rg2, &app2),
+                        LifecycleAction::Restart => azure::functionapp_restart(&sub2, &rg2, &app2),
+                        LifecycleAction::SyncTriggers => azure::functionapp_sync_triggers(&sub2, &rg2, &app2),
+                    }
+                }).await.unwrap_or_else(|e| Err(format!("{e}")));
+
+                match &result {
+                    Ok(()) => {
+                        crate::services::activity::info(
+                            format!("Function App {}", pending.action.label()),
+                            app_name.clone(),
+                        );
+                        pending_action.set(None);
+                    }
+                    Err(e) => {
+                        crate::services::activity::error(
+                            format!("Function App {} failed", pending.action.label()),
+                            app_name.clone(),
+                            e.clone(),
+                        );
+                        action_error.set(Some(e.clone()));
+                    }
+                }
+
+                // Re-list so the state badge picks up the change.
+                let sub3 = sub.clone();
+                let rg3 = rg.clone();
+                if let Ok(Ok(apps)) = tokio::task::spawn_blocking(move || azure::list_function_apps(&sub3, &rg3)).await {
+                    func_apps.set(apps);
+                }
+                action_running.set(false);
+            });
+        }
+    };
+
     let is_loading = *loading.read();
     let err = error_msg.read().clone();
     let apps = func_apps.read().clone();
@@ -261,6 +352,40 @@ pub fn FunctionsPanel(props: FunctionsPanelProps) -> Element {
                                                 title: "Open Function App in Azure Portal",
                                                 onclick: move |_| crate::services::portal_links::open_in_browser(&url),
                                                 "🔗"
+                                            }
+                                        }
+                                    }
+                                    div { class: "func-lifecycle-actions",
+                                        {
+                                            let is_running_state = app.state == "Running";
+                                            let an1 = app_name.clone();
+                                            let an2 = app_name.clone();
+                                            let an3 = app_name.clone();
+                                            let an4 = app_name.clone();
+                                            rsx! {
+                                                button {
+                                                    class: "btn btn-small",
+                                                    disabled: is_running_state,
+                                                    onclick: move |_| pending_action.set(Some(PendingLifecycleAction { app_name: an1.clone(), action: LifecycleAction::Start })),
+                                                    "Start"
+                                                }
+                                                button {
+                                                    class: "btn btn-small",
+                                                    disabled: !is_running_state,
+                                                    onclick: move |_| pending_action.set(Some(PendingLifecycleAction { app_name: an2.clone(), action: LifecycleAction::Stop })),
+                                                    "Stop"
+                                                }
+                                                button {
+                                                    class: "btn btn-small",
+                                                    onclick: move |_| pending_action.set(Some(PendingLifecycleAction { app_name: an3.clone(), action: LifecycleAction::Restart })),
+                                                    "Restart"
+                                                }
+                                                button {
+                                                    class: "btn btn-small",
+                                                    title: "Force the host to re-read trigger bindings without a full restart",
+                                                    onclick: move |_| pending_action.set(Some(PendingLifecycleAction { app_name: an4.clone(), action: LifecycleAction::SyncTriggers })),
+                                                    "Sync triggers"
+                                                }
                                             }
                                         }
                                     }
@@ -451,6 +576,54 @@ pub fn FunctionsPanel(props: FunctionsPanelProps) -> Element {
                 if !has_ai {
                     div { class: "func-note",
                         "No Application Insights found in this resource group. Metrics are unavailable."
+                    }
+                }
+            }
+
+            if let Some(pending) = pending_action.read().clone() {
+                {
+                    let command = pending.action.az_command(&az.resource_group, &pending.app_name);
+                    let running = *action_running.read();
+                    let err = action_error.read().clone();
+                    let confirm_label = pending.action.label();
+                    let app_name = pending.app_name.clone();
+                    rsx! {
+                        div { class: "modal-backdrop",
+                            onclick: move |_| if !running { pending_action.set(None); },
+                            div { class: "modal-card",
+                                onclick: move |e: Event<MouseData>| e.stop_propagation(),
+                                h3 { class: "modal-title", "{confirm_label} {app_name}?" }
+                                p { class: "modal-body",
+                                    "This runs:"
+                                    br {}
+                                    code { "{command}" }
+                                }
+                                if let Some(e) = err {
+                                    div { class: "az-error", "{e}" }
+                                }
+                                div { class: "modal-actions",
+                                    button {
+                                        class: "btn btn-small",
+                                        disabled: running,
+                                        onclick: move |_| pending_action.set(None),
+                                        "Cancel"
+                                    }
+                                    button {
+                                        class: "btn btn-small btn-primary",
+                                        disabled: running,
+                                        onclick: {
+                                            let pending = pending.clone();
+                                            let mut run_action = run_action.clone();
+                                            move |_| {
+                                                let pending = pending.clone();
+                                                run_action(pending);
+                                            }
+                                        },
+                                        if running { "Running…" } else { "{confirm_label}" }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

@@ -7,8 +7,16 @@ use crate::components::{
     graph_panel::GraphPanel,
     functions_panel::FunctionsPanel,
     api_test_panel::ApiTestPanel,
+    app_settings_panel::AppSettingsPanel,
+    health_check_panel::HealthCheckPanel,
+    resource_health_panel::ResourceHealthPanel,
+    rbac_panel::RbacPanel,
+    observability_panel::ObservabilityPanel,
+    diagnostics_panel::DiagnosticsPanel,
+    variable_group_panel::VariableGroupPanel,
+    home_panel::HomePanel,
 };
-use crate::services::{activity, azure, azure::EgLink, chain, health_cache, history_cache, kpi, remote_chain};
+use crate::services::{activity, azure, azure::EgLink, chain, chain_probe, health_cache, history_cache, remote_chain};
 use std::collections::HashMap;
 
 #[derive(Props, Clone, PartialEq)]
@@ -59,7 +67,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     // Both fetched once on mount via az CLI; None until the call returns.
     let mut discovered_location: Signal<Option<String>> = use_signal(|| None);
     let mut discovered_sb_namespace: Signal<Option<String>> = use_signal(|| None);
-    let mut view_mode = use_signal(|| ViewMode::Chains);
+    let mut view_mode = use_signal(|| ViewMode::Home);
     // Mirrors `view_mode == Graph` as a plain bool signal so the (always-mounted)
     // GraphPanel can react to becoming visible and re-measure its container.
     let mut graph_visible = use_signal(|| false);
@@ -68,13 +76,28 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     // mounted (hidden) so their fetched state survives later tab switches.
     let mut visited_eg = use_signal(|| false);
     let mut visited_fn = use_signal(|| false);
+    let mut visited_settings = use_signal(|| false);
+    let mut visited_health = use_signal(|| false);
+    let mut visited_res_health = use_signal(|| false);
+    let mut visited_rbac = use_signal(|| false);
+    let mut visited_observability = use_signal(|| false);
+    let mut visited_diagnostics = use_signal(|| false);
+    let mut visited_var_groups = use_signal(|| false);
     use_effect(move || {
         match *view_mode.read() {
-            ViewMode::Graph     => graph_visible.set(true),
-            ViewMode::EventGrid => { graph_visible.set(false); visited_eg.set(true); }
-            ViewMode::Functions => { graph_visible.set(false); visited_fn.set(true); }
-            ViewMode::Chains    => graph_visible.set(false),
-            ViewMode::ApiTest   => graph_visible.set(false),
+            ViewMode::Graph          => graph_visible.set(true),
+            ViewMode::EventGrid      => { graph_visible.set(false); visited_eg.set(true); }
+            ViewMode::Functions      => { graph_visible.set(false); visited_fn.set(true); }
+            ViewMode::AppSettings    => { graph_visible.set(false); visited_settings.set(true); }
+            ViewMode::HealthCheck    => { graph_visible.set(false); visited_health.set(true); }
+            ViewMode::ResourceHealth => { graph_visible.set(false); visited_res_health.set(true); }
+            ViewMode::Rbac           => { graph_visible.set(false); visited_rbac.set(true); }
+            ViewMode::Observability  => { graph_visible.set(false); visited_observability.set(true); }
+            ViewMode::Diagnostics    => { graph_visible.set(false); visited_diagnostics.set(true); }
+            ViewMode::VariableGroups => { graph_visible.set(false); visited_var_groups.set(true); }
+            ViewMode::Home           => graph_visible.set(false),
+            ViewMode::Chains         => graph_visible.set(false),
+            ViewMode::ApiTest        => graph_visible.set(false),
         }
     });
     let mut loading_chains = use_signal(|| true);
@@ -436,11 +459,19 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                     { concat!("v", env!("CARGO_PKG_VERSION")) }
                 }
                 {
+                    let is_home   = *view_mode.read() == ViewMode::Home;
                     let is_chains = *view_mode.read() == ViewMode::Chains;
                     let is_eg     = *view_mode.read() == ViewMode::EventGrid;
                     let is_graph  = *view_mode.read() == ViewMode::Graph;
                     let is_funcs  = *view_mode.read() == ViewMode::Functions;
                     let is_api    = *view_mode.read() == ViewMode::ApiTest;
+                    let is_settings = *view_mode.read() == ViewMode::AppSettings;
+                    let is_health   = *view_mode.read() == ViewMode::HealthCheck;
+                    let is_res_health = *view_mode.read() == ViewMode::ResourceHealth;
+                    let is_rbac = *view_mode.read() == ViewMode::Rbac;
+                    let is_observability = *view_mode.read() == ViewMode::Observability;
+                    let is_diagnostics = *view_mode.read() == ViewMode::Diagnostics;
+                    let is_var_groups = *view_mode.read() == ViewMode::VariableGroups;
                     // Pick the most-recent last_checked timestamp across all chains
                     // and translate it into a freshness state. Subscribe to the
                     // minute-tick so the colour ages without user interaction.
@@ -465,31 +496,99 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                     };
                     rsx! {
                         div { class: "topbar-tabs",
-                            button {
-                                class: if is_chains { "topbar-tab active" } else { "topbar-tab" },
-                                onclick: move |_| view_mode.set(ViewMode::Chains),
-                                "Chains"
-                                span { class: "{dot_class}", title: "{dot_title}" }
+                            // ── Monitor: is anything wrong right now ────
+                            div { class: "topbar-group",
+                                button {
+                                    class: if is_home { "topbar-tab active" } else { "topbar-tab" },
+                                    title: "Home — overview dashboard",
+                                    onclick: move |_| view_mode.set(ViewMode::Home),
+                                    "🏠"
+                                }
+                                // Chains keeps its label: it's the primary view
+                                // and it anchors the KPI freshness dot, which
+                                // needs something to sit beside.
+                                button {
+                                    class: if is_chains { "topbar-tab topbar-tab-text active" } else { "topbar-tab topbar-tab-text" },
+                                    title: "Chains — workflow chains and their KPIs",
+                                    onclick: move |_| view_mode.set(ViewMode::Chains),
+                                    "Chains"
+                                    span { class: "{dot_class}", title: "{dot_title}" }
+                                }
+                                button {
+                                    class: if is_res_health { "topbar-tab active" } else { "topbar-tab" },
+                                    title: "Resources — health of every resource in the group",
+                                    onclick: move |_| view_mode.set(ViewMode::ResourceHealth),
+                                    "📦"
+                                }
+                                button {
+                                    class: if is_health { "topbar-tab active" } else { "topbar-tab" },
+                                    title: "Health Check — app-settings and managed-identity checks",
+                                    onclick: move |_| view_mode.set(ViewMode::HealthCheck),
+                                    "✅"
+                                }
                             }
-                            button {
-                                class: if is_eg { "topbar-tab active" } else { "topbar-tab" },
-                                onclick: move |_| view_mode.set(ViewMode::EventGrid),
-                                "EventGrid"
+                            // ── Inspect: drill into a specific resource ──
+                            div { class: "topbar-group",
+                                button {
+                                    class: if is_settings { "topbar-tab active" } else { "topbar-tab" },
+                                    title: "App Settings — live settings and App Configuration drift",
+                                    onclick: move |_| view_mode.set(ViewMode::AppSettings),
+                                    "⚙"
+                                }
+                                button {
+                                    class: if is_funcs { "topbar-tab active" } else { "topbar-tab" },
+                                    title: "Functions — function apps, metrics and errors",
+                                    onclick: move |_| view_mode.set(ViewMode::Functions),
+                                    "𝑓(x)"
+                                }
+                                button {
+                                    class: if is_eg { "topbar-tab active" } else { "topbar-tab" },
+                                    title: "EventGrid — topics and subscriptions",
+                                    onclick: move |_| view_mode.set(ViewMode::EventGrid),
+                                    "⚡"
+                                }
+                                button {
+                                    class: if is_rbac { "topbar-tab active" } else { "topbar-tab" },
+                                    title: "RBAC — managed identity role assignments",
+                                    onclick: move |_| view_mode.set(ViewMode::Rbac),
+                                    "🔑"
+                                }
                             }
-                            button {
-                                class: if is_funcs { "topbar-tab active" } else { "topbar-tab" },
-                                onclick: move |_| view_mode.set(ViewMode::Functions),
-                                "Functions"
+                            // ── Tools: things you run on demand ──────────
+                            div { class: "topbar-group",
+                                button {
+                                    class: if is_observability { "topbar-tab active" } else { "topbar-tab" },
+                                    title: "Observability — live log tail and month-to-date cost",
+                                    onclick: move |_| view_mode.set(ViewMode::Observability),
+                                    "📈"
+                                }
+                                button {
+                                    class: if is_diagnostics { "topbar-tab active" } else { "topbar-tab" },
+                                    title: "Diagnostics — connectivity probes",
+                                    onclick: move |_| view_mode.set(ViewMode::Diagnostics),
+                                    "🩺"
+                                }
+                                button {
+                                    class: if is_api { "topbar-tab active" } else { "topbar-tab" },
+                                    title: "API Test — send test requests",
+                                    onclick: move |_| view_mode.set(ViewMode::ApiTest),
+                                    "🧪"
+                                }
+                                button {
+                                    class: if is_graph { "topbar-tab active" } else { "topbar-tab" },
+                                    title: "Graph — interactive chain dependency graph",
+                                    onclick: move |_| view_mode.set(ViewMode::Graph),
+                                    "🔗"
+                                }
                             }
-                            button {
-                                class: if is_graph { "topbar-tab active" } else { "topbar-tab" },
-                                onclick: move |_| view_mode.set(ViewMode::Graph),
-                                "Graph"
-                            }
-                            button {
-                                class: if is_api { "topbar-tab active" } else { "topbar-tab" },
-                                onclick: move |_| view_mode.set(ViewMode::ApiTest),
-                                "API Test"
+                            // ── Admin: rare, and it deletes things ───────
+                            div { class: "topbar-group",
+                                button {
+                                    class: if is_var_groups { "topbar-tab active" } else { "topbar-tab" },
+                                    title: "Var Groups — DevOps variable group cleanup",
+                                    onclick: move |_| view_mode.set(ViewMode::VariableGroups),
+                                    "🧹"
+                                }
                             }
                         }
                     }
@@ -611,48 +710,16 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                         let label  = ch.label.clone();
                                         let label_for_log = label.clone();
 
-                                        let (health, errors, runs_map, q_statuses) = tokio::task::spawn_blocking(move || {
-                                            let mut errors: Vec<String> = Vec::new();
-                                            // Run history for each workflow step
-                                            let mut runs_map: HashMap<String, Vec<azure::RunInfo>> = HashMap::new();
-                                            for wf in &steps {
-                                                match azure::list_runs(&sub, &rg, &app, wf, depth) {
-                                                    Ok(runs) => { runs_map.insert(wf.clone(), runs); }
-                                                    Err(e) => errors.push(format!("list_runs {wf}: {e}")),
-                                                }
-                                            }
-                                            // Queue counts — collect per-queue so the detail view's
-                                            // Active / Dead-Letter columns populate too, not just the
-                                            // aggregated dead-letter total.
-                                            let mut dl_total: i64 = 0;
-                                            let mut q_statuses: HashMap<String, QueueStatus> = HashMap::new();
-                                            if !ns.is_empty() {
-                                                for q in &queues {
-                                                    match azure::check_queue(&ns, &rg, q) {
-                                                        Ok(qi) => {
-                                                            dl_total += qi.dead_letter;
-                                                            q_statuses.insert(q.clone(), QueueStatus {
-                                                                active: qi.active,
-                                                                dead_letter: qi.dead_letter,
-                                                            });
-                                                        }
-                                                        Err(e) => errors.push(format!("check_queue {q}: {e}")),
-                                                    }
-                                                }
-                                            }
-                                            // Compute KPIs
-                                            let all_kpis: Vec<kpi::ChainKpi> = runs_map.values()
-                                                .map(|r| kpi::compute_workflow_kpi(r))
-                                                .collect();
-                                            let total_runs: usize = all_kpis.iter().map(|k| k.total_runs).sum();
-                                            let succeeded:  usize = all_kpis.iter().map(|k| k.succeeded).sum();
-                                            let rate = if total_runs > 0 {
-                                                Some((succeeded as f64 / total_runs as f64) * 100.0)
-                                            } else { None };
-                                            let stuck   = all_kpis.iter().map(|k| k.stuck_runs.len()).sum();
-                                            let streak  = all_kpis.iter().map(|k| k.failure_streak).max().unwrap_or(0);
-                                            (ChainHealth { success_rate: rate, dead_letters: dl_total, stuck_count: stuck, failure_streak: streak }, errors, runs_map, q_statuses)
-                                        }).await.unwrap_or((ChainHealth::default(), vec!["spawn_blocking panic".into()], HashMap::new(), HashMap::new()));
+                                        let probe = tokio::task::spawn_blocking(move || {
+                                            chain_probe::probe_chain(&sub, &rg, &app, &ns, &steps, &queues, depth)
+                                        }).await.unwrap_or_else(|_| chain_probe::ChainProbe {
+                                            health: ChainHealth::default(),
+                                            errors: vec!["spawn_blocking panic".into()],
+                                            runs: HashMap::new(),
+                                            queues: HashMap::new(),
+                                        });
+                                        let (health, errors, runs_map, q_statuses) =
+                                            (probe.health, probe.errors, probe.runs, probe.queues);
 
                                         // Share the per-workflow runs with ChainDetailView so its
                                         // per-workflow KPI columns can render after "Check all".
@@ -879,11 +946,19 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                     // panel's component state (e.g. ChainDetailView's fetched runs and
                     // KPI snapshot) survives tab switches instead of being dropped
                     // when an unselected match-arm goes away.
+                    let home_style      = if mode == ViewMode::Home      { "" } else { "display:none" };
                     let chains_style    = if mode == ViewMode::Chains    { "" } else { "display:none" };
                     let eg_style        = if mode == ViewMode::EventGrid { "" } else { "display:none" };
                     let functions_style = if mode == ViewMode::Functions { "" } else { "display:none" };
                     let graph_style     = if mode == ViewMode::Graph     { "" } else { "display:none" };
                     let api_style       = if mode == ViewMode::ApiTest  { "" } else { "display:none" };
+                    let settings_style  = if mode == ViewMode::AppSettings { "" } else { "display:none" };
+                    let health_style    = if mode == ViewMode::HealthCheck { "" } else { "display:none" };
+                    let res_health_style = if mode == ViewMode::ResourceHealth { "" } else { "display:none" };
+                    let rbac_style = if mode == ViewMode::Rbac { "" } else { "display:none" };
+                    let observability_style = if mode == ViewMode::Observability { "" } else { "display:none" };
+                    let diagnostics_style = if mode == ViewMode::Diagnostics { "" } else { "display:none" };
+                    let var_groups_style = if mode == ViewMode::VariableGroups { "" } else { "display:none" };
                     let api_save_dir = dirs::config_dir()
                         .unwrap_or_else(|| std::path::PathBuf::from("."))
                         .join("ais-monitor")
@@ -892,6 +967,19 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                         .to_string();
                     rsx! {
                         div { class: "view-stack",
+                            div { class: "main-content", style: "{home_style}",
+                                div { class: "detail-pane",
+                                    HomePanel {
+                                        az_config: az.clone(),
+                                        chains: chains,
+                                        chain_health: chain_health,
+                                        last_checked: last_checked,
+                                        chain_runs: chain_runs,
+                                        chain_queue_statuses: chain_queue_statuses,
+                                        discovered_sb_namespace: discovered_sb_namespace,
+                                    }
+                                }
+                            }
                             div { class: "chains-tab-wrap", style: "{chains_style}",
                                 // Workflows deployed to Azure but with no detected
                                 // chain link — usually a missing manual link
@@ -972,6 +1060,55 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                 div { class: "detail-pane",
                                     if *visited_fn.read() {
                                         FunctionsPanel { az_config: az.clone() }
+                                    }
+                                }
+                            }
+                            div { class: "main-content", style: "{settings_style}",
+                                div { class: "detail-pane",
+                                    if *visited_settings.read() {
+                                        AppSettingsPanel { az_config: az.clone() }
+                                    }
+                                }
+                            }
+                            div { class: "main-content", style: "{health_style}",
+                                div { class: "detail-pane",
+                                    if *visited_health.read() {
+                                        HealthCheckPanel { az_config: az.clone() }
+                                    }
+                                }
+                            }
+                            div { class: "main-content", style: "{res_health_style}",
+                                div { class: "detail-pane",
+                                    if *visited_res_health.read() {
+                                        ResourceHealthPanel { az_config: az.clone() }
+                                    }
+                                }
+                            }
+                            div { class: "main-content", style: "{rbac_style}",
+                                div { class: "detail-pane",
+                                    if *visited_rbac.read() {
+                                        RbacPanel { az_config: az.clone() }
+                                    }
+                                }
+                            }
+                            div { class: "main-content", style: "{observability_style}",
+                                div { class: "detail-pane",
+                                    if *visited_observability.read() {
+                                        ObservabilityPanel { az_config: az.clone() }
+                                    }
+                                }
+                            }
+                            div { class: "main-content", style: "{diagnostics_style}",
+                                div { class: "detail-pane",
+                                    if *visited_diagnostics.read() {
+                                        DiagnosticsPanel { az_config: az.clone() }
+                                    }
+                                }
+                            }
+                            div { class: "main-content", style: "{var_groups_style}",
+                                div { class: "detail-pane",
+                                    if *visited_var_groups.read() {
+                                        VariableGroupPanel { az_config: az.clone() }
                                     }
                                 }
                             }
@@ -1071,9 +1208,17 @@ fn epoch_now() -> u64 {
 
 #[derive(Clone, Debug, PartialEq)]
 enum ViewMode {
+    Home,
     Chains,
     EventGrid,
     Functions,
     Graph,
     ApiTest,
+    AppSettings,
+    HealthCheck,
+    ResourceHealth,
+    Rbac,
+    Observability,
+    Diagnostics,
+    VariableGroups,
 }

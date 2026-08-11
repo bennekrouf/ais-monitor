@@ -12,6 +12,42 @@ pub struct ChainHealth {
     pub failure_streak: usize,
 }
 
+/// Destructive Service Bus queue actions available from the dead-letter
+/// peek panel — each requires confirmation before running since none are
+/// reversible.
+#[derive(Clone, Debug, PartialEq)]
+enum SbQueueAction {
+    /// Permanently delete all active messages on the main queue.
+    PurgeActive,
+    /// Permanently delete all messages currently in the dead-letter sub-queue.
+    PurgeDeadLetters,
+    /// Move dead-lettered messages back onto the main queue for reprocessing.
+    RequeueDeadLetters,
+}
+
+impl SbQueueAction {
+    fn label(&self) -> &'static str {
+        match self {
+            SbQueueAction::PurgeActive => "Purge active queue",
+            SbQueueAction::PurgeDeadLetters => "Clear all dead-letters",
+            SbQueueAction::RequeueDeadLetters => "Requeue dead-letters to main queue",
+        }
+    }
+    fn warning(&self) -> &'static str {
+        match self {
+            SbQueueAction::PurgeActive => "This permanently deletes every currently-visible active message on this queue. It cannot be undone.",
+            SbQueueAction::PurgeDeadLetters => "This permanently deletes every message in this queue's dead-letter sub-queue. It cannot be undone.",
+            SbQueueAction::RequeueDeadLetters => "This moves dead-lettered messages back onto the main queue for reprocessing — if whatever originally dead-lettered them is still broken, they'll likely dead-letter again.",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct PendingSbAction {
+    queue: String,
+    action: SbQueueAction,
+}
+
 #[derive(Props, Clone, PartialEq)]
 pub struct ChainDetailProps {
     pub chain: ChainDetail,
@@ -64,6 +100,20 @@ pub struct AzConfig {
     /// workflow-specific payloads in the trigger panel.
     #[serde(default)]
     pub local_dir: String,
+    /// Optional Azure App Configuration store name — used as the source of
+    /// truth for the app settings drift view. Empty means drift comparison
+    /// is unavailable (live settings still show, just without an expected
+    /// column).
+    #[serde(default)]
+    pub app_config_store: String,
+    /// Optional Azure DevOps organization URL (e.g.
+    /// `https://dev.azure.com/myorg`) — used by the variable-group cleanup
+    /// view. Requires the `az devops` CLI extension.
+    #[serde(default)]
+    pub devops_org: String,
+    /// Optional Azure DevOps project name, paired with `devops_org`.
+    #[serde(default)]
+    pub devops_project: String,
 }
 
 #[component]
@@ -122,6 +172,10 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
     let mut sending: Signal<bool> = use_signal(|| false);
     // Cache the connection string so we only fetch it once per session
     let mut sb_conn_str: Signal<Option<String>> = use_signal(|| None);
+    // Destructive queue actions (purge / requeue) — confirmed via modal.
+    let mut pending_sb_action: Signal<Option<PendingSbAction>> = use_signal(|| None);
+    let mut sb_action_running: Signal<bool> = use_signal(|| false);
+    let mut sb_action_result: Signal<Option<Result<String, String>>> = use_signal(|| None);
 
     // Phase D: expanded step + actions
     let mut expanded_step = use_signal(|| Option::<String>::None);
@@ -182,6 +236,82 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
 
 
     let az = props.az_config.clone();
+
+    // Run a confirmed destructive SB queue action (purge active, purge
+    // dead-letters, or requeue dead-letters to main). Resolves the
+    // namespace/connection string the same way the peek button does, then
+    // dispatches to the matching azure:: REST call.
+    let run_sb_action = {
+        let az = az.clone();
+        move |pending: PendingSbAction| {
+            let az = az.clone();
+            let cached_conn = sb_conn_str.read().clone();
+            sb_action_running.set(true);
+            sb_action_result.set(None);
+            spawn(async move {
+                let Some(a) = az else {
+                    sb_action_result.set(Some(Err("No Azure profile configured".into())));
+                    sb_action_running.set(false);
+                    return;
+                };
+                let rg = a.resource_group.clone();
+                let ns = if !a.sb_namespace.is_empty() { a.sb_namespace.clone() } else {
+                    let sub2 = a.subscription.clone();
+                    let rg2 = rg.clone();
+                    match tokio::task::spawn_blocking(move || azure::list_service_bus_namespaces(&sub2, &rg2)).await {
+                        Ok(Ok(mut list)) => list.drain(..).next().unwrap_or_default(),
+                        _ => String::new(),
+                    }
+                };
+                if ns.is_empty() {
+                    sb_action_result.set(Some(Err("No Service Bus namespace configured for this profile".into())));
+                    sb_action_running.set(false);
+                    return;
+                }
+                let conn = if let Some(c) = cached_conn { Ok(c) } else {
+                    let rg2 = rg.clone();
+                    let ns2 = ns.clone();
+                    tokio::task::spawn_blocking(move || azure::sb_get_connection_string(&rg2, &ns2))
+                        .await.unwrap_or_else(|e| Err(format!("{e}")))
+                };
+                let cs = match conn {
+                    Ok(cs) => { sb_conn_str.set(Some(cs.clone())); cs }
+                    Err(e) => {
+                        sb_action_result.set(Some(Err(format!("Auth: {e}"))));
+                        sb_action_running.set(false);
+                        return;
+                    }
+                };
+
+                let queue = pending.queue.clone();
+                let action_label = pending.action.label();
+                let result = match pending.action {
+                    SbQueueAction::PurgeActive => azure::sb_purge_queue(&cs, &queue, 5000).await
+                        .map(|n| format!("Purged {n} active message(s)")),
+                    SbQueueAction::PurgeDeadLetters => azure::sb_purge_dead_letters(&cs, &queue, 5000).await
+                        .map(|n| format!("Cleared {n} dead-letter message(s)")),
+                    SbQueueAction::RequeueDeadLetters => azure::sb_requeue_dead_letters(&cs, &queue, 5000).await
+                        .map(|n| format!("Requeued {n} message(s) to the main queue")),
+                };
+
+                match &result {
+                    Ok(msg) => {
+                        crate::services::activity::info(action_label, format!("queue:{queue} — {msg}"));
+                        pending_sb_action.set(None);
+                        // Clear the stale peek list — the messages it shows may
+                        // no longer exist post-purge/requeue.
+                        peek_messages.set(Vec::new());
+                    }
+                    Err(e) => {
+                        crate::services::activity::error(action_label, format!("queue:{queue}"), e.clone());
+                    }
+                }
+                sb_action_result.set(Some(result));
+                sb_action_running.set(false);
+            });
+        }
+    };
+
     let chain_steps: Vec<String> = chain.steps.iter().map(|s| s.workflow.clone()).collect();
     let chain_queues: Vec<String> = chain.queues.clone();
     let chain_label = chain.label.clone();
@@ -1436,6 +1566,33 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                                                     strong { "{q}" }
                                                     span { class: "sb-peek-meta", " (peek-lock, non-destructive)" }
                                                 }
+                                                div { class: "sb-queue-actions",
+                                                    {
+                                                        let q1 = q.clone();
+                                                        let q2 = q.clone();
+                                                        let q3 = q.clone();
+                                                        rsx! {
+                                                            button {
+                                                                class: "btn btn-small",
+                                                                title: "Permanently delete all active messages on this queue",
+                                                                onclick: move |_| pending_sb_action.set(Some(PendingSbAction { queue: q1.clone(), action: SbQueueAction::PurgeActive })),
+                                                                "Purge active"
+                                                            }
+                                                            button {
+                                                                class: "btn btn-small",
+                                                                title: "Permanently delete all dead-lettered messages on this queue",
+                                                                onclick: move |_| pending_sb_action.set(Some(PendingSbAction { queue: q2.clone(), action: SbQueueAction::PurgeDeadLetters })),
+                                                                "Clear DLQ"
+                                                            }
+                                                            button {
+                                                                class: "btn btn-small",
+                                                                title: "Move dead-lettered messages back onto the main queue",
+                                                                onclick: move |_| pending_sb_action.set(Some(PendingSbAction { queue: q3.clone(), action: SbQueueAction::RequeueDeadLetters })),
+                                                                "Requeue DLQ → main"
+                                                            }
+                                                        }
+                                                    }
+                                                }
                                                 if loading {
                                                     div { class: "sb-peek-loading", "Peeking…" }
                                                 } else if let Some(e) = err {
@@ -1447,6 +1604,58 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                                                 } else {
                                                     for (i, m) in msgs.iter().enumerate() {
                                                         DeadLetterRow { idx: i, msg: m.clone() }
+                                                    }
+                                                }
+                                                if let Some(ref result) = *sb_action_result.read() {
+                                                    match result {
+                                                        Ok(msg) => rsx! { div { class: "sb-peek-loading", "✅ {msg}" } },
+                                                        Err(e) => rsx! { div { class: "sb-peek-error", "❌ {e}" } },
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                if let Some(pending) = pending_sb_action.read().clone() {
+                                    if pending.queue == *q {
+                                        {
+                                            let running = *sb_action_running.read();
+                                            let warning = pending.action.warning();
+                                            let action_label = pending.action.label();
+                                            let queue_name = pending.queue.clone();
+                                            rsx! {
+                                                div { class: "modal-backdrop",
+                                                    onclick: move |_| if !running { pending_sb_action.set(None); },
+                                                    div { class: "modal-card",
+                                                        onclick: move |e: Event<MouseData>| e.stop_propagation(),
+                                                        h3 { class: "modal-title", "{action_label}?" }
+                                                        p { class: "modal-body",
+                                                            "Queue: "
+                                                            code { "{queue_name}" }
+                                                            br {}
+                                                            "{warning}"
+                                                        }
+                                                        div { class: "modal-actions",
+                                                            button {
+                                                                class: "btn btn-small",
+                                                                disabled: running,
+                                                                onclick: move |_| pending_sb_action.set(None),
+                                                                "Cancel"
+                                                            }
+                                                            button {
+                                                                class: "btn btn-small btn-primary",
+                                                                disabled: running,
+                                                                onclick: {
+                                                                    let pending = pending.clone();
+                                                                    let mut run_sb_action = run_sb_action.clone();
+                                                                    move |_| {
+                                                                        let pending = pending.clone();
+                                                                        run_sb_action(pending);
+                                                                    }
+                                                                },
+                                                                if running { "Running…" } else { "{action_label}" }
+                                                            }
+                                                        }
                                                     }
                                                 }
                                             }

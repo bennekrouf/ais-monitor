@@ -442,28 +442,46 @@ body {
     text-align: left;
 }
 
+/* Tabs are split into segmented groups (monitor / inspect / tools / admin)
+   rather than one long strip — twelve spelled-out labels no longer fit the
+   header. Most are icon-only with the full name in `title`, matching the
+   view-switch convention in ais-runner; only the primary Chains tab keeps
+   its text, since it also anchors the KPI freshness dot. */
 .topbar-tabs {
     display: flex;
-    gap: 2px;
+    align-items: center;
+    gap: 10px;              /* space *between* groups */
     margin-left: 12px;
+    flex-wrap: wrap;
+    row-gap: 4px;
+    min-width: 0;
+}
+.topbar-group {
+    display: flex;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+    flex-shrink: 0;
 }
 .topbar-tab {
     font-family: inherit;
-    font-size: 12px;
-    padding: 4px 14px;
-    border: 1px solid var(--border);
+    font-size: 13px;
+    line-height: 1.5;
+    padding: 4px 10px;
+    min-width: 34px;
+    border: none;
     background: transparent;
     color: var(--text2);
     cursor: pointer;
     transition: background 0.12s, color 0.12s;
 }
-.topbar-tab:first-child { border-radius: 6px 0 0 6px; }
-.topbar-tab:last-child  { border-radius: 0 6px 6px 0; }
+/* Tabs that keep a text label read better at the body size. */
+.topbar-tab.topbar-tab-text { font-size: 12px; padding: 4px 12px; }
+.topbar-tab + .topbar-tab { border-left: 1px solid var(--border); }
 .topbar-tab:hover { background: var(--bg2); color: var(--text1); }
 .topbar-tab.active {
     background: var(--blue-bg);
     color: #fff;
-    border-color: var(--blue-bg);
 }
 
 /* ══════════════════════════════════════════════
@@ -683,6 +701,175 @@ body {
 }
 .sb-peek-header strong { color: var(--text1); font-weight: 600; margin-right: 4px; }
 .sb-peek-meta { color: var(--text3); font-size: 10px; }
+.sb-queue-actions { display: flex; gap: 6px; margin-bottom: 8px; }
+
+/* ── Home dashboard ───────────────────────────────────────────────────
+   Home is deliberately denser than the rest of the app — the point of the
+   page is fitting the day's signals into one glance.
+   Everything scales off the fluid tokens below rather than fixed pixels,
+   because this same page has to work in a narrow laptop window AND on a
+   wall-mounted TV viewed from across a room. `clamp()` keeps it compact at
+   laptop widths and grows the type on large displays, so no separate
+   "wallboard mode" is needed. */
+.home-panel {
+    --home-fs:       clamp(10px, 0.70vw, 20px);   /* table body            */
+    --home-fs-sm:    clamp(9px,  0.58vw, 16px);   /* labels, sub-text      */
+    --home-fs-h3:    clamp(12px, 0.82vw, 24px);   /* card titles           */
+    --home-tile-val: clamp(15px, 1.15vw, 34px);   /* the big numbers       */
+    --home-gap:      clamp(5px,  0.45vw, 14px);
+    --home-pad-y:    clamp(3px,  0.28vw, 10px);
+    --home-pad-x:    clamp(6px,  0.55vw, 16px);
+}
+/* The header carries a long "as of" string; let it wrap rather than
+   squeezing the refresh button off the edge in a narrow window. */
+.home-panel .func-header { flex-wrap: wrap; row-gap: 4px; }
+.home-panel .func-app-header { flex-wrap: wrap; row-gap: 4px; }
+
+/* auto-FIT, not auto-fill: auto-fill would keep empty trailing tracks on a
+   wide screen and leave the nine tiles bunched at the left. auto-fit
+   collapses the empties so they stretch across the full width. */
+.home-tiles {
+    display: grid; gap: var(--home-gap); margin-top: 4px; width: 100%;
+    grid-template-columns: repeat(auto-fit, minmax(clamp(92px, 8.5vw, 190px), 1fr));
+}
+.home-tile {
+    background: var(--bg2); border: 1px solid var(--border);
+    border-radius: 6px; padding: var(--home-pad-x) calc(var(--home-pad-x) * 1.1);
+    min-width: 0;
+}
+.home-tile-bad { border-color: var(--red); }
+.home-tile-label {
+    font-size: var(--home-fs-sm); font-weight: 600; text-transform: uppercase;
+    letter-spacing: .03em; color: var(--text2);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.home-tile-value {
+    font-size: var(--home-tile-val); font-weight: 700; color: var(--text1);
+    line-height: 1.15;
+}
+.home-tile-bad .home-tile-value { color: var(--red); }
+.home-tile-sub {
+    font-size: var(--home-fs-sm); color: var(--text3);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* Compact card + table variants used only on Home. */
+.home-card {
+    padding: var(--home-pad-x) calc(var(--home-pad-x) * 1.2);
+    margin-bottom: var(--home-gap);
+    min-width: 0;            /* let grid items shrink instead of overflowing */
+    overflow-x: auto;        /* last-resort scroll for very narrow windows   */
+}
+.home-card .func-app-header { margin-bottom: 6px; }
+.home-card .func-app-header h3 { font-size: var(--home-fs-h3); }
+.home-section-label {
+    font-size: var(--home-fs-sm); font-weight: 600; text-transform: uppercase;
+    letter-spacing: .04em; color: var(--text3);
+    margin: calc(var(--home-gap) * 1.5) 0 0;
+}
+.home-table { font-size: var(--home-fs); }
+.home-table th {
+    padding: var(--home-pad-y) var(--home-pad-x); font-size: var(--home-fs-sm);
+    white-space: nowrap;
+}
+.home-table td { padding: var(--home-pad-y) var(--home-pad-x); }
+/* Names are the one column allowed to truncate — the numbers and
+   timestamps beside them must stay fully readable. */
+.home-table .func-name {
+    max-width: 22ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.home-grid {
+    display: grid; gap: var(--home-gap);
+    grid-template-columns: repeat(auto-fit, minmax(clamp(240px, 22vw, 460px), 1fr));
+}
+.home-asof {
+    font-size: var(--home-fs-sm); color: var(--text3);
+    margin-left: auto; margin-right: 8px;
+}
+.home-window-picker { display: flex; gap: 3px; margin-left: auto; }
+.home-window-picker .btn {
+    padding: 1px calc(var(--home-pad-x) * 0.8); font-size: var(--home-fs-sm);
+}
+.home-rel { color: var(--text3); font-size: var(--home-fs-sm); }
+
+/* Clickable failure rows + their selected state. */
+.home-row-clickable { cursor: pointer; }
+.home-row-clickable:hover td { background: var(--bg2); }
+.home-row-selected td {
+    background: color-mix(in srgb, var(--blue) 14%, transparent);
+}
+.home-caret {
+    display: inline-block; width: 1em; color: var(--text3);
+    font-size: 0.85em;
+}
+
+/* Run-log console pinned below the indicators. */
+.home-console { margin-top: var(--home-gap); }
+.home-console-err {
+    border-left: 3px solid var(--red); border-radius: 4px;
+    background: color-mix(in srgb, var(--red) 7%, var(--bg1));
+    padding: 6px 10px; margin: 4px 0;
+}
+.home-console-name {
+    font-size: var(--home-fs); font-weight: 600; color: var(--text1);
+}
+.home-console-body {
+    margin: 4px 0 0; font-family: var(--mono, monospace);
+    font-size: var(--home-fs-sm); color: var(--text2);
+    white-space: pre-wrap; word-break: break-word;
+    max-height: 220px; overflow-y: auto;
+}
+.home-console-detail {
+    font-family: var(--mono, monospace); font-size: var(--home-fs-sm);
+    color: var(--text2); max-width: 60ch;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+/* Narrow windows: one card per row, and let the header block sit on its
+   own line so nothing gets clipped. */
+@media (max-width: 720px) {
+    .home-grid { grid-template-columns: 1fr; }
+    .home-tiles { grid-template-columns: repeat(auto-fit, minmax(84px, 1fr)); }
+    .home-asof { margin-left: 0; flex-basis: 100%; }
+    .home-window-picker { margin-left: 0; }
+    .home-table .func-name { max-width: 14ch; }
+}
+/* Pulsing dot marking an in-flight run — the web analogue of the TUI's
+   animated spinner glyph on running workflows. */
+.home-live-dot {
+    display: inline-block; border-radius: 50%; flex-shrink: 0;
+    width: clamp(6px, 0.45vw, 12px); height: clamp(6px, 0.45vw, 12px);
+    background: var(--yellow, #d29922); margin-right: 6px;
+    animation: home-live-pulse 1.4s ease-in-out infinite;
+}
+@keyframes home-live-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.25; }
+}
+
+.icon-refresh-btn {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 26px; height: 26px; padding: 0; flex-shrink: 0;
+    border-radius: 6px; border: 1px solid var(--border);
+    background: transparent; color: var(--text2);
+    font-size: 14px; line-height: 1; cursor: pointer;
+}
+.icon-refresh-btn:hover:not(:disabled) { background: var(--bg2); color: var(--text1); }
+.icon-refresh-btn:disabled { opacity: 0.6; cursor: default; }
+.icon-refresh-btn .icon-spin {
+    display: inline-block; animation: icon-refresh-spin 0.8s linear infinite;
+}
+@keyframes icon-refresh-spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
+}
+
+.log-tail-pane {
+    background: var(--bg2); border-radius: 6px; padding: 10px 12px;
+    font-family: var(--mono, monospace); font-size: 11px; line-height: 1.5;
+    color: var(--text2); max-height: 420px; overflow-y: auto;
+    white-space: pre-wrap; word-break: break-all; margin-top: 8px;
+}
 .sb-peek-loading, .sb-peek-error {
     font-size: 11px;
     color: var(--text2);
@@ -2265,6 +2452,33 @@ body {
     text-align: left; font-weight: 600; font-size: 11px;
     color: var(--text2); text-transform: uppercase; letter-spacing: .04em;
     padding: 6px 10px; border-bottom: 1px solid var(--border);
+}
+
+/* Column-resizable variant — drag a header's right edge to widen/narrow it.
+   table-layout:fixed makes the table honor each th's resized width instead
+   of re-flowing to content on every render. */
+.app-settings-table {
+    table-layout: fixed;
+}
+.app-settings-table th {
+    overflow: hidden;
+    resize: horizontal;
+    position: relative;
+    min-width: 60px;
+    max-width: 100%;
+}
+.app-settings-table td {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.func-lifecycle-actions {
+    display: flex; gap: 6px; margin-left: auto;
+}
+.modal-body code {
+    display: inline-block; margin-top: 6px; padding: 4px 8px;
+    background: var(--bg2); border-radius: 4px; font-size: 12px;
+    font-family: var(--mono, monospace); word-break: break-all;
 }
 .func-th-num { text-align: right !important; }
 .func-table td { padding: 8px 10px; border-bottom: 1px solid var(--border2); }

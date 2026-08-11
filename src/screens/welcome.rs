@@ -19,6 +19,9 @@ pub fn Welcome(props: WelcomeProps) -> Element {
     let mut app_input = use_signal(|| String::new());
     let mut sb_input = use_signal(|| String::new());
     let mut local_dir_input = use_signal(|| String::new());
+    let mut app_config_store_input = use_signal(|| String::new());
+    let mut devops_org_input = use_signal(|| String::new());
+    let mut devops_project_input = use_signal(|| String::new());
     let mut error_msg = use_signal(|| Option::<String>::None);
     let mut show_form = use_signal(|| false);
     let mut editing_profile = use_signal(|| Option::<usize>::None);
@@ -303,6 +306,9 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                                 app_input.set(p.app_name.clone());
                                                                 sb_input.set(p.sb_namespace.clone());
                                                                 local_dir_input.set(p.local_dir.clone());
+                                                                app_config_store_input.set(p.app_config_store.clone());
+                                                                devops_org_input.set(p.devops_org.clone());
+                                                                devops_project_input.set(p.devops_project.clone());
                                                                 editing_profile.set(Some(idx));
                                                                 show_form.set(true);
                                                             },
@@ -593,6 +599,36 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                 }
                             }
 
+                            div { class: "az-field",
+                                label { "App Configuration Store (optional — source of truth for app settings drift view)" }
+                                input {
+                                    r#type: "text",
+                                    placeholder: "appcs-myapp-prd-001",
+                                    value: "{app_config_store_input.read()}",
+                                    oninput: move |e| app_config_store_input.set(e.value().clone()),
+                                }
+                            }
+                            div { class: "az-field",
+                                label { "Azure DevOps org URL (optional — for variable group cleanup)" }
+                                input {
+                                    r#type: "text",
+                                    placeholder: "https://dev.azure.com/myorg",
+                                    value: "{devops_org_input.read()}",
+                                    oninput: move |e| devops_org_input.set(e.value().clone()),
+                                }
+                            }
+                            if !devops_org_input.read().is_empty() {
+                                div { class: "az-field",
+                                    label { "Azure DevOps project" }
+                                    input {
+                                        r#type: "text",
+                                        placeholder: "MyProject",
+                                        value: "{devops_project_input.read()}",
+                                        oninput: move |e| devops_project_input.set(e.value().clone()),
+                                    }
+                                }
+                            }
+
                             {
                                 let err = error_msg.read().clone();
                                 if let Some(msg) = err {
@@ -619,6 +655,9 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                 local_dir: dirs::home_dir()
                                                     .map(|p| p.to_string_lossy().to_string())
                                                     .unwrap_or_default(),
+                                                app_config_store: app_config_store_input.read().trim().to_string(),
+                                                devops_org: devops_org_input.read().trim().to_string(),
+                                                devops_project: devops_project_input.read().trim().to_string(),
                                             };
                                             let mut saved = profiles.read().clone();
                                             saved.insert(0, config.clone());
@@ -723,6 +762,35 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                     }
                                 }
                             }
+                            div { class: "az-field",
+                                label { "App Configuration Store (optional — source of truth for app settings drift view)" }
+                                input {
+                                    r#type: "text",
+                                    placeholder: "appcs-myapp-prd-001",
+                                    value: "{app_config_store_input.read()}",
+                                    oninput: move |e| app_config_store_input.set(e.value().clone()),
+                                }
+                            }
+                            div { class: "az-field",
+                                label { "Azure DevOps org URL (optional — for variable group cleanup)" }
+                                input {
+                                    r#type: "text",
+                                    placeholder: "https://dev.azure.com/myorg",
+                                    value: "{devops_org_input.read()}",
+                                    oninput: move |e| devops_org_input.set(e.value().clone()),
+                                }
+                            }
+                            if !devops_org_input.read().is_empty() {
+                                div { class: "az-field",
+                                    label { "Azure DevOps project" }
+                                    input {
+                                        r#type: "text",
+                                        placeholder: "MyProject",
+                                        value: "{devops_project_input.read()}",
+                                        oninput: move |e| devops_project_input.set(e.value().clone()),
+                                    }
+                                }
+                            }
                             {
                                 let err = error_msg.read().clone();
                                 if let Some(msg) = err {
@@ -753,6 +821,9 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                 } else {
                                                     local_dir_val
                                                 },
+                                                app_config_store: app_config_store_input.read().trim().to_string(),
+                                                devops_org: devops_org_input.read().trim().to_string(),
+                                                devops_project: devops_project_input.read().trim().to_string(),
                                             };
                                             let mut saved = profiles.read().clone();
                                             if let Some(idx) = *editing_profile.read() {

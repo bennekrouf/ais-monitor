@@ -105,6 +105,38 @@ pub fn az_command(args: &[&str]) -> Command {
     }
 }
 
+/// Async counterpart to `az_command`, for long-running/streaming commands
+/// (currently just log tail) that need non-blocking stdout — same PATH
+/// resolution logic, `tokio::process::Command` instead of `std::process`.
+pub fn az_command_tokio(args: &[&str]) -> tokio::process::Command {
+    #[cfg(target_os = "windows")]
+    {
+        let az_path = resolve_az_windows();
+        let mut cmd = tokio::process::Command::new(&az_path);
+        cmd.args(args);
+        if az_path != "az" {
+            if let Some(dir) = std::path::Path::new(&az_path).parent() {
+                let current = std::env::var("PATH").unwrap_or_default();
+                cmd.env("PATH", format!("{};{}", dir.display(), current));
+            }
+        }
+        cmd
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let az_path = resolve_az_unix();
+        let mut cmd = tokio::process::Command::new(&az_path);
+        cmd.args(args);
+        if az_path != "az" {
+            if let Some(dir) = std::path::Path::new(&az_path).parent() {
+                let current = std::env::var("PATH").unwrap_or_default();
+                cmd.env("PATH", format!("{}:{}", dir.display(), current));
+            }
+        }
+        cmd
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum AzLoginState {
     Checking,
@@ -681,6 +713,262 @@ pub fn get_app_settings(sub: &str, rg: &str, app: &str) -> Result<std::collectio
     }).collect())
 }
 
+/// Fetch every key-value pair from an Azure App Configuration store
+/// (blocking). Used as the source of truth for the app-settings drift view —
+/// this is the *expected* side of the comparison, always read live from
+/// Azure (never a local file), per the "pure remote app" design.
+///
+/// `--auth-mode login` uses the signed-in principal's RBAC (App Configuration
+/// Data Reader) rather than requiring a connection string.
+pub fn appconfig_list_kv(sub: &str, store_name: &str) -> Result<HashMap<String, String>, String> {
+    let output = az_command(&[
+            "appconfig", "kv", "list",
+            "--subscription", sub,
+            "--name", store_name,
+            "--auth-mode", "login",
+            "--query", "[].{key:key,value:value}",
+            "-o", "json",
+        ])
+        .output()
+        .map_err(|e| format!("az appconfig kv list: {e}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    let body = String::from_utf8_lossy(&output.stdout);
+    let arr: Vec<serde_json::Value> = serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
+    Ok(arr.iter().filter_map(|v| {
+        let k = v["key"].as_str()?.to_string();
+        let val = v["value"].as_str().unwrap_or("").to_string();
+        Some((k, val))
+    }).collect())
+}
+
+/// Resolve a Key Vault secret's current value (blocking). Used to verify a
+/// `@Microsoft.KeyVault(...)` app-setting reference actually resolves,
+/// rather than just checking the reference syntax is well-formed.
+pub fn keyvault_resolve_secret(vault_name: &str, secret_name: &str) -> Result<String, String> {
+    let output = az_command(&[
+            "keyvault", "secret", "show",
+            "--vault-name", vault_name,
+            "--name", secret_name,
+            "--query", "value",
+            "-o", "tsv",
+        ])
+        .output()
+        .map_err(|e| format!("az keyvault secret show: {e}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Drift status of one app setting compared against its expected App
+/// Configuration value.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum DriftStatus {
+    /// Live value matches the expected value exactly.
+    Match,
+    /// Live value differs from the expected value.
+    Diff,
+    /// Live value is a Key Vault reference and resolves to a non-empty secret.
+    KvOk,
+    /// Live value is a Key Vault reference but resolution failed (no
+    /// permission, bad vault/secret name, or empty value).
+    KvFail { error: String },
+    /// Live value looks like a partial connection string — has some
+    /// `Key=Value;` segments but is missing one that's normally required
+    /// alongside the ones present (e.g. `AccountEndpoint=` without
+    /// `AccountKey=`).
+    LiteralWarn { missing: String },
+    /// The setting exists live but has no corresponding key in App
+    /// Configuration, so there's nothing to compare against.
+    NoExpected,
+    /// The setting is expected (present in App Configuration) but missing
+    /// from the live app settings entirely.
+    MissingLive,
+}
+
+/// One row of the app-settings drift table.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct AppSettingDrift {
+    pub key: String,
+    pub live_value: String,
+    pub expected_value: Option<String>,
+    pub status: DriftStatus,
+}
+
+/// Connection-string-like values are made of `Key=Value;` segments. Certain
+/// key prefixes imply a required companion key — if we see one without the
+/// other, the value is very likely a partial literal that silently
+/// overrides an intended Key Vault reference (the STG Cosmos incident this
+/// view exists to catch).
+const REQUIRED_COMPANION_KEYS: &[(&str, &str)] = &[
+    ("AccountEndpoint", "AccountKey"),
+    ("AccountKey", "AccountEndpoint"),
+    ("Endpoint", "SharedAccessKey"),
+    ("SharedAccessKey", "Endpoint"),
+    ("DefaultEndpointsProtocol", "AccountKey"),
+];
+
+/// Detect a partial connection-string literal: parses `Key=Value;` segments
+/// and checks that every key with a known required companion also has that
+/// companion present. Returns the name of the first missing companion key,
+/// if any.
+fn detect_partial_connection_string(value: &str) -> Option<String> {
+    if !value.contains('=') || !value.contains(';') {
+        return None;
+    }
+    let present: Vec<&str> = value
+        .split(';')
+        .filter_map(|seg| seg.split_once('=').map(|(k, _)| k.trim()))
+        .collect();
+    for (key, companion) in REQUIRED_COMPANION_KEYS {
+        if present.contains(key) && !present.contains(companion) {
+            return Some((*companion).to_string());
+        }
+    }
+    None
+}
+
+/// Whether an app-setting value is a Key Vault reference
+/// (`@Microsoft.KeyVault(SecretUri=...)` or `(VaultName=...;SecretName=...)`).
+fn is_kv_reference(value: &str) -> bool {
+    value.trim_start().starts_with("@Microsoft.KeyVault(")
+}
+
+/// Extract `(vault_name, secret_name)` from a Key Vault reference value.
+/// Supports both the `SecretUri=` form and the `VaultName=;SecretName=` form.
+fn parse_kv_reference(value: &str) -> Option<(String, String)> {
+    let inner = value.trim_start()
+        .strip_prefix("@Microsoft.KeyVault(")?
+        .strip_suffix(')')?;
+    let mut vault_name = None;
+    let mut secret_name = None;
+    let mut secret_uri = None;
+    for part in inner.split(';') {
+        if let Some(v) = part.strip_prefix("VaultName=") { vault_name = Some(v.to_string()); }
+        if let Some(v) = part.strip_prefix("SecretName=") { secret_name = Some(v.to_string()); }
+        if let Some(v) = part.strip_prefix("SecretUri=") { secret_uri = Some(v.to_string()); }
+    }
+    if let (Some(vn), Some(sn)) = (vault_name, secret_name) {
+        return Some((vn, sn));
+    }
+    if let Some(uri) = secret_uri {
+        // https://<vault>.vault.azure.net/secrets/<name>[/<version>]
+        let trimmed = uri.trim_end_matches('/');
+        let parts: Vec<&str> = trimmed.split('/').collect();
+        let vault = trimmed.split("//").nth(1)?.split('.').next()?.to_string();
+        let name = parts.get(parts.len().saturating_sub(1)).copied().unwrap_or("").to_string();
+        if !vault.is_empty() && !name.is_empty() {
+            return Some((vault, name));
+        }
+    }
+    None
+}
+
+/// Compare live app settings against expected App Configuration values and
+/// classify each row's drift status (blocking — resolves Key Vault
+/// references as needed).
+pub fn compute_app_settings_drift(
+    live: &HashMap<String, String>,
+    expected: Option<&HashMap<String, String>>,
+) -> Vec<AppSettingDrift> {
+    let mut rows: Vec<AppSettingDrift> = live.iter().map(|(key, live_value)| {
+        let expected_value = expected.and_then(|e| e.get(key)).cloned();
+
+        let status = if is_kv_reference(live_value) {
+            match parse_kv_reference(live_value) {
+                Some((vault, secret)) => match keyvault_resolve_secret(&vault, &secret) {
+                    Ok(v) if !v.is_empty() => DriftStatus::KvOk,
+                    Ok(_) => DriftStatus::KvFail { error: "secret resolved to an empty value".to_string() },
+                    Err(e) => DriftStatus::KvFail { error: e },
+                },
+                None => DriftStatus::KvFail { error: "malformed Key Vault reference".to_string() },
+            }
+        } else if let Some(missing) = detect_partial_connection_string(live_value) {
+            DriftStatus::LiteralWarn { missing }
+        } else {
+            match &expected_value {
+                None => DriftStatus::NoExpected,
+                Some(exp) if exp == live_value => DriftStatus::Match,
+                Some(_) => DriftStatus::Diff,
+            }
+        };
+
+        AppSettingDrift { key: key.clone(), live_value: live_value.clone(), expected_value, status }
+    }).collect();
+
+    if let Some(expected) = expected {
+        for (key, exp_value) in expected {
+            if !live.contains_key(key) {
+                rows.push(AppSettingDrift {
+                    key: key.clone(),
+                    live_value: String::new(),
+                    expected_value: Some(exp_value.clone()),
+                    status: DriftStatus::MissingLive,
+                });
+            }
+        }
+    }
+
+    rows.sort_by(|a, b| a.key.cmp(&b.key));
+    rows
+}
+
+/// Set a single app setting on a Function App / Logic App (blocking). Used
+/// by the drift view's "Reset to App Configuration value" action — merges
+/// the one key in without touching any other setting.
+pub fn set_app_setting(sub: &str, rg: &str, app: &str, key: &str, value: &str) -> Result<(), String> {
+    let setting = format!("{key}={value}");
+    let output = az_command(&[
+            "webapp", "config", "appsettings", "set",
+            "--subscription", sub,
+            "--resource-group", rg,
+            "--name", app,
+            "--settings", &setting,
+        ])
+        .output()
+        .map_err(|e| format!("az appsettings set: {e}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    Ok(())
+}
+
+/// Start a stopped Function App (blocking).
+pub fn functionapp_start(sub: &str, rg: &str, app: &str) -> Result<(), String> {
+    functionapp_lifecycle(&["functionapp", "start"], sub, rg, app)
+}
+
+/// Stop a running Function App (blocking).
+pub fn functionapp_stop(sub: &str, rg: &str, app: &str) -> Result<(), String> {
+    functionapp_lifecycle(&["functionapp", "stop"], sub, rg, app)
+}
+
+/// Restart a Function App (blocking).
+pub fn functionapp_restart(sub: &str, rg: &str, app: &str) -> Result<(), String> {
+    functionapp_lifecycle(&["functionapp", "restart"], sub, rg, app)
+}
+
+/// Force the Functions host to re-read trigger bindings without a full
+/// restart — useful after a deployment or a binding-affecting app-setting
+/// change (blocking).
+pub fn functionapp_sync_triggers(sub: &str, rg: &str, app: &str) -> Result<(), String> {
+    functionapp_lifecycle(&["functionapp", "sync-function-triggers"], sub, rg, app)
+}
+
+fn functionapp_lifecycle(verb: &[&str], sub: &str, rg: &str, app: &str) -> Result<(), String> {
+    let mut args: Vec<&str> = verb.to_vec();
+    args.extend_from_slice(&["--subscription", sub, "--resource-group", rg, "--name", app]);
+    let output = az_command(&args)
+        .output()
+        .map_err(|e| format!("{}: {e}", verb.join(" ")))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    Ok(())
+}
+
 /// Fetch the full workflow definition (blocking).
 ///
 /// Uses the ARM `Microsoft.Web/sites/workflows` resource endpoint which returns
@@ -1009,6 +1297,176 @@ pub async fn sb_peek_dead_letters(
     Ok(out)
 }
 
+/// Parse `endpoint`, `key_name`, `key` out of a Service Bus connection
+/// string. Shared by every SB REST call below (send, peek, purge, requeue).
+fn sb_parse_conn_str(conn_str: &str) -> Result<(String, String, String), String> {
+    let mut endpoint = String::new();
+    let mut key_name = String::new();
+    let mut key = String::new();
+    for part in conn_str.split(';') {
+        let part = part.trim();
+        if let Some(v) = part.strip_prefix("Endpoint=sb://") {
+            endpoint = v.trim_end_matches('/').to_string();
+        } else if let Some(v) = part.strip_prefix("SharedAccessKeyName=") {
+            key_name = v.to_string();
+        } else if let Some(v) = part.strip_prefix("SharedAccessKey=") {
+            key = v.to_string();
+        }
+    }
+    if endpoint.is_empty() || key.is_empty() {
+        return Err("Invalid Service Bus connection string".into());
+    }
+    Ok((endpoint, key_name, key))
+}
+
+/// Build a 5-minute SAS token authorizing `resource_path` under `endpoint`.
+/// Same signing scheme used by `sb_send_message` / `sb_peek_dead_letters`.
+fn sb_sas_token(endpoint: &str, key_name: &str, key: &str, resource_path: &str) -> Result<String, String> {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    type HmacSha256 = Hmac<Sha256>;
+
+    let expiry = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() + 300;
+    let resource_uri = format!("https://{}/{}", endpoint, resource_path).to_lowercase();
+    let encoded_resource = lowercase_url_encode(&resource_uri);
+    let to_sign = format!("{}\n{}", encoded_resource, expiry);
+
+    let decoded_key = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, key)
+        .map_err(|e| format!("base64 decode: {e}"))?;
+    let mut mac = HmacSha256::new_from_slice(&decoded_key)
+        .map_err(|e| format!("hmac: {e}"))?;
+    mac.update(to_sign.as_bytes());
+    let sig_bytes = mac.finalize().into_bytes();
+    let signature = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, sig_bytes);
+    let encoded_sig = lowercase_url_encode(&signature);
+
+    Ok(format!(
+        "SharedAccessSignature sr={}&sig={}&se={}&skn={}",
+        encoded_resource, encoded_sig, expiry, key_name
+    ))
+}
+
+/// Destructively drain up to `max` messages from a queue (or, via
+/// `resource_path` pointing at `{queue}/$DeadLetterQueue`, from its
+/// dead-letter sub-queue). Uses the SB REST API's "receive and delete" mode
+/// (`DELETE .../messages/head`), which removes each message permanently —
+/// unlike `sb_peek_dead_letters`'s non-destructive peek-lock.
+async fn sb_receive_and_delete(conn_str: &str, resource_path: &str, max: usize) -> Result<usize, String> {
+    let (endpoint, key_name, key) = sb_parse_conn_str(conn_str)?;
+    let token = sb_sas_token(&endpoint, &key_name, &key, resource_path)?;
+    let url = format!("https://{}/{}/messages/head?timeout=5", endpoint, resource_path);
+    let client = reqwest::Client::new();
+    let mut deleted = 0usize;
+    for _ in 0..max {
+        let resp = client
+            .delete(&url)
+            .header("Authorization", &token)
+            .send()
+            .await
+            .map_err(|e| format!("HTTP error: {e}"))?;
+        let status = resp.status();
+        if status.as_u16() == 204 { break; }
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            if status.as_u16() == 401 && text.is_empty() {
+                return Err("401 — your IP is not in the Service Bus firewall allowlist.".into());
+            }
+            return Err(format!("SB returned {}: {}", status, text));
+        }
+        deleted += 1;
+    }
+    Ok(deleted)
+}
+
+/// Purge (permanently delete) up to `max` active messages from a queue.
+pub async fn sb_purge_queue(conn_str: &str, queue: &str, max: usize) -> Result<usize, String> {
+    sb_receive_and_delete(conn_str, queue, max).await
+}
+
+/// Send-and-receive round-trip probe: pushes a small test message onto
+/// `queue`, then immediately receive-and-deletes one message back off it,
+/// returning the round-trip latency in milliseconds. Verifies both send and
+/// receive permissions plus actual network reachability to the namespace —
+/// the closest thing to a live connectivity check this app can do without a
+/// deployed in-Azure probe function. Only safe to point at a queue that's
+/// either empty or dedicated to probing — on a busy queue, the "received"
+/// message may be someone else's, not the one just sent.
+pub async fn sb_probe_roundtrip(conn_str: &str, queue: &str) -> Result<u128, String> {
+    let started = std::time::Instant::now();
+    let probe_id = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let body = format!("{{\"probe\":true,\"id\":{probe_id}}}");
+    sb_send_message(conn_str, queue, &body).await?;
+    let received = sb_receive_and_delete(conn_str, queue, 1).await?;
+    if received == 0 {
+        return Err("Sent a probe message but didn't receive anything back — check receive permissions and that the queue isn't being drained by another consumer.".into());
+    }
+    Ok(started.elapsed().as_millis())
+}
+
+/// Purge (permanently delete) up to `max` messages from a queue's
+/// dead-letter sub-queue.
+pub async fn sb_purge_dead_letters(conn_str: &str, queue: &str, max: usize) -> Result<usize, String> {
+    let dlq_path = format!("{}/$DeadLetterQueue", queue);
+    sb_receive_and_delete(conn_str, &dlq_path, max).await
+}
+
+/// Move up to `max` dead-lettered messages back onto the main queue:
+/// receive-and-delete each one from `$DeadLetterQueue`, then resubmit its
+/// body to the main queue. If resubmission fails partway through, the
+/// already-removed message is dropped — the failure is surfaced immediately
+/// so remaining messages are left untouched rather than also drained.
+pub async fn sb_requeue_dead_letters(conn_str: &str, queue: &str, max: usize) -> Result<usize, String> {
+    let (endpoint, key_name, key) = sb_parse_conn_str(conn_str)?;
+    let dlq_path = format!("{}/$DeadLetterQueue", queue);
+    let dlq_token = sb_sas_token(&endpoint, &key_name, &key, &dlq_path)?;
+    let dlq_url = format!("https://{}/{}/messages/head?timeout=5", endpoint, dlq_path);
+    let send_token = sb_sas_token(&endpoint, &key_name, &key, queue)?;
+    let send_url = format!("https://{}/{}/messages", endpoint, queue);
+
+    let client = reqwest::Client::new();
+    let mut requeued = 0usize;
+    for _ in 0..max {
+        let resp = client
+            .delete(&dlq_url)
+            .header("Authorization", &dlq_token)
+            .send()
+            .await
+            .map_err(|e| format!("HTTP error: {e}"))?;
+        let status = resp.status();
+        if status.as_u16() == 204 { break; }
+        if !status.is_success() {
+            let text = resp.text().await.unwrap_or_default();
+            return Err(format!("SB returned {}: {}", status, text));
+        }
+        let body = resp.bytes().await.unwrap_or_default();
+
+        let send_resp = client
+            .post(&send_url)
+            .header("Authorization", &send_token)
+            .header("Content-Type", "application/atom+xml;type=entry;charset=utf-8")
+            .body(body.to_vec())
+            .send()
+            .await
+            .map_err(|e| format!("HTTP error resubmitting message {}: {e}", requeued + 1))?;
+        let send_status = send_resp.status();
+        if !send_status.is_success() {
+            let text = send_resp.text().await.unwrap_or_default();
+            return Err(format!(
+                "Message removed from dead-letter queue but resubmission failed ({} {}) after requeuing {} message(s) — it is now lost. Fix the underlying issue before retrying.",
+                send_status, text, requeued
+            ));
+        }
+        requeued += 1;
+    }
+    Ok(requeued)
+}
+
 // ── EventGrid ────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -1145,6 +1603,152 @@ pub fn list_eventgrid_system_topic_subscriptions(rg: &str, topic_name: &str) -> 
         .collect();
 
     Ok(subs)
+}
+
+/// A resource discovered in the resource group (any type) — the identity
+/// half of a resource-health-dashboard row.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ResourceInfo {
+    pub name: String,
+    /// ARM resource type, e.g. "Microsoft.Web/sites" or "Microsoft.DocumentDB/databaseAccounts".
+    pub resource_type: String,
+    pub id: String,
+}
+
+/// List every resource in a resource group (blocking) — used to populate the
+/// resource health dashboard without requiring the user to name each
+/// Cosmos/SQL/Storage/etc. resource individually in the profile.
+pub fn list_resources(sub: &str, rg: &str) -> Result<Vec<ResourceInfo>, String> {
+    let output = az_command(&[
+            "resource", "list",
+            "--subscription", sub,
+            "--resource-group", rg,
+            "--query", "[].{name:name,type:type,id:id}",
+            "-o", "json",
+        ])
+        .output()
+        .map_err(|e| format!("az resource list: {e}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    let body = String::from_utf8_lossy(&output.stdout);
+    let arr: Vec<serde_json::Value> = serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
+    Ok(arr.iter().map(|v| ResourceInfo {
+        name: v["name"].as_str().unwrap_or("").to_string(),
+        resource_type: v["type"].as_str().unwrap_or("").to_string(),
+        id: v["id"].as_str().unwrap_or("").to_string(),
+    }).collect())
+}
+
+/// Fetch a resource's lifecycle state (blocking). Different resource types
+/// expose this under different property names (`state` for Web/sites,
+/// `provisioningState` for most everything else) — the JMESPath `||`
+/// fallback tries both rather than needing a per-type command.
+pub fn get_resource_state(resource_id: &str) -> Result<String, String> {
+    let output = az_command(&[
+            "resource", "show",
+            "--ids", resource_id,
+            "--query", "properties.state || properties.provisioningState || 'Unknown'",
+            "-o", "tsv",
+        ])
+        .output()
+        .map_err(|e| format!("az resource show: {e}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// Fetch a resource's platform health status (blocking) via the
+/// Microsoft.ResourceHealth provider — works uniformly across resource
+/// types, unlike `state`/`provisioningState` which only reflect the last
+/// control-plane operation, not actual runtime availability.
+pub fn get_resource_availability(resource_id: &str) -> Result<String, String> {
+    let uri = format!(
+        "https://management.azure.com{resource_id}/providers/Microsoft.ResourceHealth/availabilityStatuses/current?api-version=2020-05-01"
+    );
+    let output = az_command(&["rest", "--method", "GET", "--uri", &uri, "--query", "properties.availabilityState", "-o", "tsv"])
+        .output()
+        .map_err(|e| format!("az rest failed: {e}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// One row of the resource health dashboard.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ResourceHealthRow {
+    pub name: String,
+    pub resource_type: String,
+    pub state: String,
+    /// "Available" / "Degraded" / "Unavailable" / "Unknown" (Unknown means
+    /// Microsoft.ResourceHealth didn't return a usable answer — not
+    /// necessarily a problem, e.g. the provider may not be registered).
+    pub health: String,
+    pub last_checked: u64,
+}
+
+/// Discover every resource in the group and check its state + platform
+/// health (blocking — does one or two `az` calls per resource, so this is
+/// meant to be run on a background poll interval, not on every render).
+pub fn list_resource_health(sub: &str, rg: &str) -> Result<Vec<ResourceHealthRow>, String> {
+    let resources = list_resources(sub, rg)?;
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    Ok(resources.into_iter().map(|r| {
+        let state = get_resource_state(&r.id).unwrap_or_else(|_| "Unknown".to_string());
+        let health = get_resource_availability(&r.id).unwrap_or_else(|_| "Unknown".to_string());
+        ResourceHealthRow {
+            name: r.name,
+            resource_type: r.resource_type,
+            state,
+            health,
+            last_checked: now,
+        }
+    }).collect())
+}
+
+/// Month-to-date cost for a resource group (blocking). `az consumption
+/// usage list` returns usage for the whole subscription with no
+/// resource-group filter of its own, so we fetch everything for the month
+/// and sum client-side — filtering case-insensitively on the resource ID,
+/// since Azure resource IDs aren't consistently cased across services.
+pub fn get_cost_mtd(sub: &str, rg: &str) -> Result<(f64, String), String> {
+    let now = chrono::Utc::now();
+    let start = now.format("%Y-%m-01").to_string();
+    let end = now.format("%Y-%m-%d").to_string();
+    let output = az_command(&[
+            "consumption", "usage", "list",
+            "--subscription", sub,
+            "--start-date", &start,
+            "--end-date", &end,
+            "--query", "[].{id:instanceId,cost:pretaxCost,currency:currency}",
+            "-o", "json",
+        ])
+        .output()
+        .map_err(|e| format!("az consumption usage list: {e}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    let body = String::from_utf8_lossy(&output.stdout);
+    let arr: Vec<serde_json::Value> = serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
+    let needle = format!("/resourcegroups/{}/", rg.to_lowercase());
+    let mut total = 0.0f64;
+    let mut currency = String::from("USD");
+    for row in &arr {
+        let id = row["id"].as_str().unwrap_or("").to_lowercase();
+        if !id.contains(&needle) { continue; }
+        let cost: f64 = row["cost"].as_str()
+            .and_then(|s| s.parse().ok())
+            .or_else(|| row["cost"].as_f64())
+            .unwrap_or(0.0);
+        total += cost;
+        if let Some(c) = row["currency"].as_str() { currency = c.to_string(); }
+    }
+    Ok((total, currency))
 }
 
 /// List EventGrid topics in a resource group (blocking)
@@ -1381,6 +1985,173 @@ pub fn get_principal_id(sub: &str, rg: &str, app: &str) -> Result<String, String
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// One Azure RBAC role assignment held by a principal.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RoleAssignment {
+    pub role_name: String,
+    pub scope: String,
+}
+
+/// List every RBAC role assignment held by a principal (blocking) — used by
+/// the auth health check to flag Function Apps whose managed identity has
+/// no roles at all, which is the most common cause of runtime "access
+/// denied" failures against Cosmos/Key Vault/SQL.
+pub fn list_role_assignments(principal_id: &str) -> Result<Vec<RoleAssignment>, String> {
+    if principal_id.is_empty() {
+        return Ok(Vec::new());
+    }
+    let output = az_command(&[
+            "role", "assignment", "list",
+            "--assignee", principal_id,
+            "--all",
+            "--query", "[].{roleName:roleDefinitionName,scope:scope}",
+            "-o", "json",
+        ])
+        .output()
+        .map_err(|e| format!("az role assignment list: {e}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    let body = String::from_utf8_lossy(&output.stdout);
+    let arr: Vec<serde_json::Value> = serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
+    Ok(arr.iter().map(|v| RoleAssignment {
+        role_name: v["roleName"].as_str().unwrap_or("Unknown").to_string(),
+        scope: v["scope"].as_str().unwrap_or("").to_string(),
+    }).collect())
+}
+
+/// Grant an ARM RBAC role to a principal at a scope (blocking). Covers most
+/// data sources a Function App talks to — Storage, Key Vault, SQL (AAD
+/// auth), Service Bus data-plane roles — everything except Cosmos DB's SQL
+/// data-plane RBAC, which uses a separate role system (see
+/// `assign_cosmos_data_role`).
+pub fn assign_role_arm(principal_id: &str, role: &str, scope: &str) -> Result<(), String> {
+    let output = az_command(&[
+            "role", "assignment", "create",
+            "--assignee", principal_id,
+            "--role", role,
+            "--scope", scope,
+        ])
+        .output()
+        .map_err(|e| format!("az role assignment create: {e}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    Ok(())
+}
+
+/// Grant a Cosmos DB SQL data-plane role to a principal (blocking). Cosmos
+/// data access (reading/writing items) is governed by its own RBAC system,
+/// separate from the ARM roles `assign_role_arm` grants — an identity can
+/// have full ARM "Contributor" on the Cosmos account and still get 403s on
+/// data operations without one of these. `role_definition_id` is a GUID;
+/// the two built-ins are `00000000-0000-0000-0000-000000000001` (Data
+/// Reader) and `00000000-0000-0000-0000-000000000002` (Data Contributor).
+/// `data_scope` is a Cosmos resource path, e.g. `/` for the whole account.
+pub fn assign_cosmos_data_role(
+    rg: &str,
+    cosmos_account: &str,
+    principal_id: &str,
+    role_definition_id: &str,
+    data_scope: &str,
+) -> Result<(), String> {
+    let output = az_command(&[
+            "cosmosdb", "sql", "role", "assignment", "create",
+            "--resource-group", rg,
+            "--account-name", cosmos_account,
+            "--principal-id", principal_id,
+            "--role-definition-id", role_definition_id,
+            "--scope", data_scope,
+        ])
+        .output()
+        .map_err(|e| format!("az cosmosdb sql role assignment create: {e}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    Ok(())
+}
+
+/// One variable inside an Azure DevOps variable group.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct VariableGroupVar {
+    pub name: String,
+    /// `None` for secret variables — Azure DevOps never returns secret
+    /// values through the CLI, so there's nothing to compare/drift-check.
+    pub value: Option<String>,
+    pub is_secret: bool,
+}
+
+/// An Azure DevOps variable group with its variables already resolved —
+/// `az pipelines variable-group list` returns each group's full definition
+/// (including variables) in one call, so there's no need for a second
+/// per-group fetch.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct VariableGroup {
+    pub id: u64,
+    pub name: String,
+    pub variables: Vec<VariableGroupVar>,
+}
+
+/// List every variable group in an Azure DevOps project (blocking).
+/// Requires the `azure-devops` CLI extension (`az extension add --name
+/// azure-devops`) — surfaces that requirement in the error if missing
+/// rather than failing silently.
+pub fn list_variable_groups(org: &str, project: &str) -> Result<Vec<VariableGroup>, String> {
+    let output = az_command(&[
+            "pipelines", "variable-group", "list",
+            "--organization", org,
+            "--project", project,
+            "-o", "json",
+        ])
+        .output()
+        .map_err(|e| format!("az pipelines variable-group list: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        if stderr.contains("az extension add") || stderr.contains("is not a registered") || stderr.contains("'pipelines' is misspelled") {
+            return Err(format!("{stderr}\n\nRun: az extension add --name azure-devops"));
+        }
+        return Err(stderr);
+    }
+    let body = String::from_utf8_lossy(&output.stdout);
+    let arr: Vec<serde_json::Value> = serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
+    Ok(arr.iter().map(|g| {
+        let variables = g["variables"].as_object().map(|obj| {
+            obj.iter().map(|(name, v)| VariableGroupVar {
+                name: name.clone(),
+                is_secret: v["isSecret"].as_bool().unwrap_or(false),
+                value: if v["isSecret"].as_bool().unwrap_or(false) { None } else { v["value"].as_str().map(|s| s.to_string()) },
+            }).collect()
+        }).unwrap_or_default();
+        VariableGroup {
+            id: g["id"].as_u64().unwrap_or(0),
+            name: g["name"].as_str().unwrap_or("").to_string(),
+            variables,
+        }
+    }).collect())
+}
+
+/// Delete a single variable from a variable group (blocking) — used by the
+/// variable-group cleanup view's bulk-delete action. Never call this on a
+/// secret variable from an automated "safe to delete" pass; secrets can't
+/// be drift-checked so they should never be auto-suggested for deletion.
+pub fn delete_variable_group_variable(org: &str, project: &str, group_id: u64, name: &str) -> Result<(), String> {
+    let group_id_str = group_id.to_string();
+    let output = az_command(&[
+            "pipelines", "variable-group", "variable", "delete",
+            "--group-id", &group_id_str,
+            "--name", name,
+            "--organization", org,
+            "--project", project,
+            "--yes",
+        ])
+        .output()
+        .map_err(|e| format!("az pipelines variable-group variable delete: {e}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    Ok(())
 }
 
 /// List functions inside a Function App.
