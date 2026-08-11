@@ -246,6 +246,10 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
     let mut chain_poll_at: Signal<u64> = use_signal(|| 0);
     let mut chain_polling: Signal<bool> = use_signal(|| false);
     let mut poll_errors: Signal<usize> = use_signal(|| 0);
+    // A few real error strings from the last sweep. A bare count tells you
+    // something broke but not what — and "why is this card empty?" is
+    // exactly the question the count can't answer.
+    let mut poll_error_samples: Signal<Vec<String>> = use_signal(Vec::new);
     // Wall-clock duration of the last sweep. Surfaced in the header because
     // it's the honest answer to "am I actually getting the interval I asked
     // for?" — if this exceeds POLL_SECS the sweeps are running back-to-back.
@@ -271,6 +275,7 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
             spawn(async move {
                 let sweep_started = std::time::Instant::now();
                 let mut errs = 0usize;
+                let mut samples: Vec<String> = Vec::new();
                 // Resolved once per sweep rather than per chain — it can't
                 // change mid-sweep and peeking a signal in a loop is waste.
                 let ns = if !az.sb_namespace.is_empty() {
@@ -299,6 +304,11 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                     for (label, handle) in pending {
                         let Ok(probe) = handle.await else { errs += 1; continue };
                         errs += probe.errors.len();
+                        for e in probe.errors.iter().take(3) {
+                            if samples.len() < 5 && !samples.contains(e) {
+                                samples.push(e.clone());
+                            }
+                        }
                         let now = epoch_secs();
                         chain_runs.write().insert(label.clone(), probe.runs);
                         chain_health_sig.write().insert(label.clone(), probe.health);
@@ -306,7 +316,15 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                         last_checked_sig.write().insert(label, now);
                     }
                 }
+                if errs > 0 {
+                    crate::services::activity::error(
+                        "Home poll read errors",
+                        format!("{errs} error(s)"),
+                        samples.join("\n"),
+                    );
+                }
                 poll_errors.set(errs);
+                poll_error_samples.set(samples);
                 sweep_secs.set(sweep_started.elapsed().as_secs_f64());
                 chain_poll_at.set(epoch_secs());
                 chain_polling.set(false);
@@ -407,7 +425,16 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
         v.sort_by(|a, b| b.failed_at.cmp(&a.failed_at));
         v
     };
-    let have_run_data = !all_runs.is_empty();
+    // Count actual runs, not chain keys: a sweep whose `list_runs` calls all
+    // failed still inserts an (empty) entry per chain, so testing the outer
+    // map would report "have data" and make the card claim nothing is
+    // failing when really nothing could be read.
+    let fetched_runs: usize = all_runs.values()
+        .flat_map(|workflows| workflows.values())
+        .map(|runs| runs.len())
+        .sum();
+    let have_run_data = fetched_runs > 0;
+    let chains_polled = all_runs.len();
 
     // Live activity: every run Azure still reports as Running. Ordered
     // oldest-first so a run that has been going far longer than the rest —
@@ -545,7 +572,11 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                     }
                     "chains {format_dt(chains_checked_at)} · checks {format_dt(*res_fetched_at.read())} · functions {format_dt(fn_metrics_at)}"
                     if *poll_errors.read() > 0 {
-                        span { class: "func-errors has-errors", title: "Some workflows or queues failed to read on the last sweep — see the Activity log.", " · {poll_errors} read error(s)" }
+                        span {
+                            class: "func-errors has-errors",
+                            title: "Some workflows or queues failed to read on the last sweep — full detail is in the Activity log.",
+                            " · {poll_errors} read error(s)"
+                        }
                     }
                 }
                 button {
@@ -554,6 +585,16 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                     disabled: is_loading || *chain_polling.read(),
                     onclick: move |_| { load(); poll_chains(); },
                     span { class: if is_loading || *chain_polling.read() { "icon-spin" } else { "" }, "⟳" }
+                }
+            }
+            // Spelled out rather than left as a count: on a new tenant an
+            // empty card is almost always a permission or naming mismatch,
+            // and only the message text says which.
+            if !poll_error_samples.read().is_empty() {
+                div { class: "az-error home-poll-errors",
+                    for e in poll_error_samples.read().iter() {
+                        div { class: "home-poll-error-line", "{e}" }
+                    }
                 }
             }
             if let Some(e) = error_msg.read().clone() {
@@ -585,11 +626,25 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                         }
                     }
                     if !have_run_data {
+                        // Distinguish "not polled yet" from "polled and got
+                        // nothing back" — they look identical on screen but
+                        // mean completely different things, and only the
+                        // second one is a problem to chase.
                         div { class: "func-empty-small",
-                            "No run data loaded yet — run \"Check all\" on the Chains tab to populate it."
+                            if *chain_polling.read() {
+                                "Loading run history…"
+                            } else if *poll_errors.read() > 0 {
+                                "Could not read run history — the queue counts below came back fine, so this is specific to the workflow-runs API. Check the errors listed under the header."
+                            } else if chains_polled == 0 {
+                                "No chains discovered yet."
+                            } else {
+                                "Azure returned no runs for any of this profile's {chains_polled} chain(s). Either the workflows have never run, or the Logic App name in this profile doesn't match the one deployed in this tenant."
+                            }
                         }
                     } else if failing.is_empty() {
-                        div { class: "func-empty-small", "Nothing unrecovered in this window." }
+                        div { class: "func-empty-small",
+                            "Nothing unrecovered in this window — {fetched_runs} run(s) checked across {chains_polled} chain(s)."
+                        }
                     } else {
                         table { class: "func-table home-table",
                             thead { tr { th { "Workflow" } th { "Chain" } th { "Failed at" } th { "×" } } }

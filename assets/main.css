@@ -792,6 +792,12 @@ body {
 }
 .home-rel { color: var(--text3); font-size: var(--home-fs-sm); }
 
+.home-poll-errors { margin: 6px 0; }
+.home-poll-error-line {
+    font-family: var(--mono, monospace); font-size: var(--home-fs-sm);
+    word-break: break-word; margin: 2px 0;
+}
+
 /* Clickable failure rows + their selected state. */
 .home-row-clickable { cursor: pointer; }
 .home-row-clickable:hover td { background: var(--bg2); }
