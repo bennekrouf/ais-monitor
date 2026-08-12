@@ -327,7 +327,7 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
             dirs::config_dir()
                 .unwrap_or_else(|| std::path::PathBuf::from("."))
                 .join("ais-monitor")
-                .join(format!("{}_{}", a.resource_group, a.app_name))
+                .join(format!("{}_{}_{}", a.subscription, a.resource_group, a.app_name))
                 .to_string_lossy()
                 .to_string()
         })

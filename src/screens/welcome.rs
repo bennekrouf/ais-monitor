@@ -652,9 +652,11 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                 sb_namespace: sb_input.read().trim().to_string(),
                                                 tenant: tenant_input.read().trim().to_string(),
                                                 label: label_input.read().trim().to_string(),
-                                                local_dir: dirs::home_dir()
-                                                    .map(|p| p.to_string_lossy().to_string())
-                                                    .unwrap_or_default(),
+                                                // No workspace picker on this quick-connect form — leaving
+                                                // this empty means remote_chain falls back to the per-tenant
+                                                // /remote/{sub}/{app} manual-links key instead of every such
+                                                // profile sharing one file keyed by the home directory.
+                                                local_dir: String::new(),
                                                 app_config_store: app_config_store_input.read().trim().to_string(),
                                                 devops_org: devops_org_input.read().trim().to_string(),
                                                 devops_project: devops_project_input.read().trim().to_string(),
@@ -806,6 +808,12 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                     onclick: {
                                         let on_connect = props.on_connect.clone();
                                         move |_| {
+                                            // Left blank, this stays empty rather than falling back to the
+                                            // home directory — remote_chain then keys manual links by
+                                            // /remote/{sub}/{app}, which is unique per profile. Defaulting
+                                            // to home directory made every profile without an explicit
+                                            // workspace share one links file, leaking one tenant's manual
+                                            // chain links (and its list_runs polling) into another's.
                                             let local_dir_val = local_dir_input.read().trim().to_string();
                                             let config = AzConfig {
                                                 subscription: sub_id.read().clone(),
@@ -814,13 +822,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                 sb_namespace: sb_input.read().trim().to_string(),
                                                 tenant: tenant_input.read().trim().to_string(),
                                                 label: label_input.read().trim().to_string(),
-                                                local_dir: if local_dir_val.is_empty() {
-                                                    dirs::home_dir()
-                                                        .map(|p| p.to_string_lossy().to_string())
-                                                        .unwrap_or_default()
-                                                } else {
-                                                    local_dir_val
-                                                },
+                                                local_dir: local_dir_val,
                                                 app_config_store: app_config_store_input.read().trim().to_string(),
                                                 devops_org: devops_org_input.read().trim().to_string(),
                                                 devops_project: devops_project_input.read().trim().to_string(),

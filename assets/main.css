@@ -792,10 +792,38 @@ body {
 }
 .home-rel { color: var(--text3); font-size: var(--home-fs-sm); }
 
+/* Grid cards keep one fixed body height so they stay aligned side by side and
+   a long list can't drag the row down and push the tiles off screen.
+   "Show all" doesn't grow the card — it only swaps clipping for a scrollbar,
+   so opening one never reflows its neighbours. */
+.home-card-body {
+    /* Five rows plus the header. Rows with a second line (workflow + chain)
+       are taller, so this is a height budget rather than an exact row count —
+       the fixed height is the point, and the scrollbar covers the rest. */
+    --home-card-row-h: 2.5em;
+    --home-card-head-h: 2em;
+    height: calc(var(--home-card-rows, 5) * var(--home-card-row-h) + var(--home-card-head-h));
+    overflow: hidden;
+}
+.home-card-body.expanded { overflow-y: auto; }
+/* Keep the column headers visible while scrolling — a bare list of values
+   with the header scrolled away is hard to read. */
+.home-card-body thead th {
+    position: sticky; top: 0; z-index: 1; background: var(--bg1, var(--bg2));
+}
+.home-show-more { margin-top: 6px; }
+
 .home-poll-errors { margin: 6px 0; }
 .home-poll-error-line {
     font-family: var(--mono, monospace); font-size: var(--home-fs-sm);
-    word-break: break-word; margin: 2px 0;
+    margin: 2px 0;
+    /* Clipped to a single line: these carry ARM JSON and Python tracebacks,
+       and wrapping one pushes the whole dashboard below the fold. The full
+       text lives in the Activity log. */
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.home-poll-error-hint {
+    font-family: inherit; color: var(--text3); font-style: italic;
 }
 
 /* Clickable failure rows + their selected state. */
@@ -806,7 +834,25 @@ body {
 }
 .home-caret {
     display: inline-block; width: 1em; color: var(--text3);
-    font-size: 0.85em;
+    font-size: 0.85em; flex-shrink: 0;
+}
+/* "Still failing" rows: caret + stacked workflow/chain, replacing the old
+   separate Chain column so the chain name reads as context under the
+   workflow rather than competing with it for a column. */
+.home-table .func-name:has(.home-wf-cell) {
+    display: flex; align-items: baseline; gap: 4px;
+    /* Wider than the plain-name truncation above: this column no longer
+       shares row width with a separate Chain column, so it can afford it. */
+    max-width: 34ch;
+}
+.home-wf-cell { display: flex; flex-direction: column; min-width: 0; }
+.home-wf-name {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.home-wf-chain {
+    font-size: calc(var(--home-fs-sm) * 0.92);
+    color: var(--text3); font-weight: 400;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
 /* Run-log console pinned below the indicators. */

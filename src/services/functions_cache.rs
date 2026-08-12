@@ -1,6 +1,7 @@
 //! On-disk cache for the Functions tab — discovered Function Apps, their
 //! functions, the linked Application Insights resource, and the last fetched
-//! metrics. Keyed by resource group so each workspace has its own file.
+//! metrics. Keyed by subscription + resource group + app name so each
+//! workspace has its own file, even across tenants that reuse names.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -52,21 +53,21 @@ pub fn save(workspace_dir: &str, snapshot: &FunctionsSnapshot) {
     }
 }
 
-fn workspace_dir(rg: &str, app: &str) -> String {
+fn workspace_dir(sub: &str, rg: &str, app: &str) -> String {
     dirs::config_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("ais-monitor")
-        .join(format!("{}_{}", rg, app))
+        .join(format!("{}_{}_{}", sub, rg, app))
         .to_string_lossy()
         .to_string()
 }
 
 /// Convenience wrapper for callers that don't already have the workspace path.
-pub fn load_for(rg: &str, app: &str) -> FunctionsSnapshot {
-    load(&workspace_dir(rg, app))
+pub fn load_for(sub: &str, rg: &str, app: &str) -> FunctionsSnapshot {
+    load(&workspace_dir(sub, rg, app))
 }
 
 /// Convenience wrapper for callers that don't already have the workspace path.
-pub fn save_for(rg: &str, app: &str, snapshot: &FunctionsSnapshot) {
-    save(&workspace_dir(rg, app), snapshot);
+pub fn save_for(sub: &str, rg: &str, app: &str, snapshot: &FunctionsSnapshot) {
+    save(&workspace_dir(sub, rg, app), snapshot);
 }

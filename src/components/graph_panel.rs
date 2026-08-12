@@ -243,9 +243,16 @@ pub fn GraphPanel(props: GraphPanelProps) -> Element {
                                         Some((id.clone(), g))
                                     }).collect();
 
+                                // Space-separated terms broaden the results (OR),
+                                // same convention as the Chains-tab filter.
                                 let search = filter_search.read().to_lowercase();
+                                let search_terms: Vec<&str> = search.split_whitespace().collect();
                                 let visible_nodes: Vec<String> = all_nodes.iter()
-                                    .filter(|n| search.is_empty() || n.to_lowercase().contains(&search))
+                                    .filter(|n| {
+                                        if search_terms.is_empty() { return true; }
+                                        let n_lower = n.to_lowercase();
+                                        search_terms.iter().any(|term| n_lower.contains(term))
+                                    })
                                     .cloned().collect();
 
                                 let excl_count = excluded_nodes.read().len();
@@ -302,8 +309,12 @@ pub fn GraphPanel(props: GraphPanelProps) -> Element {
                                         div { style: "padding:7px 10px; flex-shrink:0;",
                                             input {
                                                 style: "width:100%; box-sizing:border-box; background:{theme.bg}; border:1px solid {theme.border}; border-radius:6px; padding:4px 8px; font-size:11px; color:{theme.text}; font-family:inherit; outline:none;",
-                                                placeholder: "Search nodes…",
+                                                placeholder: "Search nodes… (space-separated terms)",
                                                 value: "{filter_search}",
+                                                autocomplete: "off",
+                                                "autocorrect": "off",
+                                                autocapitalize: "off",
+                                                spellcheck: false,
                                                 oninput: move |e| filter_search.set(e.value()),
                                             }
                                         }

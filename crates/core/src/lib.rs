@@ -6,4 +6,4 @@
 //! included files still resolve.
 
 pub mod services;
-pub use services::{azure, chain, kpi, msg_template, names, payload, remote_chain};
+pub use services::{activity, azure, chain, kpi, msg_template, names, payload, remote_chain};

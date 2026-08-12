@@ -70,7 +70,7 @@ pub fn FunctionsPanel(props: FunctionsPanelProps) -> Element {
             error_msg.set(None);
 
             // Hydrate from disk first so the user sees something immediately.
-            let snap = functions_cache::load_for(&az.resource_group, &az.app_name);
+            let snap = functions_cache::load_for(&az.subscription, &az.resource_group, &az.app_name);
             let has_cache = !snap.func_apps.is_empty();
             if has_cache {
                 func_apps.set(snap.func_apps);
@@ -133,7 +133,7 @@ pub fn FunctionsPanel(props: FunctionsPanelProps) -> Element {
                             last_fetched: epoch_secs(),
                         };
                         tokio::task::spawn_blocking(move || {
-                            functions_cache::save_for(&rg, &app, &snap);
+                            functions_cache::save_for(&sub, &rg, &app, &snap);
                         }).await.ok();
                     }
                     Ok(Err(e)) => error_msg.set(Some(e)),
@@ -179,10 +179,11 @@ pub fn FunctionsPanel(props: FunctionsPanelProps) -> Element {
                     metrics: all_metrics,
                     last_fetched: epoch_secs(),
                 };
+                let sub = az.subscription.clone();
                 let rg = az.resource_group.clone();
                 let app = az.app_name.clone();
                 tokio::task::spawn_blocking(move || {
-                    functions_cache::save_for(&rg, &app, &snap);
+                    functions_cache::save_for(&sub, &rg, &app, &snap);
                 }).await.ok();
             });
         }

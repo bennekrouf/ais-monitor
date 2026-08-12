@@ -1,7 +1,8 @@
 //! On-disk cache for the Resource Health dashboard — the last discovered
 //! set of resources and their state/health, so the dashboard paints
 //! instantly on tab switch instead of blocking on a fresh `az` sweep.
-//! Keyed by resource group, same convention as `functions_cache.rs`.
+//! Keyed by subscription + resource group + app name, same convention as
+//! `functions_cache.rs`.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -44,19 +45,19 @@ pub fn save(workspace_dir: &str, snapshot: &ResourceHealthSnapshot) {
     }
 }
 
-fn workspace_dir(rg: &str, app: &str) -> String {
+fn workspace_dir(sub: &str, rg: &str, app: &str) -> String {
     dirs::config_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("ais-monitor")
-        .join(format!("{}_{}", rg, app))
+        .join(format!("{}_{}_{}", sub, rg, app))
         .to_string_lossy()
         .to_string()
 }
 
-pub fn load_for(rg: &str, app: &str) -> ResourceHealthSnapshot {
-    load(&workspace_dir(rg, app))
+pub fn load_for(sub: &str, rg: &str, app: &str) -> ResourceHealthSnapshot {
+    load(&workspace_dir(sub, rg, app))
 }
 
-pub fn save_for(rg: &str, app: &str, snapshot: &ResourceHealthSnapshot) {
-    save(&workspace_dir(rg, app), snapshot);
+pub fn save_for(sub: &str, rg: &str, app: &str, snapshot: &ResourceHealthSnapshot) {
+    save(&workspace_dir(sub, rg, app), snapshot);
 }

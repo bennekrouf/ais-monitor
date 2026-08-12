@@ -117,16 +117,13 @@ pub fn discover_chains_remote(
     }
 
     // Load manual links (EventGrid, dynamic queue routing not visible in the
-    // deployed workflow JSON). Precedence — strictly tool-side, never the
-    // customer repo (a legacy repo .ais-chain is honored read-only and
-    // migrated to ~/.ais/chains/ by the shared loader):
-    //   1. ~/.ais/chains/<project-key>.txt via ais_chain::links::load, keyed
-    //      by local_dir when the user has a workspace, else by the remote
-    //      sub/app identity so remote-only installs get their own file.
-    //   2. TRANSITIONAL: the defaults embedded in the binary. On first use
-    //      they are migrated into the tool home; the embedded copy is
-    //      scheduled for removal — customer topology must not ship in a
-    //      generic release binary.
+    // deployed workflow JSON). ~/.ais/chains/<project-key>.txt via
+    // ais_chain::links::load, keyed by local_dir when the user has a
+    // workspace, else by the remote sub/app identity so remote-only installs
+    // get their own file. A legacy repo .ais-chain is honored read-only and
+    // migrated to ~/.ais/chains/ by the shared loader. No topology ships in
+    // the binary — an unconfigured tenant gets an empty link set rather than
+    // another customer's routing.
     let links_key: std::path::PathBuf = if local_dir.is_empty() {
         std::path::PathBuf::from(format!("/remote/{sub}/{app}"))
     } else {
@@ -139,14 +136,35 @@ pub fn discover_chains_remote(
     for w in &loaded.warnings {
         eprintln!("[ais-chain links] {w}");
     }
-    let manual_links = if loaded.links.is_empty() {
-        // Migrate embedded defaults into the tool home so the next release
-        // can drop them from the binary.
-        let _ = ais_chain::links::save(&links_key, EMBEDDED_AIS_CHAIN);
-        embedded_manual_links()
-    } else {
-        loaded.links
-    };
+
+    // Drop manual links pointing at workflows this app doesn't actually have.
+    // `graph::build` adds an edge for both endpoints unconditionally, so a
+    // stale link (renamed workflow, typo, or a links file carried over from a
+    // different tenant) injects a phantom node that the pollers then try to
+    // `list_runs` — surfacing as a stream of WorkflowNotFound errors with no
+    // hint as to where the name came from. Reporting and skipping beats
+    // polling something that cannot exist.
+    let known_names: Vec<&str> = resolved_workflows.iter().map(|w| w.name.as_str()).collect();
+    for w in ais_chain::links::validate(&loaded.links, &known_names) {
+        eprintln!("[ais-chain links] {w}");
+    }
+    let known: HashSet<&str> = known_names.iter().copied().collect();
+    let (manual_links, stale): (Vec<String>, Vec<String>) = loaded.links
+        .into_iter()
+        .partition(|l| link_endpoints_known(l, &known));
+    if !stale.is_empty() {
+        crate::services::activity::warn(
+            "Stale chain links skipped",
+            format!("{} link(s) reference unknown or malformed workflows", stale.len()),
+            format!(
+                "These links in {} do not name workflows deployed in {app}, so they were \
+                 ignored rather than polled:\n{}",
+                ais_chain::links::links_path(&links_key).display(),
+                stale.join("\n"),
+            ),
+        );
+    }
+
     let graph = ais_chain::graph::build(&resolved_workflows, &manual_links);
     let raw_chains = graph.find_chains();
 
@@ -271,20 +289,16 @@ fn resolve_appsetting(s: &str, settings: &std::collections::HashMap<String, Stri
     s.to_string()
 }
 
-/// Manual chain links baked into the binary at compile time. This is the
-/// source of truth that ships to every customer — Windows users with no
-/// `ais_tom_platform` clone still get the full chain after a reinstall +
-/// Refresh. To update topology, edit `default-ais-chain.txt` and cut a
-/// release.
-const EMBEDDED_AIS_CHAIN: &str = include_str!("default-ais-chain.txt");
-
-fn embedded_manual_links() -> Vec<String> {
-    EMBEDDED_AIS_CHAIN
-        .lines()
-        .map(|l| l.trim().trim_start_matches('\u{feff}'))
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .map(|l| l.to_string())
-        .collect()
+/// True when both endpoints of a `Source->Target:label` manual link name a
+/// workflow that actually exists. Parsing mirrors `ais_chain::links::validate`
+/// (and `graph::parse_manual_link`, which is private) so a link is judged here
+/// exactly as the graph builder would read it. Malformed links count as not
+/// known — `graph::build` ignores them anyway, and surfacing them beats
+/// leaving a typo silently inert.
+fn link_endpoints_known(link: &str, known: &HashSet<&str>) -> bool {
+    let Some((from, rest)) = link.split_once("->") else { return false };
+    let to = rest.split(':').next().unwrap_or(rest).trim();
+    known.contains(from.trim()) && known.contains(to)
 }
 
 fn chains_result_path(sub: &str, app: &str) -> PathBuf {
@@ -450,17 +464,32 @@ mod tests {
         );
     }
 
-    // ── embedded_manual_links ─────────────────────────────────────────────
+    // ── link_endpoints_known ──────────────────────────────────────────────
 
     #[test]
-    fn embedded_manual_links_parses_known_topology() {
-        let links = embedded_manual_links();
-        // Comments and blanks must be stripped.
-        assert!(links.iter().all(|l| !l.starts_with('#') && !l.is_empty()));
-        // Sanity: the JDE chain depends on these two EventGrid hops — if the
-        // file gets clobbered, this test catches it before customers do.
-        assert!(links.iter().any(|l| l == "Rcv-Event-Pivot->Routing-Pivot-Invoice:EventGrid"));
-        assert!(links.iter().any(|l| l == "Rcv-Event-Pivot->Routing-Pivot-Counterparty:EventGrid"));
+    fn link_with_both_endpoints_deployed_is_kept() {
+        let known: HashSet<&str> = ["A", "B"].into_iter().collect();
+        assert!(link_endpoints_known("A->B:EventGrid", &known));
+        assert!(link_endpoints_known("A->B:queue:ais.some.queue", &known));
+        // Surrounding whitespace must not change the verdict.
+        assert!(link_endpoints_known(" A -> B :EventGrid", &known));
+    }
+
+    #[test]
+    fn link_naming_an_undeployed_workflow_is_dropped() {
+        let known: HashSet<&str> = ["A", "B"].into_iter().collect();
+        // This is the real-world case: a links file carried over from another
+        // tenant naming workflows this app never had.
+        assert!(!link_endpoints_known("Verify-Ignite-Invoice->Pivot-Ignite-Invoice:queue:x", &known));
+        assert!(!link_endpoints_known("A->Missing:EventGrid", &known));
+        assert!(!link_endpoints_known("Missing->B:EventGrid", &known));
+    }
+
+    #[test]
+    fn malformed_link_is_dropped() {
+        let known: HashSet<&str> = ["A", "B"].into_iter().collect();
+        assert!(!link_endpoints_known("junk", &known));
+        assert!(!link_endpoints_known("", &known));
     }
 
     #[test]

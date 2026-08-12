@@ -33,26 +33,41 @@ pub fn ChainList(props: ChainListProps) -> Element {
         };
     }
 
+    // Space-separated terms broaden the results (OR): "invoice failed" matches
+    // any chain containing either term, so the result set grows as terms are
+    // added rather than narrowing to chains containing all of them.
     let query = filter.read().to_lowercase();
+    let terms: Vec<&str> = query.split_whitespace().collect();
+    let is_filtering = !terms.is_empty();
     let mut sorted: Vec<ChainDetail> = props.chains.iter()
         .filter(|c| {
-            if query.is_empty() { return true; }
-            let display = props.chain_names.get(&c.label).unwrap_or(&c.label);
-            display.to_lowercase().contains(&query)
-                || c.label.to_lowercase().contains(&query)
-                || c.steps.iter().any(|s| s.workflow.to_lowercase().contains(&query))
-                || c.queues.iter().any(|q| q.to_lowercase().contains(&query))
+            if terms.is_empty() { return true; }
+            let display = props.chain_names.get(&c.label).unwrap_or(&c.label).to_lowercase();
+            let label = c.label.to_lowercase();
+            terms.iter().any(|term| {
+                display.contains(term)
+                    || label.contains(term)
+                    || c.steps.iter().any(|s| s.workflow.to_lowercase().contains(term))
+                    || c.queues.iter().any(|q| q.to_lowercase().contains(term))
+            })
         })
         .cloned()
         .collect();
-    sorted.sort_by(|a, b| {
-        let a_ts = props.last_checked.get(&a.label).copied().unwrap_or(0);
-        let b_ts = props.last_checked.get(&b.label).copied().unwrap_or(0);
-        if a_ts != b_ts {
-            return b_ts.cmp(&a_ts);
-        }
-        a.label.to_lowercase().cmp(&b.label.to_lowercase())
-    });
+    if is_filtering {
+        // While filtering, sort alphabetically only — freshness-based
+        // reordering would otherwise shuffle rows out from under the user
+        // every time a background poll lands mid-read.
+        sorted.sort_by(|a, b| a.label.to_lowercase().cmp(&b.label.to_lowercase()));
+    } else {
+        sorted.sort_by(|a, b| {
+            let a_ts = props.last_checked.get(&a.label).copied().unwrap_or(0);
+            let b_ts = props.last_checked.get(&b.label).copied().unwrap_or(0);
+            if a_ts != b_ts {
+                return b_ts.cmp(&a_ts);
+            }
+            a.label.to_lowercase().cmp(&b.label.to_lowercase())
+        });
+    }
 
     let total = props.chains.len();
     let shown = sorted.len();
@@ -70,8 +85,15 @@ pub fn ChainList(props: ChainListProps) -> Element {
                 h3 { "{header_label}" }
                 input {
                     class: "chain-filter-input",
-                    placeholder: "Filter…",
+                    placeholder: "Filter… (space-separated terms)",
                     value: "{filter}",
+                    // Suppress macOS's predictive-text candidate bar — it's
+                    // pure noise on a filter box nobody is composing prose
+                    // into, and it steals focus/Enter from the field.
+                    autocomplete: "off",
+                    "autocorrect": "off",
+                    autocapitalize: "off",
+                    spellcheck: false,
                     oninput: move |e| filter.set(e.value()),
                 }
             }

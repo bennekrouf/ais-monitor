@@ -32,7 +32,10 @@ struct UnrecoveredFailure {
 /// live spinner (`running_count` in `crates/tui/src/app.rs`).
 #[derive(Clone, Debug, PartialEq)]
 struct LiveRun {
-    chain: String,
+    /// Every chain containing this workflow. A workflow can belong to several
+    /// chains, and the poll stores runs per chain, so one Azure run is seen
+    /// once per chain — this collects those rather than repeating the run.
+    chains: Vec<String>,
     workflow: String,
     started: DateTime<Utc>,
 }
@@ -47,10 +50,15 @@ struct LiveChain {
     oldest: DateTime<Utc>,
 }
 
-/// How often the background poll re-checks every chain. This app is meant
-/// to sit on a wall display all day, so the numbers have to stay current
-/// with nobody clicking anything — but each cycle costs one `az` call per
-/// workflow plus one per queue, so the interval is deliberately unhurried.
+/// Starting poll interval, before the environment is known. This app is meant
+/// to sit on a wall display all day, so the numbers have to stay current with
+/// nobody clicking anything — but each cycle costs one `az` call per distinct
+/// workflow plus one per distinct queue.
+///
+/// Only the initial value: once discovery lands, `recommended_interval` sizes
+/// this to the actual workload (and the user can override it in the picker).
+/// Ten seconds is right for a handful of workflows and wildly wrong for
+/// several dozen, which is how the subscription throttle got tripped.
 const POLL_SECS: u64 = 10;
 
 /// How often the driver loop wakes to check whether a sweep is due. Short
@@ -61,10 +69,34 @@ const POLL_TICK_SECS: u64 = 2;
 /// How many chains to probe concurrently. Each chain costs one `az` process
 /// per workflow plus one per queue, and every `az` invocation carries CLI
 /// start-up overhead — probed one at a time, a sweep of a real environment
-/// takes far longer than `POLL_SECS`, which would collapse the interval into
-/// continuous back-to-back sweeps. A modest fan-out keeps a sweep inside its
-/// window without flooding the Azure API.
-const POLL_CONCURRENCY: usize = 4;
+/// takes far longer than `POLL_SECS`.
+///
+/// Kept deliberately low. The hostruntime endpoint
+/// (`Microsoft.Web/sites/{name}/hostruntime/...`) throttles on *burst* per
+/// subscription (error 51020), and a wide fan-out trips it even when the
+/// average rate would be fine. Two is enough to overlap CLI start-up cost
+/// without looking like a flood.
+const POLL_CONCURRENCY: usize = 2;
+
+/// Extra delay added on top of `POLL_SECS` after a sweep that hit Azure
+/// throttling (429), doubling each consecutive throttled sweep up to this
+/// cap. Without it, a throttled subscription gets hammered with the exact
+/// same full-chain workload every cycle forever, which only prolongs the
+/// throttling and keeps spawning `az` subprocesses for nothing.
+const MAX_POLL_BACKOFF_SECS: u64 = 300;
+
+/// First backoff step after a 429, overriding the usual "start at
+/// `POLL_SECS` and double". A subscription-wide hostruntime throttle does
+/// not clear in ten seconds, and probing again that soon is itself part of
+/// what sustains it — so the first response has to be a real pause rather
+/// than a token one.
+const THROTTLE_MIN_BACKOFF_SECS: u64 = 60;
+
+/// Rows a grid card shows before it needs "Show more". The cards sit side by
+/// side, so they are given one fixed height rather than each growing to its
+/// own content — otherwise a card with 40 failures drags the whole row down
+/// and pushes everything below it off screen.
+const HOME_CARD_ROWS: usize = 5;
 
 /// Run-history depth per workflow for the poll. Much shallower than the
 /// Chains tab's default: the dashboard only needs enough history to tell
@@ -89,6 +121,12 @@ pub struct HomePanelProps {
     pub chain_queue_statuses: Signal<HashMap<String, HashMap<String, QueueStatus>>>,
     /// Namespace discovered by MainScreen, used when the profile has none.
     pub discovered_sb_namespace: Signal<Option<String>>,
+    /// User-set display-name overlay, keyed by the chain's stable `label`.
+    /// Every chain identifier used elsewhere in this component (poll maps,
+    /// history, queue stats) is still the raw `label` — this is consulted
+    /// only at render time so a rename shows up immediately without
+    /// invalidating any of that keyed state.
+    pub chain_names: Signal<HashMap<String, String>>,
 }
 
 #[component]
@@ -245,15 +283,53 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
     // blank until the whole sweep finishes.
     let mut chain_poll_at: Signal<u64> = use_signal(|| 0);
     let mut chain_polling: Signal<bool> = use_signal(|| false);
+    // User-facing controls: on by default at POLL_SECS, but a wallboard
+    // still needs a way to stop hammering a throttled tenant or slow down
+    // rather than wait out `MAX_POLL_BACKOFF_SECS`. This is the *requested*
+    // interval; the throttle backoff above still stacks on top of it.
+    let mut poll_enabled: Signal<bool> = use_signal(|| true);
+    let mut poll_interval_secs: Signal<u64> = use_signal(|| POLL_SECS);
     let mut poll_errors: Signal<usize> = use_signal(|| 0);
     // A few real error strings from the last sweep. A bare count tells you
     // something broke but not what — and "why is this card empty?" is
     // exactly the question the count can't answer.
     let mut poll_error_samples: Signal<Vec<String>> = use_signal(Vec::new);
+    // Why the last sweep stopped early, if it did — drives the one-line
+    // banner instead of dumping raw ARM JSON across the dashboard.
+    let mut poll_halt: Signal<Option<chain_probe::ProbeHalt>> = use_signal(|| None);
     // Wall-clock duration of the last sweep. Surfaced in the header because
     // it's the honest answer to "am I actually getting the interval I asked
     // for?" — if this exceeds POLL_SECS the sweeps are running back-to-back.
     let mut sweep_secs: Signal<f64> = use_signal(|| 0.0);
+    // Extra delay stacked on top of POLL_SECS while Azure (or the local
+    // network stack) is throttling/resetting connections. Doubles each
+    // throttled sweep, capped at MAX_POLL_BACKOFF_SECS, and resets to zero
+    // the moment a sweep comes back clean.
+    let mut poll_backoff_secs: Signal<u64> = use_signal(|| 0);
+
+    // Size the default interval to the environment once discovery lands. An
+    // explicit pick from the picker wins and is never overridden — this only
+    // replaces the fixed default, which is far too fast for a large app.
+    // Which grid cards the user has opened up. Expanding keeps the card's
+    // height — it only turns the clipped body into a scrollable one, so the
+    // row of cards stays aligned and the page never jumps.
+    let expanded_cards: Signal<std::collections::HashSet<&'static str>> =
+        use_signal(std::collections::HashSet::new);
+
+    let mut interval_user_set: Signal<bool> = use_signal(|| false);
+    {
+        let chains_sig = props.chains;
+        use_effect(move || {
+            let chains = chains_sig.read();
+            if chains.is_empty() || *interval_user_set.peek() {
+                return;
+            }
+            let rec = recommended_interval(calls_per_sweep(&chains));
+            if *poll_interval_secs.peek() != rec {
+                poll_interval_secs.set(rec);
+            }
+        });
+    }
 
     let mut poll_chains = {
         let az = az.clone();
@@ -276,6 +352,7 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                 let sweep_started = std::time::Instant::now();
                 let mut errs = 0usize;
                 let mut samples: Vec<String> = Vec::new();
+                let mut halt: Option<chain_probe::ProbeHalt> = None;
                 // Resolved once per sweep rather than per chain — it can't
                 // change mid-sweep and peeking a signal in a loop is waste.
                 let ns = if !az.sb_namespace.is_empty() {
@@ -284,37 +361,100 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                     discovered_ns.peek().clone().unwrap_or_default()
                 };
 
-                // Probed in small concurrent batches: results are still
-                // written through batch by batch, so the page fills in
-                // progressively rather than all at once at the end.
-                for group in chains.chunks(POLL_CONCURRENCY) {
+                // Fetch each distinct workflow and queue once, then fan the
+                // results out to every chain referencing them. Chains overlap
+                // heavily — 38 chains here span 177 slots but only 66 distinct
+                // workflows — so probing chain-by-chain spent roughly two
+                // thirds of its calls re-reading identical run history, at a
+                // sustained rate that is itself what trips the subscription's
+                // hostruntime throttle.
+                let mut wf_names: Vec<String> = chains.iter()
+                    .flat_map(|c| c.steps.iter().map(|s| s.workflow.clone()))
+                    .collect();
+                wf_names.sort();
+                wf_names.dedup();
+                let mut queue_names: Vec<String> = chains.iter()
+                    .flat_map(|c| c.queues.iter().cloned())
+                    .collect();
+                queue_names.sort();
+                queue_names.dedup();
+
+                let mut all_runs: HashMap<String, Vec<azure::RunInfo>> = HashMap::new();
+                'runs: for group in wf_names.chunks(POLL_CONCURRENCY) {
                     let mut pending = Vec::with_capacity(group.len());
-                    for ch in group {
+                    for wf in group {
                         let sub = az.subscription.clone();
                         let rg = az.resource_group.clone();
                         let app = az.app_name.clone();
-                        let ns = ns.clone();
-                        let steps: Vec<String> = ch.steps.iter().map(|s| s.workflow.clone()).collect();
-                        let queues = ch.queues.clone();
-                        let label = ch.label.clone();
-                        pending.push((label, tokio::task::spawn_blocking(move || {
-                            chain_probe::probe_chain(&sub, &rg, &app, &ns, &steps, &queues, POLL_DEPTH)
-                        })));
+                        let wf = wf.clone();
+                        pending.push(tokio::task::spawn_blocking(move || {
+                            let r = azure::list_runs(&sub, &rg, &app, &wf, POLL_DEPTH);
+                            (wf, r)
+                        }));
                     }
-                    for (label, handle) in pending {
-                        let Ok(probe) = handle.await else { errs += 1; continue };
-                        errs += probe.errors.len();
-                        for e in probe.errors.iter().take(3) {
-                            if samples.len() < 5 && !samples.contains(e) {
-                                samples.push(e.clone());
+                    for handle in pending {
+                        let Ok((wf, result)) = handle.await else { errs += 1; continue };
+                        match result {
+                            Ok(runs) => { all_runs.insert(wf, runs); }
+                            Err(e) => {
+                                errs += 1;
+                                halt = halt.or(chain_probe::classify(&e));
+                                let line = format!("list_runs {wf}: {e}");
+                                if samples.len() < 5 && !samples.contains(&line) {
+                                    samples.push(line);
+                                }
                             }
                         }
-                        let now = epoch_secs();
-                        chain_runs.write().insert(label.clone(), probe.runs);
-                        chain_health_sig.write().insert(label.clone(), probe.health);
-                        queue_statuses.write().insert(label.clone(), probe.queues);
-                        last_checked_sig.write().insert(label, now);
                     }
+                    // App-wide failure: the rest would fail identically.
+                    if halt.is_some() { break 'runs; }
+                }
+
+                let mut all_queues: HashMap<String, QueueStatus> = HashMap::new();
+                if !ns.is_empty() && halt != Some(chain_probe::ProbeHalt::Throttled) {
+                    'queues: for group in queue_names.chunks(POLL_CONCURRENCY) {
+                        let mut pending = Vec::with_capacity(group.len());
+                        for q in group {
+                            let rg = az.resource_group.clone();
+                            let ns = ns.clone();
+                            let q = q.clone();
+                            pending.push(tokio::task::spawn_blocking(move || {
+                                let r = azure::check_queue(&ns, &rg, &q);
+                                (q, r)
+                            }));
+                        }
+                        for handle in pending {
+                            let Ok((q, result)) = handle.await else { errs += 1; continue };
+                            match result {
+                                Ok(qi) => {
+                                    all_queues.insert(q, QueueStatus {
+                                        active: qi.active,
+                                        dead_letter: qi.dead_letter,
+                                    });
+                                }
+                                Err(e) => {
+                                    errs += 1;
+                                    halt = halt.or(chain_probe::classify(&e));
+                                    let line = format!("check_queue {q}: {e}");
+                                    if samples.len() < 5 && !samples.contains(&line) {
+                                        samples.push(line);
+                                    }
+                                }
+                            }
+                        }
+                        if halt.is_some() { break 'queues; }
+                    }
+                }
+
+                // Pure assembly from here — no further calls.
+                let now = epoch_secs();
+                for ch in &chains {
+                    let steps: Vec<String> = ch.steps.iter().map(|s| s.workflow.clone()).collect();
+                    let probe = chain_probe::assemble(&steps, &ch.queues, &all_runs, &all_queues);
+                    chain_runs.write().insert(ch.label.clone(), probe.runs);
+                    chain_health_sig.write().insert(ch.label.clone(), probe.health);
+                    queue_statuses.write().insert(ch.label.clone(), probe.queues);
+                    last_checked_sig.write().insert(ch.label.clone(), now);
                 }
                 if errs > 0 {
                     crate::services::activity::error(
@@ -325,8 +465,80 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                 }
                 poll_errors.set(errs);
                 poll_error_samples.set(samples);
+                poll_halt.set(halt);
                 sweep_secs.set(sweep_started.elapsed().as_secs_f64());
                 chain_poll_at.set(epoch_secs());
+                // Both halt reasons back off — an unauthorized sweep will not
+                // start succeeding within ten seconds either, and re-running
+                // it just refills the log with the same denial.
+                let base_interval = *poll_interval_secs.peek();
+                match halt {
+                    Some(reason) => {
+                        let prev = *poll_backoff_secs.peek();
+                        // A throttle starts from a real pause; other halts can
+                        // start from the user's chosen interval and climb.
+                        let floor = if reason == chain_probe::ProbeHalt::Throttled {
+                            THROTTLE_MIN_BACKOFF_SECS
+                        } else {
+                            base_interval
+                        };
+                        let next = if prev == 0 { floor } else { (prev * 2).max(floor) };
+                        poll_backoff_secs.set(next.min(MAX_POLL_BACKOFF_SECS));
+                        if reason == chain_probe::ProbeHalt::Throttled {
+                            crate::services::activity::warn(
+                                "Azure throttled run-history reads",
+                                format!("{}/{}", az.resource_group, az.app_name),
+                                format!(
+                                    "The hostruntime endpoint is throttled for this whole \
+                                     subscription (429/51020), so it affects every tool hitting \
+                                     it, not just this poll. Backing off to {}s.\n\nThis quota \
+                                     is on burst as well as rate: if it keeps recurring, the \
+                                     poll interval is too aggressive for the number of workflows \
+                                     in this environment — raise the interval from the Home tab \
+                                     rather than waiting it out.",
+                                    base_interval + next.min(MAX_POLL_BACKOFF_SECS),
+                                ),
+                            );
+                        }
+                        if reason == chain_probe::ProbeHalt::Unavailable {
+                            crate::services::activity::warn(
+                                "Azure could not serve run history",
+                                format!("{}/{}", az.resource_group, az.app_name),
+                                "Microsoft.Web returned a gateway/availability error (502-504). \
+                                 This is an Azure-side fault, not a problem with this app or \
+                                 your access — polling has slowed down and will recover on its \
+                                 own once the service does."
+                                    .to_string(),
+                            );
+                        }
+                        if reason == chain_probe::ProbeHalt::Unauthorized {
+                            crate::services::activity::error(
+                                "Authorization refused reading workflow runs",
+                                format!("{}/{}", az.resource_group, az.app_name),
+                                "Azure refused 'hostruntime/.../workflows/runs/read' on this \
+                                 Logic App. This is usually a stale token rather than a missing \
+                                 role — the CLI token cache is shared, and a refresh racing \
+                                 several concurrent `az` calls can yield a denial even when the \
+                                 role is present. Try `az login` first. If it persists, confirm \
+                                 the role with:\n  az role assignment list --assignee <you> \
+                                 --scope <logic app id> --include-inherited\nReader is not \
+                                 sufficient for hostruntime calls; Contributor is."
+                                    .to_string(),
+                            );
+                        }
+                    }
+                    // Decay rather than reset. Dropping straight back to the
+                    // floor after a single clean sweep just walks into the
+                    // same throttle again, giving a sawtooth that spends half
+                    // its life throttled. Halving converges on the fastest
+                    // rate the endpoint actually tolerates and stays there.
+                    None => {
+                        let prev = *poll_backoff_secs.peek();
+                        if prev > 0 {
+                            poll_backoff_secs.set(if prev <= base_interval { 0 } else { prev / 2 });
+                        }
+                    }
+                }
                 chain_polling.set(false);
             });
         }
@@ -336,17 +548,21 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
     // `use_effect`: an effect reruns whenever a signal it touched changes,
     // which would spawn a second loop each time and stack duplicate polls.
     //
-    // It wakes on a short tick and polls only when a sweep is actually due.
-    // That way discovery finishing mid-interval is picked up within seconds
-    // instead of leaving the dashboard blank for the full POLL_SECS.
+    // It wakes on a short tick and polls only when a sweep is actually due
+    // *and* the user hasn't paused it. That way discovery finishing
+    // mid-interval, or the user resuming, is picked up within seconds
+    // instead of waiting out a full interval.
     use_hook({
         let mut poll_chains = poll_chains.clone();
         move || {
             spawn(async move {
                 loop {
-                    let last = *chain_poll_at.peek();
-                    let due = last == 0 || epoch_secs().saturating_sub(last) >= POLL_SECS;
-                    if due { poll_chains(); }
+                    if *poll_enabled.peek() {
+                        let last = *chain_poll_at.peek();
+                        let interval = *poll_interval_secs.peek() + *poll_backoff_secs.peek();
+                        let due = last == 0 || epoch_secs().saturating_sub(last) >= interval;
+                        if due { poll_chains(); }
+                    }
                     tokio::time::sleep(std::time::Duration::from_secs(POLL_TICK_SECS)).await;
                 }
             });
@@ -370,7 +586,7 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
     let _ = *clock_tick.read();
 
     // ── Cached rollups (no Azure calls) ─────────────────────────────────
-    let workspace_dir = workspace_dir(&az.resource_group, &az.app_name);
+    let workspace_dir = workspace_dir(&az.subscription, &az.resource_group, &az.app_name);
 
     // Prefer live in-session chain health; fall back to the on-disk snapshot
     // so the wall display shows last-known numbers immediately on startup
@@ -439,33 +655,53 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
     // Live activity: every run Azure still reports as Running. Ordered
     // oldest-first so a run that has been going far longer than the rest —
     // the likely stuck one — sits at the top rather than scrolling away.
+    // Collapsed by run id: `all_runs` is keyed chain → workflow → runs, so a
+    // workflow belonging to several chains yields the same Azure run once per
+    // chain. Listed raw, one run reads as several concurrent runs with
+    // identical start times — and the "Workflows running" count inflates to
+    // match. The run id is the identity that actually distinguishes them.
     let live_runs: Vec<LiveRun> = {
-        let mut v: Vec<LiveRun> = all_runs.iter()
-            .flat_map(|(chain, workflows)| {
-                workflows.iter().flat_map(move |(workflow, runs)| {
-                    runs.iter()
-                        .filter(|r| r.status == "Running")
-                        .filter_map(move |r| {
-                            DateTime::parse_from_rfc3339(&r.start).ok().map(|dt| LiveRun {
-                                chain: chain.clone(),
-                                workflow: workflow.clone(),
-                                started: dt.with_timezone(&Utc),
-                            })
+        let mut by_run: HashMap<(String, String), LiveRun> = HashMap::new();
+        for (chain, workflows) in &all_runs {
+            for (workflow, runs) in workflows {
+                for r in runs.iter().filter(|r| r.status == "Running") {
+                    let Ok(dt) = DateTime::parse_from_rfc3339(&r.start) else { continue };
+                    by_run
+                        .entry((workflow.clone(), r.id.clone()))
+                        .or_insert_with(|| LiveRun {
+                            chains: Vec::new(),
+                            workflow: workflow.clone(),
+                            started: dt.with_timezone(&Utc),
                         })
-                })
-            })
-            .collect();
-        v.sort_by(|a, b| a.started.cmp(&b.started));
+                        .chains
+                        .push(chain.clone());
+                }
+            }
+        }
+        let mut v: Vec<LiveRun> = by_run.into_values().collect();
+        for r in &mut v {
+            r.chains.sort();
+            r.chains.dedup();
+        }
+        // Oldest first — the run that has been going far longer than the rest
+        // is the likely stuck one, so it sits at the top rather than scrolling
+        // away. Ties broken by name so the order doesn't jitter between polls.
+        v.sort_by(|a, b| a.started.cmp(&b.started).then_with(|| a.workflow.cmp(&b.workflow)));
         v
     };
     let live_chains: Vec<LiveChain> = {
         let mut by_chain: HashMap<String, (usize, std::collections::HashSet<String>, DateTime<Utc>)> = HashMap::new();
+        // A shared workflow's run counts toward every chain it belongs to —
+        // this is the per-chain view, where the run really is in flight for
+        // each of them. Only the flat run list above is deduplicated.
         for r in &live_runs {
-            let entry = by_chain.entry(r.chain.clone())
-                .or_insert_with(|| (0, std::collections::HashSet::new(), r.started));
-            entry.0 += 1;
-            entry.1.insert(r.workflow.clone());
-            if r.started < entry.2 { entry.2 = r.started; }
+            for chain in &r.chains {
+                let entry = by_chain.entry(chain.clone())
+                    .or_insert_with(|| (0, std::collections::HashSet::new(), r.started));
+                entry.0 += 1;
+                entry.1.insert(r.workflow.clone());
+                if r.started < entry.2 { entry.2 = r.started; }
+            }
         }
         let mut v: Vec<LiveChain> = by_chain.into_iter()
             .map(|(chain, (runs, workflows, oldest))| LiveChain {
@@ -519,7 +755,7 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
         .unwrap_or(0);
 
     // Function errors from the Functions tab's cached metrics.
-    let fn_snap = functions_cache::load_for(&az.resource_group, &az.app_name);
+    let fn_snap = functions_cache::load_for(&az.subscription, &az.resource_group, &az.app_name);
     let fn_errors: i64 = fn_snap.metrics.iter()
         .flat_map(|(_, m)| m.iter())
         .map(|m| m.errors)
@@ -529,7 +765,7 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
     // Resource health falls back to its own cache if the live call hasn't
     // returned yet, so the tile isn't blank on first paint.
     let res_summary = *res_unhealthy.read();
-    let res_cached = resource_health_cache::load_for(&az.resource_group, &az.app_name);
+    let res_cached = resource_health_cache::load_for(&az.subscription, &az.resource_group, &az.app_name);
     let (res_bad, res_total, res_at) = match res_summary {
         Some((bad, total)) => (Some(bad), total, *res_fetched_at.read()),
         None if !res_cached.rows.is_empty() => {
@@ -548,6 +784,14 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
     let rbac_val = *rbac_gaps.read();
     let cost_val = cost.read().clone();
 
+    // User-set display names (Chains tab rename) are an overlay keyed by the
+    // chain's stable `label` — every card below is keyed/computed off that
+    // raw label, so a rename is applied only here, at render time.
+    let chain_names_map = props.chain_names.read().clone();
+    let disp_chain = |label: &str| -> String {
+        chain_names_map.get(label).cloned().unwrap_or_else(|| label.to_string())
+    };
+
     rsx! {
         // `home-panel` scopes the fluid type/spacing tokens — see main.css.
         div { class: "func-panel home-panel",
@@ -560,14 +804,19 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                     if *chain_polling.read() {
                         span { class: "home-live-dot" }
                         "polling chains… · "
+                    } else if !*poll_enabled.read() {
+                        "chain polling paused · "
                     } else {
                         {
                             let last = *sweep_secs.read();
+                            let backoff = *poll_backoff_secs.read();
+                            let base = *poll_interval_secs.read();
                             // Show the sweep cost next to the interval: when
-                            // it approaches POLL_SECS the effective refresh
+                            // it approaches the interval the effective refresh
                             // rate is the sweep, not the configured interval.
-                            let suffix = if last > 0.0 { format!(" (sweep {last:.0}s)") } else { String::new() };
-                            rsx! { "auto every {POLL_SECS}s{suffix} · " }
+                            let sweep_suffix = if last > 0.0 { format!(" (sweep {last:.0}s)") } else { String::new() };
+                            let interval = base + backoff;
+                            rsx! { "auto every {interval}s{sweep_suffix} · " }
                         }
                     }
                     "chains {format_dt(chains_checked_at)} · checks {format_dt(*res_fetched_at.read())} · functions {format_dt(fn_metrics_at)}"
@@ -578,6 +827,45 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                             " · {poll_errors} read error(s)"
                         }
                     }
+                    if *poll_backoff_secs.read() > 0 {
+                        span {
+                            class: "func-errors has-errors",
+                            title: "Azure is throttling or resetting connections, so polling has backed off to reduce load.",
+                            " · backing off ({poll_backoff_secs}s)"
+                        }
+                    }
+                }
+                // Interval picker — the requested rate, before any throttle
+                // backoff is layered on top of it.
+                {
+                    let calls = calls_per_sweep(&props.chains.read());
+                    let rec = recommended_interval(calls);
+                    let hint = format!(
+                        "Chain-poll interval. A sweep costs {calls} Azure call(s); \
+                         {rec}s keeps that under {TARGET_CALLS_PER_SEC}/second. \
+                         Faster settings risk throttling the whole subscription."
+                    );
+                    rsx! {
+                        div { class: "home-window-picker", title: "{hint}",
+                            for (secs, label) in POLL_INTERVAL_CHOICES {
+                                button {
+                                    key: "{secs}",
+                                    class: if *poll_interval_secs.read() == secs { "btn btn-small btn-primary" } else { "btn btn-small" },
+                                    onclick: move |_| {
+                                        interval_user_set.set(true);
+                                        poll_interval_secs.set(secs);
+                                    },
+                                    "{label}"
+                                }
+                            }
+                        }
+                    }
+                }
+                button {
+                    class: "icon-refresh-btn",
+                    title: if *poll_enabled.read() { "Pause background polling" } else { "Resume background polling" },
+                    onclick: move |_| { let next = !*poll_enabled.read(); poll_enabled.set(next); },
+                    if *poll_enabled.read() { "⏸" } else { "▶" }
                 }
                 button {
                     class: "icon-refresh-btn",
@@ -587,14 +875,38 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                     span { class: if is_loading || *chain_polling.read() { "icon-spin" } else { "" }, "⟳" }
                 }
             }
-            // Spelled out rather than left as a count: on a new tenant an
-            // empty card is almost always a permission or naming mismatch,
-            // and only the message text says which.
-            if !poll_error_samples.read().is_empty() {
-                div { class: "az-error home-poll-errors",
-                    for e in poll_error_samples.read().iter() {
-                        div { class: "home-poll-error-line", "{e}" }
+            // Says *why* rather than just how many: on a new tenant an empty
+            // card is almost always throttling, permissions, or a naming
+            // mismatch, and a bare count can't distinguish those. Kept to one
+            // line — the full ARM payload goes to the Activity log, which is
+            // built for reading it.
+            {
+                let halt = *poll_halt.read();
+                let samples = poll_error_samples.read().clone();
+                if let Some(reason) = halt {
+                    rsx! {
+                        div { class: "az-error home-poll-errors",
+                            div { class: "home-poll-error-line", "{halt_headline(reason)}" }
+                            div { class: "home-poll-error-line home-poll-error-hint",
+                                "Full detail is in the Activity log."
+                            }
+                        }
                     }
+                } else if !samples.is_empty() {
+                    rsx! {
+                        div { class: "az-error home-poll-errors",
+                            for e in samples.iter().take(3) {
+                                div { class: "home-poll-error-line", "{summarize_error(e)}" }
+                            }
+                            if samples.len() > 3 {
+                                div { class: "home-poll-error-line home-poll-error-hint",
+                                    "…and {samples.len() - 3} more — see the Activity log."
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    rsx! {}
                 }
             }
             if let Some(e) = error_msg.read().clone() {
@@ -646,10 +958,11 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                             "Nothing unrecovered in this window — {fetched_runs} run(s) checked across {chains_polled} chain(s)."
                         }
                     } else {
+                        div { class: card_body_class(&expanded_cards.read(), "failing"),
                         table { class: "func-table home-table",
-                            thead { tr { th { "Workflow" } th { "Chain" } th { "Failed at" } th { "×" } } }
+                            thead { tr { th { "Workflow" } th { "Failed at" } th { "×" } } }
                             tbody {
-                                for f in failing.iter().take(12) {
+                                for f in failing.iter() {
                                     {
                                         let is_open = open_log.read().as_ref()
                                             .map(|(w, r)| w == &f.workflow && r == &f.run_id)
@@ -664,9 +977,11 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                                                 onclick: move |_| toggle_log(wf.clone(), rid.clone()),
                                                 td { class: "func-name",
                                                     span { class: "home-caret", if is_open { "▾" } else { "▸" } }
-                                                    "{f.workflow}"
+                                                    div { class: "home-wf-cell",
+                                                        span { class: "home-wf-name", "{f.workflow}" }
+                                                        span { class: "home-wf-chain", "{disp_chain(&f.chain)}" }
+                                                    }
                                                 }
-                                                td { style: "color:var(--text3);", "{f.chain}" }
                                                 td {
                                                     span { class: "func-errors has-errors", "{format_dt_utc(f.failed_at)}" }
                                                     span { class: "home-rel", " {format_ago_utc(f.failed_at)}" }
@@ -678,6 +993,8 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                                 }
                             }
                         }
+                        }
+                        ShowMore { cards: expanded_cards, id: "failing", total: failing.len() }
                     }
                 }
 
@@ -695,22 +1012,25 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                     } else if live_chains.is_empty() {
                         div { class: "func-empty-small", "No chains running right now." }
                     } else {
-                        table { class: "func-table home-table",
-                            thead { tr { th { "Chain" } th { "Runs" } th { "Workflows" } th { "Oldest" } } }
-                            tbody {
-                                for c in live_chains.iter().take(12) {
-                                    tr { class: "func-row",
-                                        td { class: "func-name",
-                                            span { class: "home-live-dot" }
-                                            "{c.chain}"
+                        div { class: card_body_class(&expanded_cards.read(), "live_chains"),
+                            table { class: "func-table home-table",
+                                thead { tr { th { "Chain" } th { "Runs" } th { "Workflows" } th { "Oldest" } } }
+                                tbody {
+                                    for c in live_chains.iter() {
+                                        tr { class: "func-row",
+                                            td { class: "func-name",
+                                                span { class: "home-live-dot" }
+                                                "{disp_chain(&c.chain)}"
+                                            }
+                                            td { "{c.runs}" }
+                                            td { "{c.workflows}" }
+                                            td { title: "Started {format_dt_utc(c.oldest)}", "{format_elapsed(c.oldest)}" }
                                         }
-                                        td { "{c.runs}" }
-                                        td { "{c.workflows}" }
-                                        td { title: "Started {format_dt_utc(c.oldest)}", "{format_elapsed(c.oldest)}" }
                                     }
                                 }
                             }
                         }
+                        ShowMore { cards: expanded_cards, id: "live_chains", total: live_chains.len() }
                     }
                 }
 
@@ -724,22 +1044,43 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                     } else if live_runs.is_empty() {
                         div { class: "func-empty-small", "No workflows running right now." }
                     } else {
+                        div { class: card_body_class(&expanded_cards.read(), "live_runs"),
                         table { class: "func-table home-table",
-                            thead { tr { th { "Workflow" } th { "Chain" } th { "Started" } th { "Elapsed" } } }
+                            thead { tr { th { "Workflow" } th { "Started" } th { "Elapsed" } } }
                             tbody {
-                                for r in live_runs.iter().take(12) {
+                                for r in live_runs.iter() {
                                     tr { class: "func-row",
                                         td { class: "func-name",
                                             span { class: "home-live-dot" }
-                                            "{r.workflow}"
+                                            div { class: "home-wf-cell",
+                                                span { class: "home-wf-name", "{r.workflow}" }
+                                                {
+                                                    // One row per run now, so name every chain the
+                                                    // run belongs to instead of implying it is only
+                                                    // in the first one.
+                                                    let first = r.chains.first().map(|c| disp_chain(c)).unwrap_or_default();
+                                                    let label = match r.chains.len() {
+                                                        0 | 1 => first,
+                                                        n => format!("{first} +{}", n - 1),
+                                                    };
+                                                    let full = r.chains.iter()
+                                                        .map(|c| disp_chain(c))
+                                                        .collect::<Vec<_>>()
+                                                        .join(", ");
+                                                    rsx! {
+                                                        span { class: "home-wf-chain", title: "{full}", "{label}" }
+                                                    }
+                                                }
+                                            }
                                         }
-                                        td { style: "color:var(--text3);", "{r.chain}" }
                                         td { "{format_dt_utc(r.started)}" }
                                         td { "{format_elapsed(r.started)}" }
                                     }
                                 }
                             }
                         }
+                        }
+                        ShowMore { cards: expanded_cards, id: "live_runs", total: live_runs.len() }
                     }
                 }
 
@@ -749,18 +1090,25 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                             h3 { "Dead-letter backlog" }
                             span { class: "func-app-count", "as of {format_dt(chains_checked_at)}" }
                         }
-                        table { class: "func-table home-table",
-                            thead { tr { th { "Queue" } th { "Chain" } th { "Messages" } } }
-                            tbody {
-                                for (queue, chain, count) in dlq.iter().take(12) {
-                                    tr { class: "func-row",
-                                        td { class: "func-name", title: "{queue}", "{queue}" }
-                                        td { style: "color:var(--text3);", "{chain}" }
-                                        td { span { class: "func-errors has-errors", "{count}" } }
+                        div { class: card_body_class(&expanded_cards.read(), "dlq"),
+                            table { class: "func-table home-table",
+                                thead { tr { th { "Queue" } th { "Messages" } } }
+                                tbody {
+                                    for (queue, chain, count) in dlq.iter() {
+                                        tr { class: "func-row",
+                                            td { class: "func-name", title: "{queue}",
+                                                div { class: "home-wf-cell",
+                                                    span { class: "home-wf-name", "{queue}" }
+                                                    span { class: "home-wf-chain", "{disp_chain(chain)}" }
+                                                }
+                                            }
+                                            td { span { class: "func-errors has-errors", "{count}" } }
+                                        }
                                     }
                                 }
                             }
                         }
+                        ShowMore { cards: expanded_cards, id: "dlq", total: dlq.len() }
                     }
                 }
 
@@ -770,18 +1118,21 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                             h3 { "Success-rate regressions" }
                             span { class: "func-app-count", title: "Chains whose latest success rate is more than {REGRESSION_DROP_PCT:.0} points below their own recent average.", "as of {format_dt(history_at)}" }
                         }
-                        table { class: "func-table home-table",
-                            thead { tr { th { "Chain" } th { "Now" } th { "Avg" } } }
-                            tbody {
-                                for (name, latest, avg) in regressions.iter().take(10) {
-                                    tr { class: "func-row",
-                                        td { class: "func-name", "{name}" }
-                                        td { span { class: "func-errors has-errors", "{latest:.0}%" } }
-                                        td { "{avg:.0}%" }
+                        div { class: card_body_class(&expanded_cards.read(), "regressions"),
+                            table { class: "func-table home-table",
+                                thead { tr { th { "Chain" } th { "Now" } th { "Avg" } } }
+                                tbody {
+                                    for (name, latest, avg) in regressions.iter() {
+                                        tr { class: "func-row",
+                                            td { class: "func-name", "{disp_chain(name)}" }
+                                            td { span { class: "func-errors has-errors", "{latest:.0}%" } }
+                                            td { "{avg:.0}%" }
+                                        }
                                     }
                                 }
                             }
                         }
+                        ShowMore { cards: expanded_cards, id: "regressions", total: regressions.len() }
                     }
                 }
             }
@@ -949,11 +1300,119 @@ fn StatTile(props: StatTileProps) -> Element {
     }
 }
 
-fn workspace_dir(rg: &str, app: &str) -> String {
+/// `az` calls one sweep costs: each distinct workflow and each distinct queue
+/// is read once, regardless of how many chains reference them.
+fn calls_per_sweep(chains: &[chain::ChainDetail]) -> usize {
+    let mut wf: Vec<&str> = chains.iter()
+        .flat_map(|c| c.steps.iter().map(|s| s.workflow.as_str()))
+        .collect();
+    wf.sort_unstable();
+    wf.dedup();
+    let mut q: Vec<&str> = chains.iter()
+        .flat_map(|c| c.queues.iter().map(|s| s.as_str()))
+        .collect();
+    q.sort_unstable();
+    q.dedup();
+    wf.len() + q.len()
+}
+
+/// Sustained request rate a sweep is allowed to average, in calls/second.
+///
+/// The hostruntime endpoint throttles per *subscription* (429 / 51020) on
+/// burst as well as rate, and that budget is shared with every other tool and
+/// person using the subscription — so this app should be a modest tenant of
+/// it, not the whole thing. Two per second leaves headroom.
+const TARGET_CALLS_PER_SEC: usize = 2;
+
+/// Smallest offered interval that keeps a sweep of this size under
+/// [`TARGET_CALLS_PER_SEC`].
+///
+/// A fixed default cannot be right for both a 3-workflow app and a
+/// 38-chain one: ten seconds is fine for the first and roughly 12 calls/second
+/// for the second. Sizing the default to the environment is what stops the
+/// poll from provoking the throttle it then has to back off from.
+fn recommended_interval(calls: usize) -> u64 {
+    let needed = calls.div_ceil(TARGET_CALLS_PER_SEC) as u64;
+    POLL_INTERVAL_CHOICES
+        .iter()
+        .map(|(secs, _)| *secs)
+        .find(|secs| *secs >= needed)
+        .unwrap_or_else(|| POLL_INTERVAL_CHOICES.last().map(|(s, _)| *s).unwrap_or(POLL_SECS))
+}
+
+/// Offered poll intervals, ascending — also the ladder `recommended_interval`
+/// snaps to, so the auto-picked value is always one the user can see selected.
+const POLL_INTERVAL_CHOICES: [(u64, &str); 4] = [(10, "10s"), (30, "30s"), (60, "1m"), (300, "5m")];
+
+/// Class for a grid card's scrollable body. Height is fixed either way — the
+/// expanded state only swaps clipping for a scrollbar, so opening a card never
+/// reflows the cards beside it or shifts the page below.
+fn card_body_class(expanded: &std::collections::HashSet<&'static str>, id: &str) -> &'static str {
+    if expanded.contains(id) { "home-card-body expanded" } else { "home-card-body" }
+}
+
+/// "Show more / Show less" toggle, rendered only when a card actually has more
+/// rows than it can display. Reports the hidden count so the button says how
+/// much is out of sight rather than just that something is.
+#[component]
+fn ShowMore(
+    cards: Signal<std::collections::HashSet<&'static str>>,
+    id: &'static str,
+    total: usize,
+) -> Element {
+    if total <= HOME_CARD_ROWS {
+        return rsx! {};
+    }
+    let mut cards = cards;
+    let open = cards.read().contains(id);
+    rsx! {
+        button {
+            class: "btn btn-small home-show-more",
+            onclick: move |_| {
+                let mut set = cards.write();
+                if !set.remove(id) { set.insert(id); }
+            },
+            if open {
+                "Show less"
+            } else {
+                "Show all {total}"
+            }
+        }
+    }
+}
+
+/// Headline for a sweep that stopped early — what happened and what, if
+/// anything, the reader should do. The underlying ARM payload is a page of
+/// JSON; it belongs in the Activity log, not across the top of a dashboard.
+fn halt_headline(reason: chain_probe::ProbeHalt) -> &'static str {
+    match reason {
+        chain_probe::ProbeHalt::Throttled =>
+            "Azure is throttling this subscription — polling has slowed down and will speed back up on its own.",
+        chain_probe::ProbeHalt::Unavailable =>
+            "Azure could not serve run history (gateway error). An Azure-side fault, not a problem with this app or your access.",
+        chain_probe::ProbeHalt::Unauthorized =>
+            "Azure refused authorization reading run history. Usually a stale CLI token — try `az login`.",
+    }
+}
+
+/// One-line, human-sized rendering of an `az` error, for failures that have no
+/// classification. Keeps the first line and clips it: the raw text is often a
+/// full Python traceback, and printing it whole hides the dashboard behind it.
+fn summarize_error(raw: &str) -> String {
+    const MAX: usize = 160;
+    let first = raw.lines().next().unwrap_or(raw).trim();
+    if first.chars().count() <= MAX {
+        first.to_string()
+    } else {
+        format!("{}…", first.chars().take(MAX).collect::<String>())
+    }
+}
+
+fn workspace_dir(sub: &str, rg: &str, app: &str) -> String {
     dirs::config_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("ais-monitor")
-        .join(format!("{}_{}", rg, app))
+        .join(format!("{}_{}_{}", sub, rg, app))
         .to_string_lossy()
         .to_string()
 }
@@ -1028,4 +1487,53 @@ fn epoch_secs() -> u64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn interval_scales_to_environment_size() {
+        // Real sizes from this user's tenants (distinct workflows + queues).
+        // Both were previously polled at 10s — ~12 calls/second sustained.
+        assert_eq!(recommended_interval(118), 60, "ipaas-dev-chn-002");
+        assert_eq!(recommended_interval(106), 60, "tom-dev-chn-001");
+        // A tiny app should still poll briskly.
+        assert_eq!(recommended_interval(3), 10);
+    }
+
+    #[test]
+    fn interval_never_exceeds_the_offered_ladder() {
+        // Enormous environments clamp to the slowest offered choice rather
+        // than inventing a value the picker cannot display as selected.
+        let slowest = POLL_INTERVAL_CHOICES.last().unwrap().0;
+        assert_eq!(recommended_interval(100_000), slowest);
+        assert!(POLL_INTERVAL_CHOICES.iter().any(|(s, _)| *s == recommended_interval(118)));
+    }
+
+    #[test]
+    fn summarize_keeps_short_errors_intact() {
+        assert_eq!(summarize_error("list_runs X: boom"), "list_runs X: boom");
+    }
+
+    #[test]
+    fn summarize_clips_arm_json_to_one_line() {
+        // The real payload: a single enormous line of ARM JSON.
+        let raw = format!("Too Many Requests({{\"Code\":\"429\",\"Message\":\"{}\"}})", "x".repeat(4000));
+        let out = summarize_error(&raw);
+        assert!(out.chars().count() <= 161, "got {} chars", out.chars().count());
+        assert!(out.ends_with('\u{2026}'));
+    }
+
+    #[test]
+    fn summarize_drops_traceback_tail() {
+        // az reports connection failures as a multi-line Python traceback;
+        // only the first line is meaningful at a glance.
+        let raw = "ERROR: ('Connection aborted.', ConnectionResetError(54))\nTraceback (most recent call last):\n  File \"x.py\", line 1";
+        assert_eq!(
+            summarize_error(raw),
+            "ERROR: ('Connection aborted.', ConnectionResetError(54))"
+        );
+    }
 }

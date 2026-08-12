@@ -7,6 +7,10 @@ use crate::components::chain_detail::AzConfig;
 /// from the proposal; picked the middle of that range.
 const REFRESH_SECS: u64 = 45;
 
+/// Cap on the extra backoff stacked onto REFRESH_SECS when Azure is
+/// throttling or resetting connections.
+const MAX_BACKOFF_SECS: u64 = 300;
+
 #[derive(Props, Clone, PartialEq)]
 pub struct ResourceHealthPanelProps {
     pub az_config: AzConfig,
@@ -20,6 +24,9 @@ pub fn ResourceHealthPanel(props: ResourceHealthPanelProps) -> Element {
     let mut loading: Signal<bool> = use_signal(|| true);
     let mut error_msg: Signal<Option<String>> = use_signal(|| None);
     let mut last_fetched: Signal<u64> = use_signal(|| 0);
+    // Extra delay stacked on top of REFRESH_SECS while throttled; doubles
+    // each throttled refresh, capped, resets to zero on a clean fetch.
+    let mut backoff_secs: Signal<u64> = use_signal(|| 0);
 
     let mut refresh = {
         let az = az.clone();
@@ -39,9 +46,17 @@ pub fn ResourceHealthPanel(props: ResourceHealthPanelProps) -> Element {
                         let now = epoch_secs();
                         last_fetched.set(now);
                         let snap = resource_health_cache::ResourceHealthSnapshot { rows: new_rows, last_fetched: now };
-                        tokio::task::spawn_blocking(move || resource_health_cache::save_for(&rg, &app, &snap)).await.ok();
+                        tokio::task::spawn_blocking(move || resource_health_cache::save_for(&sub, &rg, &app, &snap)).await.ok();
+                        backoff_secs.set(0);
                     }
-                    Ok(Err(e)) => error_msg.set(Some(e)),
+                    Ok(Err(e)) => {
+                        if azure::is_throttling_error(&e) {
+                            let prev = *backoff_secs.peek();
+                            let next = if prev == 0 { REFRESH_SECS } else { prev * 2 };
+                            backoff_secs.set(next.min(MAX_BACKOFF_SECS));
+                        }
+                        error_msg.set(Some(e));
+                    }
                     Err(e) => error_msg.set(Some(format!("{e}"))),
                 }
                 loading.set(false);
@@ -57,7 +72,7 @@ pub fn ResourceHealthPanel(props: ResourceHealthPanelProps) -> Element {
         let az = az.clone();
         let mut refresh = refresh.clone();
         move || {
-            let snap = resource_health_cache::load_for(&az.resource_group, &az.app_name);
+            let snap = resource_health_cache::load_for(&az.subscription, &az.resource_group, &az.app_name);
             if !snap.rows.is_empty() {
                 rows.set(snap.rows);
                 last_fetched.set(snap.last_fetched);
@@ -76,7 +91,8 @@ pub fn ResourceHealthPanel(props: ResourceHealthPanelProps) -> Element {
         move || {
             spawn(async move {
                 loop {
-                    tokio::time::sleep(std::time::Duration::from_secs(REFRESH_SECS)).await;
+                    let interval = REFRESH_SECS + *backoff_secs.peek();
+                    tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
                     refresh();
                 }
             });
@@ -94,7 +110,17 @@ pub fn ResourceHealthPanel(props: ResourceHealthPanelProps) -> Element {
                 h2 { "Resource Health" }
                 div { style: "display:flex; align-items:center; gap:10px;",
                     if fetched_at > 0 {
-                        span { style: "font-size:11px; color:var(--text2);", "{format_age(fetched_at)} · auto-refreshes every {REFRESH_SECS}s" }
+                        {
+                            let interval = REFRESH_SECS + *backoff_secs.read();
+                            rsx! { span { style: "font-size:11px; color:var(--text2);", "{format_age(fetched_at)} · auto-refreshes every {interval}s" } }
+                        }
+                    }
+                    if *backoff_secs.read() > 0 {
+                        span {
+                            style: "font-size:11px; color:var(--text2);",
+                            title: "Azure is throttling or resetting connections, so polling has backed off to reduce load.",
+                            "backing off"
+                        }
                     }
                     button {
                         class: "icon-refresh-btn",

@@ -45,7 +45,18 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     // genuinely standalone workflow.
     let mut unlinked_workflows = use_signal(|| Vec::<remote_chain::UnlinkedWorkflow>::new());
     let mut show_unlinked = use_signal(|| false);
-    let chain_names = use_signal(|| HashMap::<String, String>::new());
+    // Custom chain display names (Chains tab rename), persisted per-profile
+    // so a rename survives across app restarts — same directory chain_detail
+    // writes to on save.
+    let chain_names = {
+        let dir = dirs::config_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join("ais-monitor")
+            .join(format!("{}_{}_{}", az.subscription, az.resource_group, az.app_name))
+            .to_string_lossy()
+            .to_string();
+        use_signal(move || crate::services::names::load(&dir))
+    };
     let mut chain_health  = use_signal(|| HashMap::<String, ChainHealth>::new());
     // Per-chain, per-workflow raw run lists shared with ChainDetailView so
     // that "Check all" populates the per-workflow KPI columns (Success / Runs /
@@ -172,7 +183,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     let workspace_dir: String = dirs::config_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("ais-monitor")
-        .join(format!("{}_{}", az.resource_group, az.app_name))
+        .join(format!("{}_{}_{}", az.subscription, az.resource_group, az.app_name))
         .to_string_lossy()
         .to_string();
     // Point the activity log at this workspace, so events from anywhere in the
@@ -717,7 +728,9 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                             errors: vec!["spawn_blocking panic".into()],
                                             runs: HashMap::new(),
                                             queues: HashMap::new(),
+                                            halt: None,
                                         });
+                                        let probe_halt = probe.halt;
                                         let (health, errors, runs_map, q_statuses) =
                                             (probe.health, probe.errors, probe.runs, probe.queues);
 
@@ -761,6 +774,38 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                         lc.insert(label, epoch_now());
                                         last_checked.set(lc);
                                         check_progress.set((idx + 1, total_n));
+
+                                        // The failure is app-wide, so the remaining chains would
+                                        // only add identical errors — report what we have rather
+                                        // than walking the whole list to fail on each.
+                                        if let Some(reason) = probe_halt {
+                                            let (what, advice) = match reason {
+                                                chain_probe::ProbeHalt::Throttled => (
+                                                    "throttled",
+                                                    "Azure was throttling or resetting connections. \
+                                                     Wait a minute, then check again.",
+                                                ),
+                                                chain_probe::ProbeHalt::Unavailable => (
+                                                    "Azure unavailable",
+                                                    "Microsoft.Web returned a gateway error (502-504). \
+                                                     An Azure-side fault, not a problem with access or \
+                                                     this app — try again shortly.",
+                                                ),
+                                                chain_probe::ProbeHalt::Unauthorized => (
+                                                    "authorization refused",
+                                                    "Azure refused the hostruntime run-history read. \
+                                                     Usually a stale CLI token rather than a missing role \
+                                                     — try `az login`, then check again. If it persists, \
+                                                     verify the role assignment on this Logic App.",
+                                                ),
+                                            };
+                                            activity::warn(
+                                                "Check all stopped early",
+                                                format!("{what} after {} of {} chain(s)", idx + 1, total_n),
+                                                advice.to_string(),
+                                            );
+                                            break;
+                                        }
                                     }
                                     checking_all.set(false);
                                     if failed_chains.is_empty() {
@@ -962,7 +1007,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                     let api_save_dir = dirs::config_dir()
                         .unwrap_or_else(|| std::path::PathBuf::from("."))
                         .join("ais-monitor")
-                        .join(format!("{}_{}", az.resource_group, az.app_name))
+                        .join(format!("{}_{}_{}", az.subscription, az.resource_group, az.app_name))
                         .to_string_lossy()
                         .to_string();
                     rsx! {
@@ -977,6 +1022,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                         chain_runs: chain_runs,
                                         chain_queue_statuses: chain_queue_statuses,
                                         discovered_sb_namespace: discovered_sb_namespace,
+                                        chain_names: chain_names,
                                     }
                                 }
                             }

@@ -1,6 +1,8 @@
 //! Re-host the existing service files in-place via `#[path]`. No files moved;
 //! the desktop app keeps its `crate::services::*` paths working.
 
+#[path = "../../../src/services/activity.rs"]
+pub mod activity;
 #[path = "../../../src/services/azure.rs"]
 pub mod azure;
 #[path = "../../../src/services/chain.rs"]

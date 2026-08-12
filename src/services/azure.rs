@@ -56,6 +56,58 @@ fn az_not_found_message() -> String {
     { "Azure CLI not found. Install it from https://aka.ms/installazurecliwindows then restart the app.".to_string() }
 }
 
+/// True when an `az` failure means "the service or the local network stack is
+/// refusing load right now", as opposed to a real problem with the resource.
+///
+/// Covers explicit ARM throttling (HTTP 429 / `51020`) and the transport-level
+/// failures the CLI reports when connections are being refused or torn down
+/// mid-handshake — `Connection aborted`, `Connection reset by peer`, and
+/// `OSError(22, 'Invalid argument')`. They share a cause (too much request
+/// volume in too short a window) and the same remedy (stop, wait, retry
+/// later), so callers treat them identically.
+pub fn is_throttling_error(s: &str) -> bool {
+    let lower = s.to_ascii_lowercase();
+    lower.contains("429")
+        || lower.contains("too many requests")
+        || lower.contains("throttl")
+        || lower.contains("connection aborted")
+        || lower.contains("connection reset")
+        || lower.contains("invalid argument")
+}
+
+/// True when an `az` failure means "this identity is not allowed to read
+/// this", rather than a transient fault. RBAC is evaluated at the Logic App
+/// scope, so a denial on one workflow denies every workflow in the same app —
+/// callers stop rather than repeating an identical failure per workflow.
+/// Unlike throttling this does not resolve on its own: it needs a role
+/// assignment (or `az login` against the right tenant).
+pub fn is_authorization_error(s: &str) -> bool {
+    let lower = s.to_ascii_lowercase();
+    lower.contains("authorizationfailed")
+        || lower.contains("does not have authorization")
+        || lower.contains("forbidden")
+}
+
+/// True when Azure itself failed to serve the request — a gateway or
+/// availability fault (502/503/504, `BadGatewayConnection`) rather than
+/// anything about the caller or the resource. The Logic App runtime is
+/// reached through a shared front end, so when it is unreachable every
+/// workflow in the app fails identically until it recovers on its own.
+///
+/// Deliberately not matched by [`is_throttling_error`]: the remedy (wait and
+/// retry) is the same, but conflating them would report an Azure-side outage
+/// as the app sending too many requests.
+pub fn is_service_unavailable_error(s: &str) -> bool {
+    let lower = s.to_ascii_lowercase();
+    lower.contains("badgateway")
+        || lower.contains("bad gateway")
+        || lower.contains("service unavailable")
+        || lower.contains("serviceunavailable")
+        || lower.contains("gateway timeout")
+        || lower.contains("gatewaytimeout")
+        || lower.contains("network connectivity issue")
+}
+
 /// Build a `Command` that invokes the Azure CLI cross-platform. On both
 /// platforms this resolves `az` against known install dirs that GUI apps
 /// don't otherwise see in PATH, then hands the path straight to
@@ -2281,4 +2333,76 @@ pub fn query_function_metrics(rg: &str, app_insights: &str, function_app: &str, 
             last_run: arr.get(3)?.as_str().unwrap_or("").to_string(),
         })
     }).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn throttling_matches_explicit_429() {
+        assert!(is_throttling_error(
+            r#"Too Many Requests({"Code":"429","Message":"...Endpoint is currently throttled..."})"#
+        ));
+    }
+
+    #[test]
+    fn throttling_matches_transport_failures() {
+        // The az CLI reports connection-level refusal as a Python traceback;
+        // these are the three shapes seen in practice.
+        assert!(is_throttling_error(
+            "('Connection aborted.', ConnectionResetError(54, 'Connection reset by peer'))"
+        ));
+        assert!(is_throttling_error(
+            "('Connection aborted.', OSError(22, 'Invalid argument'))"
+        ));
+        assert!(is_throttling_error("ERROR: Too Many Requests"));
+    }
+
+    #[test]
+    fn throttling_ignores_real_resource_errors() {
+        // A missing workflow is a genuine problem to surface, not a reason
+        // to back off — backing off here would hide it behind a slow poll.
+        assert!(!is_throttling_error(
+            r#"Not Found({"error":{"code":"WorkflowNotFound","message":"..."}})"#
+        ));
+        assert!(!is_throttling_error("AuthorizationFailed"));
+        assert!(!is_throttling_error(""));
+    }
+
+    #[test]
+    fn authorization_matches_rbac_denial() {
+        assert!(is_authorization_error(
+            r#"Forbidden({"error":{"code":"AuthorizationFailed","message":"The client 'x@y.com' does not have authorization to perform action 'Microsoft.Web/sites/hostruntime/webhooks/api/workflows/runs/read'..."}})"#
+        ));
+    }
+
+    #[test]
+    fn service_unavailable_matches_gateway_faults() {
+        assert!(is_service_unavailable_error(
+            r#"Bad Gateway({"error":{"code":"BadGatewayConnection","message":"The network connectivity issue encountered for 'Microsoft.Web'; cannot fulfill the request."}})"#
+        ));
+        assert!(is_service_unavailable_error("503 Service Unavailable"));
+        assert!(is_service_unavailable_error("Gateway Timeout"));
+    }
+
+    #[test]
+    fn service_unavailable_is_distinct_from_throttling() {
+        // A gateway fault is Azure failing, not the app over-sending —
+        // reporting it as throttling would blame the wrong side.
+        let gw = r#"Bad Gateway({"code":"BadGatewayConnection"})"#;
+        assert!(!is_throttling_error(gw));
+        assert!(!is_authorization_error(gw));
+    }
+
+    #[test]
+    fn authorization_ignores_unrelated_errors() {
+        assert!(!is_authorization_error(
+            r#"Not Found({"error":{"code":"WorkflowNotFound"}})"#
+        ));
+        assert!(!is_authorization_error(
+            "('Connection aborted.', ConnectionResetError(54, 'Connection reset by peer'))"
+        ));
+        assert!(!is_authorization_error(""));
+    }
 }
