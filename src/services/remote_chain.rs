@@ -49,7 +49,8 @@ pub fn discover_chains_remote(
     let app_settings = azure::get_app_settings(sub, rg, app).unwrap_or_default();
 
     let mut workflows = Vec::new();
-    let mut fetch_errors: Vec<String> = Vec::new();
+    // (workflow name, why it produced no usable topology)
+    let mut fetch_errors: Vec<(String, String)> = Vec::new();
 
     for wf_info in &deployed {
         let name = &wf_info.name;
@@ -64,12 +65,19 @@ pub fn discover_chains_remote(
         }
 
         // Fetch full definition from ARM
+        let mut fetch_error: Option<String> = None;
         let parsed = match azure::get_workflow_definition(sub, rg, app, name) {
             Ok(def) => {
                 save_cached_definition(&cache_dir, name, &def);
                 ais_chain::parser::parse_workflow_json(name, &def)
             }
-            Err(_) => None,
+            Err(e) => {
+                // Discarding this used to make a total failure unreadable: every
+                // workflow reported "no definition" with no hint whether the
+                // cause was auth, throttling, or a 404. Keep the az message.
+                fetch_error = Some(e.trim().to_string());
+                None
+            }
         };
 
         if let Some(wf) = parsed {
@@ -95,16 +103,18 @@ pub fn discover_chains_remote(
                     calls: Vec::new(),
                 });
             } else {
-                fetch_errors.push(format!("{name}: no definition and no trigger name pattern"));
+                let reason = fetch_error
+                    .unwrap_or_else(|| "definition fetched but no trigger/queue found".to_string());
+                fetch_errors.push((name.clone(), reason));
             }
         }
     }
 
     if workflows.is_empty() {
         return Err(format!(
-            "Fetched {} workflow(s) but none could be parsed.\nErrors:\n{}",
+            "Fetched {} workflow(s) but none could be parsed.\n{}",
             deployed.len(),
-            fetch_errors.join("\n")
+            summarize_fetch_errors(&fetch_errors)
         ));
     }
 
@@ -247,6 +257,35 @@ pub fn discover_chains_remote(
     save_chains_result(sub, app, &chains);
     save_unlinked_result(sub, app, &unlinked);
     Ok(ChainDiscovery { chains, unlinked })
+}
+
+/// Collapse per-workflow failures into one line per distinct cause.
+///
+/// A whole-app failure means the same `az` error repeated ~100 times; printing
+/// it once per workflow buried the actual message (auth, throttling, 404) in a
+/// wall of names. Group by reason, keep a couple of names as examples.
+fn summarize_fetch_errors(errors: &[(String, String)]) -> String {
+    let mut groups: Vec<(String, Vec<String>)> = Vec::new();
+    for (name, reason) in errors {
+        // First line only — az dumps multi-line tracebacks for some failures.
+        let key = reason.lines().next().unwrap_or(reason).trim().to_string();
+        match groups.iter_mut().find(|(r, _)| *r == key) {
+            Some((_, names)) => names.push(name.clone()),
+            None => groups.push((key, vec![name.clone()])),
+        }
+    }
+
+    let mut out = String::from("Errors:");
+    for (reason, names) in &groups {
+        let examples = names.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+        let more = names.len().saturating_sub(3);
+        out.push_str(&format!(
+            "\n  {} workflow(s): {reason}\n    e.g. {examples}{}",
+            names.len(),
+            if more > 0 { format!(", +{more} more") } else { String::new() },
+        ));
+    }
+    out
 }
 
 /// Extract the Service Bus queue name encoded in an Azure trigger name.
@@ -437,6 +476,34 @@ mod tests {
             parse_queue_from_trigger_name("When_messages_are_available_in_"),
             None
         );
+    }
+
+    // ── summarize_fetch_errors ────────────────────────────────────────────
+
+    #[test]
+    fn identical_reasons_collapse_into_one_group() {
+        let errs: Vec<(String, String)> = ["A", "B", "C", "D"]
+            .iter()
+            .map(|n| (n.to_string(), "ERROR: AuthorizationFailed".to_string()))
+            .collect();
+        let out = summarize_fetch_errors(&errs);
+        assert!(out.contains("4 workflow(s): ERROR: AuthorizationFailed"), "{out}");
+        assert!(out.contains("e.g. A, B, C, +1 more"), "{out}");
+        // The reason must appear once, not once per workflow.
+        assert_eq!(out.matches("AuthorizationFailed").count(), 1, "{out}");
+    }
+
+    #[test]
+    fn distinct_reasons_are_listed_separately() {
+        let errs = vec![
+            ("A".to_string(), "AuthorizationFailed".to_string()),
+            ("B".to_string(), "NotFound\nstack trace line".to_string()),
+        ];
+        let out = summarize_fetch_errors(&errs);
+        assert!(out.contains("1 workflow(s): AuthorizationFailed"), "{out}");
+        assert!(out.contains("1 workflow(s): NotFound"), "{out}");
+        // Multi-line az output is trimmed to its first line.
+        assert!(!out.contains("stack trace line"), "{out}");
     }
 
     // ── resolve_appsetting ────────────────────────────────────────────────

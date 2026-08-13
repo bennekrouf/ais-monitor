@@ -543,12 +543,22 @@ pub fn list_deployed_workflows(sub: &str, rg: &str, app: &str) -> Result<Vec<Wor
         .iter()
         .filter_map(|v| {
             let name = v["name"].as_str()?.to_string();
-            let state = v["properties"]["state"].as_str().map(String::from);
+            // The hostruntime management API returns each workflow flat —
+            // `{name, kind, isDisabled, health:{state}, triggers:{...}}` — with
+            // no `properties` envelope (unlike the ARM resource endpoints).
+            // Reading `properties.*` here silently yielded None/empty for every
+            // workflow, which killed the trigger-name fallback below in
+            // `remote_chain`. Keep the `properties.*` lookups as a fallback so
+            // an envelope-shaped response still works.
+            let state = v["health"]["state"].as_str()
+                .or_else(|| v["properties"]["state"].as_str())
+                .map(String::from);
             // Extract trigger names — the keys of the "triggers" object.
             // These encode queue names in the format:
             //   "When_messages_are_available_in_{queue}_(peek-lock)"
-            let trigger_names = v["properties"]["triggers"]
+            let trigger_names = v["triggers"]
                 .as_object()
+                .or_else(|| v["properties"]["triggers"].as_object())
                 .map(|t| t.keys().cloned().collect::<Vec<_>>())
                 .unwrap_or_default();
             Some(WorkflowInfo { name, state, trigger_names })

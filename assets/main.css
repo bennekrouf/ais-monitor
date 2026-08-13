@@ -1,49 +1,59 @@
 /* ══════════════════════════════════════════════
    CSS VARIABLES — dark (default) / light
-   Matched from ais-runner
+
+   Mood: cool blue. Monitoring is a watching posture, so the surfaces
+   carry a navy cast and the greys are tinted cool rather than neutral.
+   Structure is shared with ais-tracing and ais-runner; only these
+   values differ between the three apps.
 ══════════════════════════════════════════════ */
 :root {
-    --bg0:        #0d1117;
-    --bg1:        #161b22;
-    --bg2:        #21262d;
-    --bg3:        #1c2128;
-    --border:     #30363d;
-    --border2:    #21262d;
-    --text1:      #c9d1d9;
-    --text2:      #8b949e;
-    --text3:      #6e7681;
-    --green:      #3fb950;
-    --green-bg:   #238636;
-    --red:        #f85149;
-    --red-bg:     #da3633;
-    --blue:       #58a6ff;
-    --blue-bg:    #1f6feb;
-    --blue-dark:  #1f3a5f;
-    --yellow:     #d29922;
-    --orange:     #e07b39;
-    --purple:     #bc8cff;
+    --bg0:        #0a0f1a;
+    --bg1:        #141d2f;
+    --bg2:        #1f2d42;
+    --bg3:        #1a2638;
+    --border:     #2a3d57;
+    --border2:    #1f2d42;
+    --text1:      #d4e4f7;
+    --text2:      #8fa3b8;
+    --text3:      #5f7090;
+    --green:      #48c774;
+    --green-bg:   #1f9d55;
+    --red:        #ff6b6b;
+    --red-bg:     #c93a3a;
+    --blue:       #4fa3ff;
+    --blue-bg:    #1e5fb8;
+    --blue-dark:  #1c3454;
+    --yellow:     #e0a942;
+    --orange:     #e08a4a;
+    --purple:     #a78bfa;
+    /* Secondary accent, used for Event Grid labels so they read as a
+       different axis from the primary blue. */
+    --cyan:       #45c8d4;
+    --mono:       'SF Mono', 'Menlo', 'Monaco', 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    --font-mono:  var(--mono);
 }
 
 body.light {
-    --bg0:        #fdf6e3;
-    --bg1:        #eee8d5;
-    --bg2:        #e5dfcc;
-    --bg3:        #dcd6c3;
-    --border:     #d5cebc;
-    --border2:    #e0d9c6;
-    --text1:      #586e75;
-    --text2:      #657b83;
-    --text3:      #93a1a1;
-    --green:      #859900;
-    --green-bg:   #738500;
-    --red:        #dc322f;
-    --red-bg:     #c62d2a;
-    --blue:       #268bd2;
-    --blue-bg:    #2179b8;
-    --blue-dark:  #e0eaf0;
-    --yellow:     #b58900;
-    --orange:     #cb4b16;
-    --purple:     #6c71c4;
+    --bg0:        #f7fafd;
+    --bg1:        #eaf0f7;
+    --bg2:        #dde6f0;
+    --bg3:        #d2dde9;
+    --border:     #c2d0e0;
+    --border2:    #dde6f0;
+    --text1:      #23374d;
+    --text2:      #4a6178;
+    --text3:      #647a90;
+    --green:      #1a7f4b;
+    --green-bg:   #177243;
+    --red:        #c93a3a;
+    --red-bg:     #b23131;
+    --blue:       #1e5fb8;
+    --blue-bg:    #1a54a3;
+    --blue-dark:  #dce8f7;
+    --yellow:     #a37514;
+    --orange:     #b5602a;
+    --purple:     #6d4fc4;
+    --cyan:       #0f7885;
 }
 
 /* ── Base reset ───────────────────────────────────────────────────── */
@@ -161,7 +171,7 @@ body {
     cursor: pointer;
     appearance: none;
     -webkit-appearance: none;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%238b949e' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%238fa3b8' d='M6 8L1 3h10z'/%3E%3C/svg%3E");
     background-repeat: no-repeat;
     background-position: right 10px center;
     padding-right: 28px;
@@ -179,7 +189,7 @@ body {
     font-size: 12px;
     color: var(--yellow);
     padding: 6px 10px;
-    background: rgba(210,153,34,0.08);
+    background: rgba(224,169,66,0.08);
     border-radius: 6px;
 }
 
@@ -187,7 +197,7 @@ body {
     color: var(--red);
     font-size: 12px;
     padding: 8px 12px;
-    background: rgba(248,81,73,0.08);
+    background: rgba(255,107,107,0.08);
     border-radius: 6px;
 }
 
@@ -513,8 +523,8 @@ body {
     animation: activity-pulse 1.5s infinite;
 }
 @keyframes activity-pulse {
-    0%, 100% { box-shadow: 0 2px 8px rgba(248,81,73,0.35); }
-    50%      { box-shadow: 0 2px 14px rgba(248,81,73,0.65); }
+    0%, 100% { box-shadow: 0 2px 8px rgba(255,107,107,0.35); }
+    50%      { box-shadow: 0 2px 14px rgba(255,107,107,0.65); }
 }
 .activity-fab-badge {
     position: absolute;
@@ -891,7 +901,7 @@ body {
 .home-live-dot {
     display: inline-block; border-radius: 50%; flex-shrink: 0;
     width: clamp(6px, 0.45vw, 12px); height: clamp(6px, 0.45vw, 12px);
-    background: var(--yellow, #d29922); margin-right: 6px;
+    background: var(--yellow); margin-right: 6px;
     animation: home-live-pulse 1.4s ease-in-out infinite;
 }
 @keyframes home-live-pulse {
@@ -1329,7 +1339,7 @@ body {
 .queue-badge {
     color: var(--yellow);
     border-color: var(--yellow);
-    background: rgba(210, 153, 34, 0.1);
+    background: rgba(224,169,66,0.1);
 }
 
 .chain-health-badges {
@@ -1345,9 +1355,9 @@ body {
     border-radius: 6px;
     white-space: nowrap;
 }
-.health-good { color: var(--green); background: rgba(63,185,80,0.1); }
-.health-warn { color: var(--yellow); background: rgba(210,153,34,0.1); }
-.health-bad  { color: var(--red); background: rgba(248,81,73,0.1); }
+.health-good { color: var(--green); background: rgba(72,199,116,0.1); }
+.health-warn { color: var(--yellow); background: rgba(224,169,66,0.1); }
+.health-bad  { color: var(--red); background: rgba(255,107,107,0.1); }
 
 .chain-trigger {
     font-size: 11px;
@@ -1531,7 +1541,7 @@ body {
 .btn-poll.active {
     color: var(--green);
     border-color: var(--green);
-    background: rgba(63,185,80,0.1);
+    background: rgba(72,199,116,0.1);
 }
 
 /* ── KPI banner ──────────────────────────────────────────────────── */
@@ -1639,7 +1649,7 @@ body {
 
 /* Per-row KPI colour states */
 .col-rate.kpi-good, .col-streak.kpi-good { color: var(--green); }
-.col-rate.kpi-warn, .col-streak.kpi-warn { color: var(--amber, #d29922); }
+.col-rate.kpi-warn, .col-streak.kpi-warn { color: var(--yellow); }
 .col-rate.kpi-bad,  .col-streak.kpi-bad  { color: var(--red); }
 .kpi-na { color: var(--text3); font-weight: 400; }
 
@@ -1653,8 +1663,8 @@ body {
     margin-top: 16px;
     margin-bottom: -8px;
     padding: 6px 10px;
-    border: 1px solid var(--yellow, #b8860b);
-    background: rgba(184, 134, 11, 0.08);
+    border: 1px solid var(--yellow);
+    background: rgba(224,169,66,0.08);
     border-radius: 6px;
     font-size: 12px;
     color: var(--text2);
@@ -1663,7 +1673,7 @@ body {
 }
 .queue-err-icon {
     margin-left: 6px;
-    color: var(--yellow, #b8860b);
+    color: var(--yellow);
     cursor: help;
 }
 
@@ -1875,7 +1885,7 @@ body {
 .action-row:last-child { border-bottom: none; }
 
 .action-failed {
-    background: rgba(248, 81, 73, 0.06);
+    background: rgba(255,107,107,0.06);
 }
 
 .acol { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -2096,9 +2106,9 @@ body {
     padding: 2px 10px;
     border-radius: 4px;
 }
-.trigger-status.ok   { color: var(--green); background: rgba(63,185,80,0.1); }
-.trigger-status.warn { color: var(--yellow); background: rgba(210,153,34,0.1); }
-.trigger-status.error { color: var(--red); background: rgba(248,81,73,0.1); }
+.trigger-status.ok   { color: var(--green); background: rgba(72,199,116,0.1); }
+.trigger-status.warn { color: var(--yellow); background: rgba(224,169,66,0.1); }
+.trigger-status.error { color: var(--red); background: rgba(255,107,107,0.1); }
 
 .trigger-response-body {
     font-size: 12px;
@@ -2306,7 +2316,7 @@ body {
     color: var(--red);
     font-size: 12px;
     padding: 8px 12px;
-    background: rgba(248,81,73,0.08);
+    background: rgba(255,107,107,0.08);
     border-radius: 6px;
     margin-bottom: 12px;
 }
@@ -2603,7 +2613,7 @@ body {
     position: fixed;
     top: 0; left: 0; right: 0;
     z-index: 999;
-    background: var(--blue-bg, #1f6feb);
+    background: var(--blue-bg);
     color: #fff;
     padding: 8px 16px;
     display: flex;
