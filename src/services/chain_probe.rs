@@ -25,9 +25,14 @@ pub enum ProbeHalt {
     /// Azure failed to serve the request (502/503/504). Nothing to fix on
     /// this side; it clears when the service recovers.
     Unavailable,
-    /// Azure refused authorization. Usually a stale token rather than a
-    /// missing role, but either way retrying at speed will not help.
+    /// Azure refused authorization with a token/sign-in error (expired,
+    /// revoked, or not signed in). `az login` fixes this.
     Unauthorized,
+    /// Azure refused authorization with an RBAC denial — the signed-in
+    /// identity is valid but lacks the role needed on this Logic App.
+    /// `az login`, however many times, does not fix this: it needs a role
+    /// assignment from an Owner / User Access Administrator.
+    MissingPermission,
 }
 
 pub struct ChainProbe {
@@ -184,10 +189,16 @@ pub fn classify(err: &str) -> Option<ProbeHalt> {
         Some(ProbeHalt::Throttled)
     } else if azure::is_service_unavailable_error(err) {
         Some(ProbeHalt::Unavailable)
-    } else if azure::is_authorization_error(err) {
-        Some(ProbeHalt::Unauthorized)
     } else {
-        None
+        // `classify_auth_error` distinguishes a token problem (fixed by
+        // `az login`) from an RBAC denial (not fixed by it) — using the
+        // coarser `is_authorization_error` here told users to re-sign-in
+        // for a missing role, which no amount of successful logins resolves.
+        match azure::classify_auth_error(err) {
+            Some(azure::AzAuthKind::TokenExpired) => Some(ProbeHalt::Unauthorized),
+            Some(azure::AzAuthKind::MissingPermission) => Some(ProbeHalt::MissingPermission),
+            None => None,
+        }
     }
 }
 
@@ -220,8 +231,18 @@ mod tests {
     }
 
     #[test]
-    fn rbac_denial_is_unauthorized() {
-        assert_eq!(classify(DENIED), Some(ProbeHalt::Unauthorized));
+    fn rbac_denial_is_missing_permission_not_unauthorized() {
+        // "AuthorizationFailed" is a role denial, not a stale token — must
+        // not be classified as something `az login` can fix.
+        assert_eq!(classify(DENIED), Some(ProbeHalt::MissingPermission));
+    }
+
+    #[test]
+    fn token_expiry_is_unauthorized() {
+        assert_eq!(
+            classify("ExpiredAuthenticationToken: the access token has expired"),
+            Some(ProbeHalt::Unauthorized)
+        );
     }
 
     #[test]

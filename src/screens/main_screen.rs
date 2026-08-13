@@ -792,11 +792,19 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                                      this app — try again shortly.",
                                                 ),
                                                 chain_probe::ProbeHalt::Unauthorized => (
-                                                    "authorization refused",
-                                                    "Azure refused the hostruntime run-history read. \
-                                                     Usually a stale CLI token rather than a missing role \
-                                                     — try `az login`, then check again. If it persists, \
-                                                     verify the role assignment on this Logic App.",
+                                                    "session expired",
+                                                    "Azure refused the hostruntime run-history read with \
+                                                     a token error — sign-in expired or was revoked. \
+                                                     Run `az login`, then check again.",
+                                                ),
+                                                chain_probe::ProbeHalt::MissingPermission => (
+                                                    "missing role",
+                                                    "Azure refused the hostruntime run-history read with \
+                                                     an RBAC denial — you're signed in, but that account \
+                                                     lacks the role needed on this Logic App. Signing in \
+                                                     again will not fix this; ask an Owner or User Access \
+                                                     Administrator for a role (Contributor, or Reader is \
+                                                     not enough for hostruntime calls).",
                                                 ),
                                             };
                                             activity::warn(

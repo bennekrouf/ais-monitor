@@ -513,16 +513,25 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                         }
                         if reason == chain_probe::ProbeHalt::Unauthorized {
                             crate::services::activity::error(
-                                "Authorization refused reading workflow runs",
+                                "Session expired reading workflow runs",
                                 format!("{}/{}", az.resource_group, az.app_name),
                                 "Azure refused 'hostruntime/.../workflows/runs/read' on this \
-                                 Logic App. This is usually a stale token rather than a missing \
-                                 role — the CLI token cache is shared, and a refresh racing \
-                                 several concurrent `az` calls can yield a denial even when the \
-                                 role is present. Try `az login` first. If it persists, confirm \
-                                 the role with:\n  az role assignment list --assignee <you> \
-                                 --scope <logic app id> --include-inherited\nReader is not \
-                                 sufficient for hostruntime calls; Contributor is."
+                                 Logic App with a token error — sign-in expired or was revoked. \
+                                 Use the 'Sign in again' button on Home, or run `az login`."
+                                    .to_string(),
+                            );
+                        }
+                        if reason == chain_probe::ProbeHalt::MissingPermission {
+                            crate::services::activity::error(
+                                "Missing role reading workflow runs",
+                                format!("{}/{}", az.resource_group, az.app_name),
+                                "Azure refused 'hostruntime/.../workflows/runs/read' on this \
+                                 Logic App with an RBAC denial — you're signed in, but that \
+                                 account lacks the role needed here. Signing in again will not \
+                                 fix this. Confirm with:\n  az role assignment list --assignee \
+                                 <you> --scope <logic app id> --include-inherited\nReader is not \
+                                 sufficient for hostruntime calls; Contributor is. Ask an Owner \
+                                 or User Access Administrator for a role assignment."
                                     .to_string(),
                             );
                         }
@@ -884,11 +893,46 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                 let halt = *poll_halt.read();
                 let samples = poll_error_samples.read().clone();
                 if let Some(reason) = halt {
+                    let is_unauthorized = matches!(reason, chain_probe::ProbeHalt::Unauthorized);
+                    let is_missing_permission = matches!(reason, chain_probe::ProbeHalt::MissingPermission);
                     rsx! {
                         div { class: "az-error home-poll-errors",
                             div { class: "home-poll-error-line", "{halt_headline(reason)}" }
                             div { class: "home-poll-error-line home-poll-error-hint",
                                 "Full detail is in the Activity log."
+                            }
+                            if is_unauthorized {
+                                div { style: "margin-top:8px;",
+                                    button {
+                                        class: "btn btn-small btn-primary",
+                                        onclick: {
+                                            let tenant = az.tenant.clone();
+                                            let mut load = load.clone();
+                                            let mut poll_chains = poll_chains.clone();
+                                            move |_| {
+                                                let t = if tenant.is_empty() { None } else { Some(tenant.clone()) };
+                                                let _ = azure::open_login(t.as_deref());
+                                                poll_halt.set(None);
+                                                poll_error_samples.set(Vec::new());
+                                                load();
+                                                poll_chains();
+                                            }
+                                        },
+                                        "Sign in again"
+                                    }
+                                }
+                            }
+                            if is_missing_permission {
+                                // Re-signing in cannot grant a role, so there is
+                                // nothing to click — only what to check and who
+                                // to ask.
+                                div { class: "home-poll-error-line home-poll-error-hint", style: "margin-top:4px;",
+                                    "Check with: "
+                                    code { style: "font-family:monospace; background:var(--bg2); padding:1px 5px; border-radius:3px;",
+                                        "az role assignment list --assignee <you> --scope <logic app id> --include-inherited"
+                                    }
+                                    " — Reader is not enough for hostruntime calls; Contributor is."
+                                }
                             }
                         }
                     }
@@ -1391,7 +1435,9 @@ fn halt_headline(reason: chain_probe::ProbeHalt) -> &'static str {
         chain_probe::ProbeHalt::Unavailable =>
             "Azure could not serve run history (gateway error). An Azure-side fault, not a problem with this app or your access.",
         chain_probe::ProbeHalt::Unauthorized =>
-            "Azure refused authorization reading run history. Usually a stale CLI token — try `az login`.",
+            "Azure refused authorization reading run history — your sign-in expired. Try `az login`.",
+        chain_probe::ProbeHalt::MissingPermission =>
+            "Azure refused authorization reading run history — this account lacks the role needed on this Logic App. Signing in again will not fix this.",
     }
 }
 

@@ -76,11 +76,12 @@ pub fn is_throttling_error(s: &str) -> bool {
 }
 
 /// True when an `az` failure means "this identity is not allowed to read
-/// this", rather than a transient fault. RBAC is evaluated at the Logic App
-/// scope, so a denial on one workflow denies every workflow in the same app —
-/// callers stop rather than repeating an identical failure per workflow.
-/// Unlike throttling this does not resolve on its own: it needs a role
-/// assignment (or `az login` against the right tenant).
+/// this", rather than a transient fault. Superseded by
+/// [`classify_auth_error`] wherever the caller needs to tell a stale token
+/// (fixed by `az login`) apart from a genuine RBAC denial (not fixed by
+/// it) — kept here, and covered by tests, as the coarser "is this auth at
+/// all" check for any future caller that only needs that.
+#[allow(dead_code)]
 pub fn is_authorization_error(s: &str) -> bool {
     let lower = s.to_ascii_lowercase();
     lower.contains("authorizationfailed")

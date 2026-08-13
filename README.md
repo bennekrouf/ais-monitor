@@ -1,13 +1,15 @@
 # AIS Monitor
 
-Visualise, trigger, and monitor **Azure Logic Apps Standard workflow chains** — locally and in production.
+An operational console for **Azure Logic Apps Standard workflow chains** — chain health, config drift, RBAC, logs, and live diagnostics in one place, plus a lightweight terminal companion for SSH sessions.
 
-Two ways to use it, same Azure backend, shared on-disk cache:
+Two editions, same Azure backend, shared on-disk cache:
 
 | Edition | Best for | Built with |
 |---|---|---|
-| **AIS Monitor** (Desktop / GUI) | Day-to-day work on a workstation, exploring chains visually, triggering workflows | [Dioxus](https://dioxuslabs.com/) (Rust) — runs as a native app via WebView |
-| **`ais-monitor-tui`** (Terminal / TUI) | SSH sessions, jumpboxes, Windows Server, anyone who lives in the terminal | [ratatui](https://ratatui.rs/) (Rust) — single static binary, no installer |
+| **AIS Monitor** (Desktop / GUI) | Day-to-day monitoring and troubleshooting — the full console (12 tabs: dashboard, resource health, config drift, RBAC, observability, diagnostics, and more) | [Dioxus](https://dioxuslabs.com/) (Rust) — runs as a native app via WebView |
+| **`ais-monitor-tui`** (Terminal / TUI) | SSH sessions, jumpboxes, Windows Server — chain browsing, run history, and triggering without a GUI | [ratatui](https://ratatui.rs/) (Rust) — single static binary, no installer |
+
+The TUI is deliberately the smaller of the two — a fast chain browser and trigger tool for when there's no desktop available, not a shrunk copy of every Desktop tab.
 
 Both: macOS · Windows · Linux. Both read live data from Azure via the `az` CLI.
 
@@ -31,27 +33,15 @@ Both: macOS · Windows · Linux. Both read live data from Azure via the `az` CLI
 
 ### Terminal (TUI)
 
-**Windows — pick the one that matches your terminal:**
-
-PowerShell (Windows Terminal / `pwsh` / `powershell`) — uses full command names so it works on every PowerShell version:
+**Windows** — paste into PowerShell (Windows Terminal / `pwsh` / `powershell`):
 
 ```powershell
 Invoke-WebRequest https://raw.githubusercontent.com/Bennekrouf/ais-monitor/master/scripts/install-tui.ps1 -UseBasicParsing | Invoke-Expression
 ```
 
-`cmd.exe` (the classic Command Prompt) — uses bundled `curl.exe` to download and run via `powershell`:
+Drops the binary into `%USERPROFILE%\bin`, adds it to your PATH, clears the SmartScreen mark, checks for `az`. No admin rights. On `cmd.exe`, run the same script via `powershell -ExecutionPolicy Bypass -File install-tui.ps1` after downloading it.
 
-```cmd
-curl -L -o "%TEMP%\install-tui.ps1" https://raw.githubusercontent.com/Bennekrouf/ais-monitor/master/scripts/install-tui.ps1 && powershell -ExecutionPolicy Bypass -File "%TEMP%\install-tui.ps1"
-```
-
-Either way, the installer drops the binary into `%USERPROFILE%\bin`, adds that folder to your user PATH, clears the SmartScreen mark, checks for `az`. No admin rights.
-
-**Manual fallback** (no scripts at all) — download directly and put it wherever you keep tools:
-
-- [Download `ais-monitor-tui-x86_64-pc-windows-msvc.exe`](https://github.com/Bennekrouf/ais-monitor/releases/latest/download/ais-monitor-tui-x86_64-pc-windows-msvc.exe)
-- Rename to `ais-monitor-tui.exe` and drop it somewhere on your PATH (e.g. `C:\Users\<you>\bin\`).
-- Right-click → Properties → **Unblock** (clears SmartScreen). Or in PowerShell: `Unblock-File ais-monitor-tui.exe`.
+No script at all: [download the `.exe` directly](https://github.com/Bennekrouf/ais-monitor/releases/latest/download/ais-monitor-tui-x86_64-pc-windows-msvc.exe), rename to `ais-monitor-tui.exe`, put it on your PATH, then right-click → Properties → **Unblock** (or `Unblock-File ais-monitor-tui.exe`).
 
 **macOS / Linux — paste into your shell:**
 
@@ -109,50 +99,26 @@ The TUI suspends, runs `az login --use-device-code` in your terminal (prints a U
 
 ## What it does
 
-### Chain discovery
+### Chains — the foundation, both editions
 
-AIS Monitor scans your `logic_apps/` folder (Desktop edition) or your Azure subscription (both editions) and maps how workflows connect to each other via Service Bus queues — a **chain graph** powered by [ais-chain](https://github.com/Bennekrouf/ais-chain).
+AIS Monitor scans your `logic_apps/` folder (Desktop) or your Azure subscription (both editions) and maps how workflows connect to each other via Service Bus queues — a **chain graph** powered by [ais-chain](https://github.com/Bennekrouf/ais-chain).
 
-Each chain shows:
-- The ordered list of workflows (step → step → step)
-- The Service Bus queues that link them
-- The trigger type per step (HTTP, SB, Timer, Blob…)
-- Which workflows are currently **deployed** in Azure (live status badge)
+Each chain shows the ordered workflow steps, the queues linking them, each step's trigger type, and live deployment status. Selecting a chain drills into run history, a per-run action timeline, and KPIs (success rate, avg/p95 duration, failure streak — color-coded, with a sparkline in the TUI). Chains can be renamed locally (TUI: `m`, Desktop: rename button); manual links for workflows not connected by a shared queue go in a `.ais-chain` file (see [Usage notes](#ais-chain--manual-link-hints) below).
 
-Manual links can be added via a `.ais-chain` file in `logic_apps/` for workflows not connected by a shared queue.
+### The Desktop console — 12 tabs, grouped
 
-### Chain detail
+Everything past Chains is Desktop-only. The tab bar mirrors this grouping:
 
-Select a chain to see:
-- **Step list** — each workflow with its trigger and link type
-- **Run history** — recent runs per workflow, pulled live from Azure
-- **Action timeline** — drill into any run to see every action and its status
-- **KPI dashboard** — at-a-glance health metrics (success rate, p95 duration, failure streak)
-- **Trigger panel** (Desktop only) — fire any HTTP-triggered workflow with a saved or custom JSON payload, then watch the run appear in real time
-- **Rename** — give chains friendly display names (stored locally; the TUI's `m` key, the Desktop's rename button)
+- **Monitor** — **Home** (dashboard: failing workflows, live runs, dead letters, drift, RBAC gaps, cost, all in one glance), **Resources** (health across every resource in the group), **Health Check** (app-settings and managed-identity checks)
+- **Inspect** — **App Settings** (live values vs. App Configuration, drift detection), **Functions** (function apps, metrics, errors), **EventGrid** (topics and subscriptions), **RBAC** (managed identity role assignments)
+- **Tools** — **Observability** (live log tail, month-to-date cost), **Diagnostics** (connectivity probes), **API Test** (send test requests), **Graph** (interactive chain dependency graph)
+- **Admin** — **Var Groups** (DevOps variable group cleanup)
 
-### KPI dashboard
-
-For each workflow, the last 20 runs feed:
-
-| Metric | Description |
-|--------|-------------|
-| **Success rate** | % of runs that succeeded, color-coded: green (≥95 %), yellow (≥80 %), red (<80 %) |
-| **Avg / p95 duration** | Mean and 95th-percentile end-to-end run time |
-| **Failure streak** | Consecutive recent failures — highlighted when >0 |
-
-The TUI also renders a sparkline of recent run durations next to the KPI strip.
-
-### Event Grid panel
-
-Browse Event Grid topics and subscriptions linked to your Azure resource group — useful for understanding how chains are triggered from upstream producers. Open in the Desktop via the side panel; in the TUI press `g`.
+Hover any tab icon for what it does; the app opens to **Home** by default. The Home dashboard polls in the background (10s by default, adaptive backoff if Azure throttles) so it stays current unattended — useful as a wall display. Poll rate and pause are controlled from the Home tab itself.
 
 ### Trigger panel (Desktop only)
 
-- Fetch the callback URL for any HTTP-triggered workflow directly from Azure
-- Edit the JSON payload in-browser
-- Save and reload named payloads per workflow
-- See the HTTP response and the resulting run status side by side
+Fetch the callback URL for any HTTP-triggered workflow, edit the JSON payload in-browser, save/reload named payloads per workflow, and watch the resulting run status appear in real time.
 
 ### Watch mode (TUI only)
 
@@ -162,32 +128,19 @@ Press `w` to enable 5-second auto-refresh of the focused step's runs — handy f
 
 ## Azure requirements
 
-Both editions call the Azure management API (`az` CLI under the hood) to:
-- List deployed workflows and their states
-- Fetch run history and action details
-- Retrieve HTTP trigger callback URLs (Desktop)
-- Browse Event Grid topics and subscriptions
+Both editions call the Azure management API (`az` CLI under the hood). You need `az login` completed either way.
 
-You need `az login` completed and at least **Reader** access on the Logic App resource.
+**Read-only usage** (Chains, KPIs, run/action detail, Resources, Observability, Diagnostics) needs **Reader** on the resource group.
+
+**Anything that changes Azure state** needs more — the Desktop console can trigger workflows, reset app settings, purge/requeue Service Bus messages, and assign RBAC roles, each gated behind a confirm dialog that shows the exact `az` command it's about to run. Contributor (plus User Access Administrator for the RBAC tab specifically) covers all of it.
+
+Run history in particular goes through the Logic App's `hostruntime` API, which needs more than Reader and is throttled per-subscription — the Home dashboard's background poll backs off automatically if it gets rate-limited.
 
 ---
 
-## TUI keymap (cheat sheet)
+## TUI keymap essentials
 
-| Key | Action |
-|---|---|
-| `↑ ↓` / `j k` | Move cursor |
-| `Tab` / `BackTab` | Cycle focus (chains → steps → runs → actions) |
-| `h l` / `← →` | Lateral focus, drill in/out |
-| `Enter` | Drill into selected run's action timeline |
-| `/` | Filter chains by label / step name |
-| `m` | Rename focused chain (persisted) |
-| `w` | Toggle watch mode (auto-refresh runs) |
-| `g` | Event Grid panel |
-| `r` / `R` | Refresh focused pane / hard reload (clear caches) |
-| `c` | Re-pick subscription / Logic App |
-| `?` | Help overlay |
-| `q` / `Esc` | Quit |
+Arrow keys / `j k` move, `Tab` cycles focus, `Enter` drills into a run's action timeline, `/` filters chains, `w` toggles watch mode. Press **`?`** in-app for the full keymap — it's the source of truth, not this list.
 
 ---
 
@@ -247,10 +200,10 @@ cargo build --release -p ais-monitor-tui
 
 ```
 src/                          Desktop (Dioxus) frontend
-  components/                 UI components (chain_list, chain_detail, trigger_panel, …)
+  components/                 One file per tab (home_panel, chain_detail, rbac_panel, …) plus shared UI
   screens/                    welcome, main_screen
-  services/                   chain, azure, kpi, names, payload, remote_chain
-                              ↑ shared with the TUI via crates/core
+  services/                   chain, azure, kpi, chain_probe, remote_chain, and the rest
+                              ↑ core chain/Azure logic shared with the TUI via crates/core
 
 crates/
   core/                       ais-monitor-core — service layer (re-exports src/services)
