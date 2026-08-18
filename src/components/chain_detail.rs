@@ -42,6 +42,15 @@ impl SbQueueAction {
     }
 }
 
+/// Top-level split of the chain detail. The two halves answer different
+/// questions — "is the flow running?" vs "what's sitting in the queues?" — and
+/// stacking them made the queue tools (peek, send, purge) a long scroll away.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum DetailTab {
+    Workflows,
+    Queues,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 struct PendingSbAction {
     queue: String,
@@ -183,6 +192,13 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
     let mut step_actions = use_signal(|| HashMap::<(String, String), Vec<ActionDetail>>::new());
     // Which run the user is currently viewing for each expanded workflow.
     let mut selected_run = use_signal(|| HashMap::<String, String>::new());
+    // Run-list filter inside the expanded step. Defaults to every sampled run
+    // (parity with the TUI's Runs pane); the Failed chip narrows it to the
+    // failures, which is what the old pill bar showed exclusively.
+    let mut runs_failed_only = use_signal(|| false);
+    // Which half of the detail is showing. Workflows first — the flow is what
+    // you came for; queues are one click away rather than one scroll away.
+    let mut active_tab = use_signal(|| DetailTab::Workflows);
     // Loading flag keyed by (workflow, run_id).
     let mut loading_actions = use_signal(|| Option::<(String, String)>::None);
 
@@ -1031,7 +1047,48 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                 }
             }
 
-            // Steps table
+            // ── Tab bar: Workflows | Queues ───────────────────────────────
+            // The Queues tab carries a dead-letter count and an error marker so
+            // switching away from it can't hide a problem — the whole point of
+            // the split is that you stop scrolling, not that you stop seeing.
+            {
+                let tab = *active_tab.read();
+                let wf_cls = if tab == DetailTab::Workflows { "detail-tab detail-tab-current" } else { "detail-tab" };
+                let q_cls = if tab == DetailTab::Queues { "detail-tab detail-tab-current" } else { "detail-tab" };
+                let dl_total: i64 = queue_statuses.read().values().map(|q| q.dead_letter).sum();
+                let has_q_errors = !queue_errors.read().is_empty();
+                rsx! {
+                    div { class: "detail-tabs",
+                        button {
+                            class: "{wf_cls}",
+                            onclick: move |_| active_tab.set(DetailTab::Workflows),
+                            "Workflows · {chain.steps.len()}"
+                        }
+                        if !chain.queues.is_empty() {
+                            button {
+                                class: "{q_cls}",
+                                onclick: move |_| active_tab.set(DetailTab::Queues),
+                                "Queues · {chain.queues.len()}"
+                                if dl_total > 0 {
+                                    span { class: "tab-badge tab-badge-bad",
+                                        title: "{dl_total} dead-lettered message(s) across this chain's queues",
+                                        "{dl_total} DL"
+                                    }
+                                }
+                                if has_q_errors {
+                                    span { class: "tab-badge tab-badge-warn",
+                                        title: "Some queue counts could not be read — open the Queues tab for details",
+                                        "⚠"
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Steps table — Workflows tab
+            if *active_tab.read() == DetailTab::Workflows {
             div { class: "steps-table",
                 div { class: "steps-header",
                     span { class: "col col-status", "Status" }
@@ -1205,90 +1262,103 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                                     let loading_wf = loading_actions.read().clone();
                                     let is_loading = loading_wf.as_ref() == Some(&key);
                                     let actions = step_actions.read().get(&key).cloned().unwrap_or_default();
-                                    // Latest run's id and time, for the "Latest" pill at the start of the list
-                                    let latest_run = runs_for_wf.first().cloned();
                                     let fetch_clone = fetch_actions.clone();
                                     rsx! {
                                         div { class: "actions-panel",
-                                            // ── Failed-runs picker ────────────────────────
+                                            // ── Run picker ────────────────────────────────
+                                            // Every run in the sample, newest first — the same
+                                            // drill-down the TUI offers (steps → runs → actions).
+                                            // Previously only the latest run and the failures were
+                                            // reachable, so a succeeded-but-wrong run could not be
+                                            // opened at all. No extra Azure call: these are the runs
+                                            // `Check` already fetched at the chain's run depth.
                                             {
-                                                let has_failed = !failed_runs.is_empty();
-                                                let has_latest = latest_run.is_some();
-                                                if has_failed || has_latest {
-                                                    rsx! {
-                                                        div { class: "failed-runs-bar",
-                                                            span { class: "failed-runs-label",
-                                                                if has_failed {
-                                                                    "{failed_runs.len()} failed run(s) in sample — click to inspect:"
-                                                                } else {
-                                                                    "No failed runs in sample. Viewing:"
-                                                                }
+                                                let failed_only = *runs_failed_only.read();
+                                                let visible: Vec<azure::RunInfo> = if failed_only {
+                                                    failed_runs.clone()
+                                                } else {
+                                                    runs_for_wf.clone()
+                                                };
+                                                let all_cls = if failed_only { "runs-chip" } else { "runs-chip runs-chip-current" };
+                                                let failed_cls = if failed_only { "runs-chip runs-chip-bad runs-chip-current" } else { "runs-chip runs-chip-bad" };
+                                                rsx! {
+                                                    div { class: "runs-bar",
+                                                        span { class: "runs-label", "Runs" }
+                                                        button {
+                                                            class: "{all_cls}",
+                                                            title: "Show every run in the sample",
+                                                            onclick: move |e: Event<MouseData>| {
+                                                                e.stop_propagation();
+                                                                runs_failed_only.set(false);
+                                                            },
+                                                            "All · {runs_for_wf.len()}"
+                                                        }
+                                                        button {
+                                                            class: "{failed_cls}",
+                                                            title: "Show only failed runs",
+                                                            onclick: move |e: Event<MouseData>| {
+                                                                e.stop_propagation();
+                                                                runs_failed_only.set(true);
+                                                            },
+                                                            "Failed · {failed_runs.len()}"
+                                                        }
+                                                    }
+                                                    if visible.is_empty() {
+                                                        div { class: "actions-loading",
+                                                            if failed_only { "No failed runs in sample" } else { "No runs in sample" }
+                                                        }
+                                                    } else {
+                                                        div { class: "runs-table",
+                                                            div { class: "runs-header",
+                                                                span { class: "rcol rcol-status", "Status" }
+                                                                span { class: "rcol rcol-start", "Started" }
+                                                                span { class: "rcol rcol-dur", "Duration" }
+                                                                span { class: "rcol rcol-id", "Run ID" }
                                                             }
-                                                            // Always offer the Latest run as a pill
-                                                            if let Some(lr) = latest_run.as_ref() {
+                                                            for r in visible.iter() {
                                                                 {
-                                                                    let lr_id = lr.id.clone();
-                                                                    let lr_status = lr.status.clone();
-                                                                    let lr_time = run_time_short(&lr.start);
-                                                                    let is_sel = cur_run_id == lr_id;
-                                                                    let cls = if is_sel { "failed-run-pill failed-run-pill-current" } else { "failed-run-pill" };
-                                                                    let icon = match lr_status.as_str() {
+                                                                    let rid = r.id.clone();
+                                                                    let is_sel = cur_run_id == rid;
+                                                                    let icon = match r.status.as_str() {
                                                                         "Succeeded" => "✅",
                                                                         "Failed" => "❌",
                                                                         "Running" => "⏳",
+                                                                        "Cancelled" => "⊘",
                                                                         _ => "○",
                                                                     };
+                                                                    let cls = if is_sel { "run-row run-row-current" }
+                                                                        else if r.status == "Failed" { "run-row run-row-bad" }
+                                                                        else { "run-row" };
+                                                                    let started = run_time_short(&r.start);
+                                                                    let dur = run_duration_secs(r)
+                                                                        .map(format_duration)
+                                                                        .unwrap_or_else(|| if r.status == "Running" { "running".into() } else { "—".into() });
+                                                                    let tip = format!("{} · {}\nRun {}", r.status, r.start, rid);
                                                                     let wf_p = wf.clone();
-                                                                    let lr_id_click = lr_id.clone();
+                                                                    let rid_click = rid.clone();
                                                                     let fc = fetch_clone.clone();
                                                                     rsx! {
-                                                                        button {
+                                                                        div {
                                                                             class: "{cls}",
-                                                                            title: "Latest run ({lr_status})",
+                                                                            title: "{tip}",
                                                                             onclick: move |e: Event<MouseData>| {
                                                                                 e.stop_propagation();
                                                                                 let mut sel = selected_run.read().clone();
-                                                                                sel.insert(wf_p.clone(), lr_id_click.clone());
+                                                                                sel.insert(wf_p.clone(), rid_click.clone());
                                                                                 selected_run.set(sel);
-                                                                                fc.clone()(wf_p.clone(), lr_id_click.clone());
+                                                                                fc.clone()(wf_p.clone(), rid_click.clone());
                                                                             },
-                                                                            "{icon} Latest · {lr_time}"
-                                                                        }
-                                                                    }
-                                                                }
-                                                            }
-                                                            for fr in failed_runs.iter() {
-                                                                {
-                                                                    // Skip duplicate if latest is already failed
-                                                                    let is_latest = latest_run.as_ref().map(|l| l.id == fr.id).unwrap_or(false);
-                                                                    if is_latest { rsx! {} } else {
-                                                                        let fr_id = fr.id.clone();
-                                                                        let fr_time = run_time_short(&fr.start);
-                                                                        let is_sel = cur_run_id == fr_id;
-                                                                        let cls = if is_sel { "failed-run-pill failed-run-pill-bad failed-run-pill-current" } else { "failed-run-pill failed-run-pill-bad" };
-                                                                        let wf_p = wf.clone();
-                                                                        let fr_id_click = fr_id.clone();
-                                                                        let fc = fetch_clone.clone();
-                                                                        rsx! {
-                                                                            button {
-                                                                                class: "{cls}",
-                                                                                title: "Failed run · {fr.start}",
-                                                                                onclick: move |e: Event<MouseData>| {
-                                                                                    e.stop_propagation();
-                                                                                    let mut sel = selected_run.read().clone();
-                                                                                    sel.insert(wf_p.clone(), fr_id_click.clone());
-                                                                                    selected_run.set(sel);
-                                                                                    fc.clone()(wf_p.clone(), fr_id_click.clone());
-                                                                                },
-                                                                                "❌ {fr_time}"
-                                                                            }
+                                                                            span { class: "rcol rcol-status", "{icon}" }
+                                                                            span { class: "rcol rcol-start", "{started}" }
+                                                                            span { class: "rcol rcol-dur", "{dur}" }
+                                                                            span { class: "rcol rcol-id", "{rid}" }
                                                                         }
                                                                     }
                                                                 }
                                                             }
                                                         }
                                                     }
-                                                } else { rsx! {} }
+                                                }
                                             }
 
                                             // ── Actions for the selected run ─────────────
@@ -1342,9 +1412,11 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                     }
                 }
             }
+            } // end Workflows tab
 
-            // Queue status — bordered table to match the Workflow steps table above.
-            if !chain.queues.is_empty() {
+            // Queue status — Queues tab. Same table as before, just no longer
+            // stacked under the steps.
+            if *active_tab.read() == DetailTab::Queues && !chain.queues.is_empty() {
                 // IP-restriction banner — fires when every queue check failed
                 // with a network/firewall-looking error. Most actionable cause
                 // of empty Active / Dead-Letter cells, so call it out explicitly.
@@ -1894,6 +1966,17 @@ fn run_time_short(ts: &str) -> String {
         .to_string()
 }
 
+/// Wall-clock duration of a single run, in seconds.
+///
+/// `None` when the run has no end time yet (still Running) or when either
+/// timestamp doesn't parse — the runs table renders those as "running" / "—"
+/// rather than inventing a number.
+fn run_duration_secs(run: &azure::RunInfo) -> Option<f64> {
+    let start = chrono::DateTime::parse_from_rfc3339(&run.start).ok()?;
+    let end = chrono::DateTime::parse_from_rfc3339(run.end.as_ref()?).ok()?;
+    Some((end - start).num_milliseconds() as f64 / 1000.0)
+}
+
 fn format_duration(secs: f64) -> String {
     if secs < 1.0 {
         format!("{:.0}ms", secs * 1000.0)
@@ -2055,4 +2138,37 @@ fn append_history_point(workspace_dir: &str, chain_label: &str, health: &ChainHe
     std::thread::spawn(move || {
         history_cache::append(&dir, &label, point);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(status: &str, start: &str, end: Option<&str>) -> azure::RunInfo {
+        azure::RunInfo {
+            id: "08584".into(),
+            status: status.into(),
+            start: start.into(),
+            end: end.map(String::from),
+        }
+    }
+
+    #[test]
+    fn duration_measured_between_start_and_end() {
+        let r = run("Succeeded", "2026-08-18T10:00:00Z", Some("2026-08-18T10:00:12.500Z"));
+        assert_eq!(run_duration_secs(&r), Some(12.5));
+    }
+
+    #[test]
+    fn running_run_has_no_duration() {
+        // Still in flight — the table shows "running", not a fabricated 0s.
+        let r = run("Running", "2026-08-18T10:00:00Z", None);
+        assert_eq!(run_duration_secs(&r), None);
+    }
+
+    #[test]
+    fn unparseable_timestamps_have_no_duration() {
+        let r = run("Succeeded", "not-a-date", Some("also-not-a-date"));
+        assert_eq!(run_duration_secs(&r), None);
+    }
 }

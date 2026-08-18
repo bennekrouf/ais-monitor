@@ -1819,17 +1819,60 @@ body {
     font-style: italic;
 }
 
-/* Failed-runs picker: a row of clickable pills above the actions table */
-.failed-runs-bar {
+/* ── Chain detail tabs: Workflows | Queues ───────────────────────────── */
+.detail-tabs {
+    display: flex;
+    align-items: stretch;
+    gap: 2px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 10px;
+}
+.detail-tab {
+    font: inherit;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 6px 14px;
+    border: none;
+    border-bottom: 2px solid transparent;
+    background: transparent;
+    color: var(--text2);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: -1px;
+}
+.detail-tab:hover { color: var(--text1); background: var(--bg2); }
+.detail-tab-current {
+    color: var(--blue);
+    border-bottom-color: var(--blue);
+}
+.tab-badge {
+    font-size: 10px;
+    font-weight: 700;
+    padding: 1px 6px;
+    border-radius: 9px;
+    line-height: 1.5;
+    white-space: nowrap;
+}
+.tab-badge-bad {
+    background: color-mix(in srgb, var(--red) 18%, transparent);
+    color: var(--red);
+}
+.tab-badge-warn {
+    background: color-mix(in srgb, var(--yellow) 20%, transparent);
+    color: var(--yellow);
+}
+
+/* Run picker: All / Failed chips above the runs table */
+.runs-bar {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
     gap: 6px;
-    padding: 4px 0 10px;
-    border-bottom: 1px dashed var(--border2);
-    margin-bottom: 8px;
+    padding: 4px 0 8px;
 }
-.failed-runs-label {
+.runs-label {
     font-size: 11px;
     color: var(--text2);
     margin-right: 4px;
@@ -1837,7 +1880,7 @@ body {
     letter-spacing: 0.4px;
     font-weight: 600;
 }
-.failed-run-pill {
+.runs-chip {
     font: inherit;
     font-size: 11px;
     padding: 2px 9px;
@@ -1849,20 +1892,64 @@ body {
     line-height: 1.4;
     white-space: nowrap;
 }
-.failed-run-pill:hover {
+.runs-chip:hover {
     background: var(--bg3, var(--bg2));
     border-color: var(--text3);
 }
-.failed-run-pill-bad {
+.runs-chip-bad {
     border-color: color-mix(in srgb, var(--red) 40%, transparent);
     color: var(--red);
 }
-.failed-run-pill-current {
+.runs-chip-current {
     background: color-mix(in srgb, var(--blue) 18%, var(--bg2));
     border-color: var(--blue);
     color: var(--blue);
     font-weight: 600;
 }
+
+/* Runs table: every sampled run for the expanded step. Capped in height so a
+   deep sample can't push the actions list off-screen — it scrolls instead. */
+.runs-table {
+    max-height: 220px;
+    overflow-y: auto;
+    border: 1px solid var(--border2);
+    border-radius: 4px;
+    margin-bottom: 10px;
+}
+.runs-header {
+    display: flex;
+    padding: 4px 6px;
+    font-size: 10px;
+    color: var(--text3);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    font-weight: 600;
+    border-bottom: 1px solid var(--border2);
+    position: sticky;
+    top: 0;
+    background: var(--bg1);
+}
+.run-row {
+    display: flex;
+    padding: 3px 6px;
+    align-items: center;
+    border-bottom: 1px solid var(--border2);
+    cursor: pointer;
+}
+.run-row:last-child { border-bottom: none; }
+.run-row:hover { background: var(--bg2); }
+.run-row-bad { background: rgba(255,107,107,0.06); }
+.run-row-current {
+    background: color-mix(in srgb, var(--blue) 14%, var(--bg1));
+    border-left: 2px solid var(--blue);
+    font-weight: 600;
+}
+
+.rcol { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rcol-status { width: 40px; text-align: center; flex-shrink: 0; }
+.rcol-start  { width: 90px; flex-shrink: 0; color: var(--text1); }
+.rcol-dur    { width: 80px; flex-shrink: 0; color: var(--text2); }
+.rcol-id     { flex: 1; color: var(--text3); font-size: 11px; font-family: var(--mono, monospace); }
 
 .actions-header {
     display: flex;
