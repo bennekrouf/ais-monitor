@@ -91,7 +91,7 @@ jobs:
           key: release-macos-arm64-cargo-${{ hashFiles('Cargo.lock') }}
 
       # ── Sanity-check required signing secrets up front ─────────────────────
-      - name: Verify macOS signing secrets are present
+      - name: Check macOS signing secrets
         env:
           MACOS_CERTIFICATE:     ${{ secrets.MACOS_CERTIFICATE }}
           MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
@@ -105,15 +105,23 @@ jobs:
           [ -z "${MACOS_CERTIFICATE:-}"     ] && missing+=("MACOS_CERTIFICATE")
           [ -z "${MACOS_CERTIFICATE_PWD:-}" ] && missing+=("MACOS_CERTIFICATE_PWD")
           [ -z "${KEYCHAIN_PASSWORD:-}"     ] && missing+=("KEYCHAIN_PASSWORD")
-          if [ ${#missing[@]} -gt 0 ]; then
-            echo "::error::Missing GitHub Actions secrets: ${missing[*]}"
-            echo "Add them in: Settings → Secrets and variables → Actions"
+          if [ ${#missing[@]} -eq 0 ]; then
+            echo "All 7 macOS signing secrets present."
+            echo "HAVE_MAC_SECRETS=true" >> "$GITHUB_ENV"
+          elif [ ${#missing[@]} -eq 7 ]; then
+            echo "::warning::No macOS signing secrets configured — skipping the macOS \
+          build. The release will still ship the other platforms. Add the 7 secrets \
+          in Settings → Secrets and variables → Actions to include a signed .dmg."
+            echo "HAVE_MAC_SECRETS=false" >> "$GITHUB_ENV"
+          else
+            echo "::error::Incomplete macOS signing configuration. Missing: ${missing[*]}"
+            echo "Set all seven, or none at all to skip the macOS build."
             exit 1
           fi
-          echo "All 7 macOS signing secrets present."
 
       # ── Import Developer ID cert into a temporary keychain ─────────────────
       - name: Set up signing keychain
+        if: env.HAVE_MAC_SECRETS == 'true'
         env:
           MACOS_CERTIFICATE:     ${{ secrets.MACOS_CERTIFICATE }}
           MACOS_CERTIFICATE_PWD: ${{ secrets.MACOS_CERTIFICATE_PWD }}
@@ -147,6 +155,7 @@ jobs:
 
       # ── Sign the binary with hardened runtime + webview entitlements ───────
       - name: Codesign binary
+        if: env.HAVE_MAC_SECRETS == 'true'
         run: |
           set -euo pipefail
           BIN=target/aarch64-apple-darwin/release/ais-monitor
@@ -158,6 +167,7 @@ jobs:
 
       # ── Sign the TUI binary too (no entitlements needed — pure CLI) ────────
       - name: Codesign TUI binary
+        if: env.HAVE_MAC_SECRETS == 'true'
         run: |
           set -euo pipefail
           BIN=target/aarch64-apple-darwin/release/ais-monitor-tui
@@ -168,6 +178,7 @@ jobs:
 
       # ── Stage the TUI binary under the binstall-compatible asset name ─────
       - name: Stage TUI binary
+        if: env.HAVE_MAC_SECRETS == 'true'
         run: |
           mkdir -p dist
           cp target/aarch64-apple-darwin/release/ais-monitor-tui \
@@ -178,6 +189,7 @@ jobs:
       # ── Generate icon.icns from assets/icon.png (1024x1024 source) ─────────
       # No-op if the PNG is absent; bundle just ships icon-less in that case.
       - name: Generate macOS .icns
+        if: env.HAVE_MAC_SECRETS == 'true'
         run: |
           set -euo pipefail
           if [ ! -f assets/icon.png ]; then
@@ -201,6 +213,7 @@ jobs:
 
       # ── Wrap binary in .app bundle, build signed + notarized + stapled DMG ─
       - name: Build .app + .dmg
+        if: env.HAVE_MAC_SECRETS == 'true'
         run: |
           set -euo pipefail
           BIN=target/aarch64-apple-darwin/release/ais-monitor
@@ -267,11 +280,12 @@ jobs:
             > dist/ais-monitor-macos-arm64.dmg.sha256
 
       - name: Clean up keychain
-        if: always()
+        if: always() && env.HAVE_MAC_SECRETS == 'true'
         run: |
           security delete-keychain "$KEYCHAIN_PATH" || true
 
       - name: Upload artifact
+        if: env.HAVE_MAC_SECRETS == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: ais-monitor-macos-arm64
@@ -280,6 +294,7 @@ jobs:
             dist/ais-monitor-macos-arm64.dmg.sha256
 
       - name: Upload TUI artifact
+        if: env.HAVE_MAC_SECRETS == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: ais-monitor-tui-aarch64-apple-darwin
@@ -532,7 +547,9 @@ jobs:
     # Mirror the build jobs: skipped `prepare` (the tag-push path doesn't run
     # it) propagates through the default `if: success()` and would skip
     # `release` too. Override so we only skip on genuine failure / cancel.
-    if: always() && !failure() && !cancelled()
+    # Publish whatever built: one platform failing must not withhold the
+    # others. A run with no artifacts at all is caught below.
+    if: always() && !cancelled()
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -544,6 +561,18 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
+
+      # Every build failed: a release with no downloads is worse than a red
+      # run, so stop rather than publishing an empty tag.
+      - name: Require at least one artifact
+        run: |
+          set -euo pipefail
+          count=$(find artifacts -type f | wc -l | tr -d ' ')
+          echo "Artifacts staged: $count"
+          if [ "$count" -eq 0 ]; then
+            echo "::error::No platform artifacts were produced — nothing to release."
+            exit 1
+          fi
 
       - name: Flatten artifacts + generate latest.json
         env:

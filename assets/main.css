@@ -1809,7 +1809,10 @@ body {
 .actions-panel {
     background: var(--bg1);
     border-bottom: 1px solid var(--border2);
-    padding: 6px 12px 10px 50px;
+    /* Left accent continues the expanded step row's marker, so the panel
+       reads as belonging to the row above it rather than floating loose. */
+    border-left: 2px solid var(--blue);
+    padding: 10px 14px 14px 48px;
     font-size: 12px;
 }
 
@@ -1914,58 +1917,111 @@ body {
     overflow-y: auto;
     border: 1px solid var(--border2);
     border-radius: 4px;
-    margin-bottom: 10px;
 }
 .runs-header {
     display: flex;
-    padding: 4px 6px;
+    gap: 12px;
+    padding: 5px 10px;
     font-size: 10px;
     color: var(--text3);
     text-transform: uppercase;
     letter-spacing: 0.5px;
     font-weight: 600;
-    border-bottom: 1px solid var(--border2);
+    border-bottom: 1px solid var(--border);
     position: sticky;
     top: 0;
-    background: var(--bg1);
+    background: var(--bg2);
 }
 .run-row {
     display: flex;
-    padding: 3px 6px;
+    gap: 12px;
+    padding: 4px 10px;
     align-items: center;
     border-bottom: 1px solid var(--border2);
     cursor: pointer;
+    /* Reserve the accent width on every row so selecting one doesn't shift
+       its cells sideways relative to its neighbours. */
+    border-left: 2px solid transparent;
 }
 .run-row:last-child { border-bottom: none; }
 .run-row:hover { background: var(--bg2); }
 .run-row-bad { background: rgba(255,107,107,0.06); }
 .run-row-current {
     background: color-mix(in srgb, var(--blue) 14%, var(--bg1));
-    border-left: 2px solid var(--blue);
+    border-left-color: var(--blue);
     font-weight: 600;
 }
 
 .rcol { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.rcol-status { width: 40px; text-align: center; flex-shrink: 0; }
-.rcol-start  { width: 90px; flex-shrink: 0; color: var(--text1); }
-.rcol-dur    { width: 80px; flex-shrink: 0; color: var(--text2); }
+.rcol-status { width: 28px; text-align: center; flex-shrink: 0; }
+.rcol-start  { width: 74px; flex-shrink: 0; color: var(--text1); font-variant-numeric: tabular-nums; }
+.rcol-dur    { width: 64px; flex-shrink: 0; color: var(--text2); font-variant-numeric: tabular-nums; text-align: right; }
 .rcol-id     { flex: 1; color: var(--text3); font-size: 11px; font-family: var(--mono, monospace); }
+
+/* ── Run log: the actions inside the selected run ─────────────────────── */
+.run-log-section {
+    margin-top: 14px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+}
+.run-log-title {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-bottom: 6px;
+}
+.run-log-heading {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    color: var(--text1);
+}
+.run-log-meta { font-size: 11px; color: var(--text2); }
+.run-log-id {
+    font-size: 10px;
+    color: var(--text3);
+    font-family: var(--mono, monospace);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 40%;
+}
+.run-log-badge {
+    font-size: 10px;
+    font-weight: 700;
+    padding: 1px 7px;
+    border-radius: 9px;
+    background: color-mix(in srgb, var(--red) 18%, transparent);
+    color: var(--red);
+}
+.actions-table {
+    border: 1px solid var(--border2);
+    border-radius: 4px;
+    max-height: 360px;
+    overflow-y: auto;
+}
 
 .actions-header {
     display: flex;
-    padding: 4px 0;
+    gap: 12px;
+    padding: 5px 10px;
     font-size: 10px;
     color: var(--text3);
     text-transform: uppercase;
     letter-spacing: 0.5px;
     font-weight: 600;
-    border-bottom: 1px solid var(--border2);
-    margin-bottom: 2px;
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    background: var(--bg2);
 }
 
 .action-row {
     display: flex;
-    padding: 3px 0;
+    gap: 12px;
+    padding: 4px 10px;
     align-items: flex-start;
     border-bottom: 1px solid var(--border2);
 }
@@ -1974,9 +2030,14 @@ body {
 .action-failed {
     background: rgba(255,107,107,0.06);
 }
+/* Skipped actions are the bulk of a healthy run's log and carry a long
+   boilerplate "runAfter condition not satisfied" message — dim them so the
+   real failures stand out instead of drowning in identical red text. */
+.action-skipped { opacity: 0.55; }
+.action-skipped .acol-error { color: var(--text3); }
 
 .acol { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.acol-status { width: 40px; text-align: center; flex-shrink: 0; }
+.acol-status { width: 28px; text-align: center; flex-shrink: 0; }
 .acol-name   { flex: 1; font-weight: 500; color: var(--text1); }
 .acol-error  { flex: 1.5; color: var(--red); font-size: 11px; white-space: normal; word-break: break-word; }
 

@@ -1310,7 +1310,9 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                                                     } else {
                                                         div { class: "runs-table",
                                                             div { class: "runs-header",
-                                                                span { class: "rcol rcol-status", "Status" }
+                                                                // No label: the column is 28px of status icon and
+                                                                // "Status" only ever renders as "STA…" there.
+                                                                span { class: "rcol rcol-status", title: "Run status" }
                                                                 span { class: "rcol rcol-start", "Started" }
                                                                 span { class: "rcol rcol-dur", "Duration" }
                                                                 span { class: "rcol rcol-id", "Run ID" }
@@ -1361,34 +1363,75 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                                                 }
                                             }
 
-                                            // ── Actions for the selected run ─────────────
-                                            if is_loading {
-                                                div { class: "actions-loading", "Loading actions..." }
-                                            } else if actions.is_empty() {
-                                                div { class: "actions-loading", "No actions found" }
-                                            } else {
-                                                div { class: "actions-header",
-                                                    span { class: "acol acol-status", "Status" }
-                                                    span { class: "acol acol-name", "Action" }
-                                                    span { class: "acol acol-error", "Error" }
-                                                }
-                                                for action in actions.iter() {
-                                                    {
-                                                        let action_icon = match action.status.as_str() {
+                                            // ── Log of the selected run ──────────────────
+                                            // Titled so the two lists never read as one: the
+                                            // table above is "which run", this one is "what
+                                            // happened inside that run".
+                                            {
+                                                let cur = runs_for_wf.iter().find(|r| r.id == cur_run_id).cloned();
+                                                let (icon, status, when) = match cur.as_ref() {
+                                                    Some(r) => (
+                                                        match r.status.as_str() {
                                                             "Succeeded" => "✅",
                                                             "Failed" => "❌",
-                                                            "Skipped" => "⊘",
                                                             "Running" => "⏳",
+                                                            "Cancelled" => "⊘",
                                                             _ => "○",
-                                                        };
-                                                        let action_name = action.name.clone();
-                                                        let error_text = action.error.clone().unwrap_or_default();
-                                                        let action_class = if action.status == "Failed" { "action-row action-failed" } else { "action-row" };
-                                                        rsx! {
-                                                            div { class: "{action_class}",
-                                                                span { class: "acol acol-status", "{action_icon}" }
-                                                                span { class: "acol acol-name", "{action_name}" }
-                                                                span { class: "acol acol-error", "{error_text}" }
+                                                        },
+                                                        r.status.clone(),
+                                                        run_time_short(&r.start),
+                                                    ),
+                                                    None => ("○", String::new(), String::new()),
+                                                };
+                                                let failed_actions = actions.iter().filter(|a| a.status == "Failed").count();
+                                                rsx! {
+                                                    div { class: "run-log-section",
+                                                        div { class: "run-log-title",
+                                                            span { class: "run-log-heading", "Run log" }
+                                                            if !status.is_empty() {
+                                                                span { class: "run-log-meta", "{icon} {status} · {when}" }
+                                                            }
+                                                            span { class: "run-log-id", title: "Run id", "{cur_run_id}" }
+                                                            if failed_actions > 0 {
+                                                                span { class: "run-log-badge", "{failed_actions} failed action(s)" }
+                                                            }
+                                                        }
+                                                        if is_loading {
+                                                            div { class: "actions-loading", "Loading run log…" }
+                                                        } else if actions.is_empty() {
+                                                            div { class: "actions-loading", "No actions found for this run" }
+                                                        } else {
+                                                            div { class: "actions-table",
+                                                                div { class: "actions-header",
+                                                                    span { class: "acol acol-status", title: "Action status" }
+                                                                    span { class: "acol acol-name", "Action" }
+                                                                    span { class: "acol acol-error", "Error" }
+                                                                }
+                                                                for action in actions.iter() {
+                                                                    {
+                                                                        let action_icon = match action.status.as_str() {
+                                                                            "Succeeded" => "✅",
+                                                                            "Failed" => "❌",
+                                                                            "Skipped" => "⊘",
+                                                                            "Running" => "⏳",
+                                                                            _ => "○",
+                                                                        };
+                                                                        let action_name = action.name.clone();
+                                                                        let error_text = action.error.clone().unwrap_or_default();
+                                                                        let action_class = match action.status.as_str() {
+                                                                            "Failed" => "action-row action-failed",
+                                                                            "Skipped" => "action-row action-skipped",
+                                                                            _ => "action-row",
+                                                                        };
+                                                                        rsx! {
+                                                                            div { class: "{action_class}",
+                                                                                span { class: "acol acol-status", "{action_icon}" }
+                                                                                span { class: "acol acol-name", "{action_name}" }
+                                                                                span { class: "acol acol-error", "{error_text}" }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
                                                             }
                                                         }
                                                     }
