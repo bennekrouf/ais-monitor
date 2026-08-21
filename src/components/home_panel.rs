@@ -1043,41 +1043,6 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                 }
 
                 // ── Live activity ───────────────────────────────────────
-                // Two independent views of the same in-flight runs: rolled
-                // up per chain, and listed per workflow. Deliberately not
-                // cross-linked — each answers its own question.
-                div { class: "func-app-card home-card",
-                    div { class: "func-app-header",
-                        h3 { "Chains running" }
-                        span { class: "func-app-count", "as of {format_dt(chains_checked_at)}" }
-                    }
-                    if !have_run_data {
-                        div { class: "func-empty-small", "No run data loaded yet." }
-                    } else if live_chains.is_empty() {
-                        div { class: "func-empty-small", "No chains running right now." }
-                    } else {
-                        div { class: card_body_class(&expanded_cards.read(), "live_chains"),
-                            table { class: "func-table home-table",
-                                thead { tr { th { "Chain" } th { "Runs" } th { "Workflows" } th { "Oldest" } } }
-                                tbody {
-                                    for c in live_chains.iter() {
-                                        tr { class: "func-row",
-                                            td { class: "func-name",
-                                                span { class: "home-live-dot" }
-                                                "{disp_chain(&c.chain)}"
-                                            }
-                                            td { "{c.runs}" }
-                                            td { "{c.workflows}" }
-                                            td { title: "Started {format_dt_utc(c.oldest)}", "{format_elapsed(c.oldest)}" }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        ShowMore { cards: expanded_cards, id: "live_chains", total: live_chains.len() }
-                    }
-                }
-
                 div { class: "func-app-card home-card",
                     div { class: "func-app-header",
                         h3 { "Workflows running" }
