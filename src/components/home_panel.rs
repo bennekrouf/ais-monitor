@@ -121,6 +121,10 @@ pub struct HomePanelProps {
     pub chain_queue_statuses: Signal<HashMap<String, HashMap<String, QueueStatus>>>,
     /// Namespace discovered by MainScreen, used when the profile has none.
     pub discovered_sb_namespace: Signal<Option<String>>,
+    /// Logic App region discovered by MainScreen — needed to build a deep
+    /// link straight to a workflow's run history; without it the portal link
+    /// can only reach the parent Logic App.
+    pub discovered_location: Signal<Option<String>>,
     /// User-set display-name overlay, keyed by the chain's stable `label`.
     /// Every chain identifier used elsewhere in this component (poll maps,
     /// history, queue stats) is still the raw `label` — this is consulted
@@ -1023,6 +1027,26 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                                                     span { class: "home-caret", if is_open { "▾" } else { "▸" } }
                                                     div { class: "home-wf-cell",
                                                         span { class: "home-wf-name", "{f.workflow}" }
+                                                        // Portal link — stop_propagation so
+                                                        // clicking the icon doesn't toggle the row.
+                                                        {
+                                                            let loc = props.discovered_location.read().clone();
+                                                            let url = crate::services::portal_links::workflow(
+                                                                &az.tenant, &az.subscription, &az.resource_group,
+                                                                &az.app_name, &f.workflow, loc.as_deref(),
+                                                            );
+                                                            rsx! {
+                                                                button {
+                                                                    class: "portal-link",
+                                                                    title: "Open this workflow in the Azure Portal",
+                                                                    onclick: move |e: Event<MouseData>| {
+                                                                        e.stop_propagation();
+                                                                        crate::services::portal_links::open_in_browser(&url);
+                                                                    },
+                                                                    "🔗"
+                                                                }
+                                                            }
+                                                        }
                                                         span { class: "home-wf-chain", "{disp_chain(&f.chain)}" }
                                                     }
                                                 }
@@ -1063,6 +1087,21 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                                             span { class: "home-live-dot" }
                                             div { class: "home-wf-cell",
                                                 span { class: "home-wf-name", "{r.workflow}" }
+                                                {
+                                                    let loc = props.discovered_location.read().clone();
+                                                    let url = crate::services::portal_links::workflow(
+                                                        &az.tenant, &az.subscription, &az.resource_group,
+                                                        &az.app_name, &r.workflow, loc.as_deref(),
+                                                    );
+                                                    rsx! {
+                                                        button {
+                                                            class: "portal-link",
+                                                            title: "Open this workflow in the Azure Portal",
+                                                            onclick: move |_| crate::services::portal_links::open_in_browser(&url),
+                                                            "🔗"
+                                                        }
+                                                    }
+                                                }
                                                 {
                                                     // One row per run now, so name every chain the
                                                     // run belongs to instead of implying it is only

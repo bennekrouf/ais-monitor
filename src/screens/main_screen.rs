@@ -1030,6 +1030,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                         chain_runs: chain_runs,
                                         chain_queue_statuses: chain_queue_statuses,
                                         discovered_sb_namespace: discovered_sb_namespace,
+                                        discovered_location: discovered_location,
                                         chain_names: chain_names,
                                     }
                                 }
