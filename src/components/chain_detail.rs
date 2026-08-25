@@ -225,6 +225,24 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                 if all_runs.peek().is_empty() {
                     if let Some(runs_for_chain) = parent.read().get(&label_for_hydrate).cloned() {
                         if !runs_for_chain.is_empty() {
+                            // `run_statuses` drives the per-step status icon and
+                            // makes the row expandable into its action log, so
+                            // derive it here too — otherwise "Check all" leaves
+                            // every step showing "○" and refusing to open, while
+                            // the per-chain "Check" (which sets both) does not.
+                            let statuses: HashMap<String, RunStatus> = runs_for_chain.iter()
+                                .filter_map(|(wf, runs)| runs.first().map(|r| (
+                                    wf.clone(),
+                                    RunStatus {
+                                        run_id: r.id.clone(),
+                                        last_status: r.status.clone(),
+                                        last_time: r.start.clone(),
+                                    },
+                                )))
+                                .collect();
+                            if !statuses.is_empty() && run_statuses.peek().is_empty() {
+                                run_statuses.set(statuses);
+                            }
                             all_runs.set(runs_for_chain);
                         }
                     }
