@@ -6,7 +6,7 @@ members = ["crates/core", "crates/tui"]
 # it in one place and the GUI title, TUI header, installer, and crate
 # manifests all stay in sync. The release script targets this line.
 [workspace.package]
-version = "0.3.9"
+version = "0.3.10"
 
 [package]
 name = "ais-monitor"
