@@ -856,9 +856,14 @@ body {
     max-width: 34ch;
 }
 .home-wf-cell { display: flex; flex-direction: column; min-width: 0; }
+/* Name and its portal link share one line — stacking them would push the
+   chain label onto a third row and make every entry three lines tall. */
+.home-wf-line { display: flex; align-items: center; gap: 3px; min-width: 0; }
 .home-wf-name {
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
+/* Never let the icon shrink or be pushed out by a long workflow name. */
+.home-wf-line .portal-link { flex: none; line-height: 1; padding: 0; }
 .home-wf-chain {
     font-size: calc(var(--home-fs-sm) * 0.92);
     color: var(--text3); font-weight: 400;
