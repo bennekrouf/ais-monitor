@@ -1026,24 +1026,26 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                                                 td { class: "func-name",
                                                     span { class: "home-caret", if is_open { "▾" } else { "▸" } }
                                                     div { class: "home-wf-cell",
-                                                        span { class: "home-wf-name", "{f.workflow}" }
-                                                        // Portal link — stop_propagation so
-                                                        // clicking the icon doesn't toggle the row.
-                                                        {
-                                                            let loc = props.discovered_location.read().clone();
-                                                            let url = crate::services::portal_links::workflow(
-                                                                &az.tenant, &az.subscription, &az.resource_group,
-                                                                &az.app_name, &f.workflow, loc.as_deref(),
-                                                            );
-                                                            rsx! {
-                                                                button {
-                                                                    class: "portal-link",
-                                                                    title: "Open this workflow in the Azure Portal",
-                                                                    onclick: move |e: Event<MouseData>| {
-                                                                        e.stop_propagation();
-                                                                        crate::services::portal_links::open_in_browser(&url);
-                                                                    },
-                                                                    "🔗"
+                                                        div { class: "home-wf-line",
+                                                            span { class: "home-wf-name", "{f.workflow}" }
+                                                            // Portal link — stop_propagation so
+                                                            // clicking the icon doesn't toggle the row.
+                                                            {
+                                                                let loc = props.discovered_location.read().clone();
+                                                                let url = crate::services::portal_links::workflow(
+                                                                    &az.tenant, &az.subscription, &az.resource_group,
+                                                                    &az.app_name, &f.workflow, loc.as_deref(),
+                                                                );
+                                                                rsx! {
+                                                                    button {
+                                                                        class: "portal-link",
+                                                                        title: "Open this workflow in the Azure Portal",
+                                                                        onclick: move |e: Event<MouseData>| {
+                                                                            e.stop_propagation();
+                                                                            crate::services::portal_links::open_in_browser(&url);
+                                                                        },
+                                                                        "🔗"
+                                                                    }
                                                                 }
                                                             }
                                                         }
@@ -1086,19 +1088,21 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                                         td { class: "func-name",
                                             span { class: "home-live-dot" }
                                             div { class: "home-wf-cell",
-                                                span { class: "home-wf-name", "{r.workflow}" }
-                                                {
-                                                    let loc = props.discovered_location.read().clone();
-                                                    let url = crate::services::portal_links::workflow(
-                                                        &az.tenant, &az.subscription, &az.resource_group,
-                                                        &az.app_name, &r.workflow, loc.as_deref(),
-                                                    );
-                                                    rsx! {
-                                                        button {
-                                                            class: "portal-link",
-                                                            title: "Open this workflow in the Azure Portal",
-                                                            onclick: move |_| crate::services::portal_links::open_in_browser(&url),
-                                                            "🔗"
+                                                div { class: "home-wf-line",
+                                                    span { class: "home-wf-name", "{r.workflow}" }
+                                                    {
+                                                        let loc = props.discovered_location.read().clone();
+                                                        let url = crate::services::portal_links::workflow(
+                                                            &az.tenant, &az.subscription, &az.resource_group,
+                                                            &az.app_name, &r.workflow, loc.as_deref(),
+                                                        );
+                                                        rsx! {
+                                                            button {
+                                                                class: "portal-link",
+                                                                title: "Open this workflow in the Azure Portal",
+                                                                onclick: move |_| crate::services::portal_links::open_in_browser(&url),
+                                                                "🔗"
+                                                            }
                                                         }
                                                     }
                                                 }
