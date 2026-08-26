@@ -1,7 +1,7 @@
-use dioxus::prelude::*;
+use crate::components::chain_detail::ChainHealth;
 use crate::services::chain::ChainDetail;
 use crate::services::history_cache::HealthPoint;
-use crate::components::chain_detail::ChainHealth;
+use dioxus::prelude::*;
 use std::collections::HashMap;
 
 #[derive(Props, Clone, PartialEq)]
@@ -39,15 +39,25 @@ pub fn ChainList(props: ChainListProps) -> Element {
     let query = filter.read().to_lowercase();
     let terms: Vec<&str> = query.split_whitespace().collect();
     let is_filtering = !terms.is_empty();
-    let mut sorted: Vec<ChainDetail> = props.chains.iter()
+    let mut sorted: Vec<ChainDetail> = props
+        .chains
+        .iter()
         .filter(|c| {
-            if terms.is_empty() { return true; }
-            let display = props.chain_names.get(&c.label).unwrap_or(&c.label).to_lowercase();
+            if terms.is_empty() {
+                return true;
+            }
+            let display = props
+                .chain_names
+                .get(&c.label)
+                .unwrap_or(&c.label)
+                .to_lowercase();
             let label = c.label.to_lowercase();
             terms.iter().any(|term| {
                 display.contains(term)
                     || label.contains(term)
-                    || c.steps.iter().any(|s| s.workflow.to_lowercase().contains(term))
+                    || c.steps
+                        .iter()
+                        .any(|s| s.workflow.to_lowercase().contains(term))
                     || c.queues.iter().any(|q| q.to_lowercase().contains(term))
             })
         })
@@ -74,7 +84,11 @@ pub fn ChainList(props: ChainListProps) -> Element {
     // Header label hoisted into outer scope so the rsx `"{header_label}"`
     // interpolation actually substitutes the variable.
     let header_label = if shown == total {
-        if total == 1 { "1 chain".to_string() } else { format!("{total} chains") }
+        if total == 1 {
+            "1 chain".to_string()
+        } else {
+            format!("{total} chains")
+        }
     } else {
         format!("{shown}/{total} chains")
     };
@@ -197,7 +211,9 @@ fn Sparkline(props: SparklineProps) -> Element {
     const W: f64 = 60.0;
     const H: f64 = 16.0;
     let n = props.points.len();
-    if n < 2 { return rsx! {}; }
+    if n < 2 {
+        return rsx! {};
+    }
 
     // Map each point's success_rate (0-100) to a y coordinate. Missing
     // rate ⇒ treat as 0 (no data) and the dot will sit at baseline.
@@ -208,29 +224,60 @@ fn Sparkline(props: SparklineProps) -> Element {
         H - 1.0 - ((r / 100.0) * (H - 2.0))
     };
 
-    let path_d: String = props.points.iter().enumerate().map(|(i, p)| {
-        let x = i as f64 * step_x;
-        let y = to_y(p.success_rate);
-        if i == 0 { format!("M{x:.1},{y:.1}") } else { format!("L{x:.1},{y:.1}") }
-    }).collect::<Vec<_>>().join(" ");
+    let path_d: String = props
+        .points
+        .iter()
+        .enumerate()
+        .map(|(i, p)| {
+            let x = i as f64 * step_x;
+            let y = to_y(p.success_rate);
+            if i == 0 {
+                format!("M{x:.1},{y:.1}")
+            } else {
+                format!("L{x:.1},{y:.1}")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ");
 
     // Trend colour: compare the average of the latest 3 to the oldest 3.
     fn avg(xs: &[Option<f64>]) -> f64 {
         let xs: Vec<f64> = xs.iter().filter_map(|x| *x).collect();
-        if xs.is_empty() { 0.0 } else { xs.iter().sum::<f64>() / xs.len() as f64 }
+        if xs.is_empty() {
+            0.0
+        } else {
+            xs.iter().sum::<f64>() / xs.len() as f64
+        }
     }
     let len = props.points.len();
-    let head: Vec<Option<f64>> = props.points.iter().take(len.min(3)).map(|p| p.success_rate).collect();
-    let tail: Vec<Option<f64>> = props.points.iter().rev().take(len.min(3)).map(|p| p.success_rate).collect();
+    let head: Vec<Option<f64>> = props
+        .points
+        .iter()
+        .take(len.min(3))
+        .map(|p| p.success_rate)
+        .collect();
+    let tail: Vec<Option<f64>> = props
+        .points
+        .iter()
+        .rev()
+        .take(len.min(3))
+        .map(|p| p.success_rate)
+        .collect();
     let old_avg = avg(&head);
     let new_avg = avg(&tail);
     let delta = new_avg - old_avg;
-    let trend_class = if delta >= -0.5      { "spark-up" }
-                       else if delta >= -5.0 { "spark-flat" }
-                       else                  { "spark-down" };
+    let trend_class = if delta >= -0.5 {
+        "spark-up"
+    } else if delta >= -5.0 {
+        "spark-flat"
+    } else {
+        "spark-down"
+    };
 
-    let title = format!("{} samples · trend {:+.1}% (oldest {:.0}% → newest {:.0}%)",
-        n, delta, old_avg, new_avg);
+    let title = format!(
+        "{} samples · trend {:+.1}% (oldest {:.0}% → newest {:.0}%)",
+        n, delta, old_avg, new_avg
+    );
 
     let cx = W;
     let cy = to_y(props.points.last().and_then(|p| p.success_rate));

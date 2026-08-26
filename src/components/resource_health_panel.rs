@@ -1,7 +1,7 @@
-use dioxus::prelude::*;
+use crate::components::chain_detail::AzConfig;
 use crate::services::azure::{self, ResourceHealthRow};
 use crate::services::resource_health_cache;
-use crate::components::chain_detail::AzConfig;
+use dioxus::prelude::*;
 
 /// Background refresh cadence for the dashboard — matches the 30-60s window
 /// from the proposal; picked the middle of that range.
@@ -39,14 +39,23 @@ pub fn ResourceHealthPanel(props: ResourceHealthPanelProps) -> Element {
                 let app = az.app_name.clone();
                 let sub2 = sub.clone();
                 let rg2 = rg.clone();
-                let result = tokio::task::spawn_blocking(move || azure::list_resource_health(&sub2, &rg2)).await;
+                let result =
+                    tokio::task::spawn_blocking(move || azure::list_resource_health(&sub2, &rg2))
+                        .await;
                 match result {
                     Ok(Ok(new_rows)) => {
                         rows.set(new_rows.clone());
                         let now = epoch_secs();
                         last_fetched.set(now);
-                        let snap = resource_health_cache::ResourceHealthSnapshot { rows: new_rows, last_fetched: now };
-                        tokio::task::spawn_blocking(move || resource_health_cache::save_for(&sub, &rg, &app, &snap)).await.ok();
+                        let snap = resource_health_cache::ResourceHealthSnapshot {
+                            rows: new_rows,
+                            last_fetched: now,
+                        };
+                        tokio::task::spawn_blocking(move || {
+                            resource_health_cache::save_for(&sub, &rg, &app, &snap)
+                        })
+                        .await
+                        .ok();
                         backoff_secs.set(0);
                     }
                     Ok(Err(e)) => {
@@ -72,7 +81,8 @@ pub fn ResourceHealthPanel(props: ResourceHealthPanelProps) -> Element {
         let az = az.clone();
         let mut refresh = refresh.clone();
         move || {
-            let snap = resource_health_cache::load_for(&az.subscription, &az.resource_group, &az.app_name);
+            let snap =
+                resource_health_cache::load_for(&az.subscription, &az.resource_group, &az.app_name);
             if !snap.rows.is_empty() {
                 rows.set(snap.rows);
                 last_fetched.set(snap.last_fetched);
@@ -193,8 +203,11 @@ fn health_badge(health: &str) -> (&'static str, String) {
 fn format_age(ts: u64) -> String {
     let now = epoch_secs();
     let age = now.saturating_sub(ts);
-    if age < 60 { format!("Updated {age}s ago") }
-    else { format!("Updated {}m ago", age / 60) }
+    if age < 60 {
+        format!("Updated {age}s ago")
+    } else {
+        format!("Updated {}m ago", age / 60)
+    }
 }
 
 fn epoch_secs() -> u64 {

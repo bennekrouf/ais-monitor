@@ -74,11 +74,15 @@ pub fn probe_chain(
     let mut runs: HashMap<String, Vec<azure::RunInfo>> = HashMap::new();
     for wf in steps {
         match azure::list_runs(sub, rg, app, wf, depth) {
-            Ok(r) => { runs.insert(wf.clone(), r); }
+            Ok(r) => {
+                runs.insert(wf.clone(), r);
+            }
             Err(e) => {
                 halt = classify(&e);
                 errors.push(format!("list_runs {wf}: {e}"));
-                if halt.is_some() { break; }
+                if halt.is_some() {
+                    break;
+                }
             }
         }
     }
@@ -95,10 +99,13 @@ pub fn probe_chain(
             match azure::check_queue(sb_namespace, rg, q) {
                 Ok(qi) => {
                     dl_total += qi.dead_letter;
-                    queues.insert(q.clone(), QueueStatus {
-                        active: qi.active,
-                        dead_letter: qi.dead_letter,
-                    });
+                    queues.insert(
+                        q.clone(),
+                        QueueStatus {
+                            active: qi.active,
+                            dead_letter: qi.dead_letter,
+                        },
+                    );
                 }
                 Err(e) => {
                     let q_halt = classify(&e);
@@ -159,7 +166,8 @@ pub fn assemble(
 
 /// Aggregate per-workflow run history into the chain-level KPIs.
 fn roll_up(runs: &HashMap<String, Vec<azure::RunInfo>>, dead_letters: i64) -> ChainHealth {
-    let all_kpis: Vec<kpi::ChainKpi> = runs.values()
+    let all_kpis: Vec<kpi::ChainKpi> = runs
+        .values()
         .map(|r| kpi::compute_workflow_kpi(r))
         .collect();
     let total_runs: usize = all_kpis.iter().map(|k| k.total_runs).sum();
@@ -206,7 +214,8 @@ pub fn classify(err: &str) -> Option<ProbeHalt> {
 mod tests {
     use super::*;
 
-    const THROTTLE: &str = "('Connection aborted.', ConnectionResetError(54, 'Connection reset by peer'))";
+    const THROTTLE: &str =
+        "('Connection aborted.', ConnectionResetError(54, 'Connection reset by peer'))";
     const DENIED: &str = r#"Forbidden({"error":{"code":"AuthorizationFailed","message":"does not have authorization"}})"#;
 
     #[test]
@@ -224,10 +233,15 @@ mod tests {
     #[test]
     fn azure_side_fault_is_unavailable() {
         assert_eq!(
-            classify(r#"Bad Gateway({"error":{"code":"BadGatewayConnection","message":"The network connectivity issue encountered for 'Microsoft.Web'; cannot fulfill the request."}})"#),
+            classify(
+                r#"Bad Gateway({"error":{"code":"BadGatewayConnection","message":"The network connectivity issue encountered for 'Microsoft.Web'; cannot fulfill the request."}})"#
+            ),
             Some(ProbeHalt::Unavailable)
         );
-        assert_eq!(classify("503 Service Unavailable"), Some(ProbeHalt::Unavailable));
+        assert_eq!(
+            classify("503 Service Unavailable"),
+            Some(ProbeHalt::Unavailable)
+        );
     }
 
     #[test]

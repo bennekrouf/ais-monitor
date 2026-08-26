@@ -1,7 +1,7 @@
-use dioxus::prelude::*;
+use crate::components::chain_detail::AzConfig;
 use crate::services::azure;
 use crate::services::payload::suggest_payload;
-use crate::components::chain_detail::AzConfig;
+use dioxus::prelude::*;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct TriggerPanelProps {
@@ -23,14 +23,19 @@ pub fn TriggerPanel(props: TriggerPanelProps) -> Element {
         default_payload()
     } else {
         let suggested = suggest_payload(&props.local_dir, &props.workflow);
-        if suggested == "{}" { default_payload() } else { suggested }
+        if suggested == "{}" {
+            default_payload()
+        } else {
+            suggested
+        }
     };
     let mut payload_text = use_signal(|| initial_payload.clone());
     let mut trigger_url = use_signal(|| Option::<String>::None);
     let mut fetching_url = use_signal(|| false);
     let mut trigger_result = use_signal(|| Option::<TriggerState>::None);
     let mut triggering = use_signal(|| false);
-    let mut saved_payloads = use_signal(|| list_saved_payloads(&props.payloads_dir, &props.workflow));
+    let mut saved_payloads =
+        use_signal(|| list_saved_payloads(&props.payloads_dir, &props.workflow));
     let mut save_name = use_signal(|| String::new());
 
     let az = props.az_config.clone();
@@ -49,7 +54,8 @@ pub fn TriggerPanel(props: TriggerPanelProps) -> Element {
             spawn(async move {
                 let result = tokio::task::spawn_blocking(move || {
                     azure::get_trigger_url(&az.subscription, &az.resource_group, &az.app_name, &wf)
-                }).await;
+                })
+                .await;
                 match result {
                     Ok(Ok(url)) => trigger_url.set(Some(url)),
                     Ok(Err(e)) => trigger_url.set(Some(format!("ERROR: {e}"))),
@@ -60,7 +66,10 @@ pub fn TriggerPanel(props: TriggerPanelProps) -> Element {
         }
     });
 
-    let has_url = trigger_url.read().as_ref().map_or(false, |u| !u.starts_with("ERROR"));
+    let has_url = trigger_url
+        .read()
+        .as_ref()
+        .map_or(false, |u| !u.starts_with("ERROR"));
 
     rsx! {
         div { class: "trigger-panel",
@@ -319,7 +328,7 @@ fn default_payload() -> String {
 
 fn truncate_url(url: &str) -> String {
     if url.len() > 80 {
-        format!("{}...{}", &url[..40], &url[url.len()-30..])
+        format!("{}...{}", &url[..40], &url[url.len() - 30..])
     } else {
         url.to_string()
     }

@@ -1,0 +1,7 @@
+# Revisions to skip when running `git blame`.
+#
+# GitHub honours this file automatically. Locally, once:
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+
+# style: apply cargo fmt across the tree
+bd4c641fba851a2662e78184ae494dde066f0e8a

@@ -9,10 +9,10 @@ pub mod azure;
 pub mod chain;
 #[path = "../../../src/services/kpi.rs"]
 pub mod kpi;
-#[path = "../../../src/services/names.rs"]
-pub mod names;
 #[path = "../../../src/services/msg_template.rs"]
 pub mod msg_template;
+#[path = "../../../src/services/names.rs"]
+pub mod names;
 #[path = "../../../src/services/payload.rs"]
 pub mod payload;
 #[path = "../../../src/services/remote_chain.rs"]

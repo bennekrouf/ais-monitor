@@ -58,7 +58,10 @@ fn cmd_login() -> Result<(), String> {
     use azure::AzLoginState;
     let state = azure::check_login();
     match &state {
-        AzLoginState::LoggedIn { account, subscription_id } => {
+        AzLoginState::LoggedIn {
+            account,
+            subscription_id,
+        } => {
             println!("logged in: {account}  (sub: {subscription_id})");
         }
         AzLoginState::Expired => {
@@ -143,7 +146,15 @@ fn cmd_chains(args: &[String]) -> Result<(), String> {
     if !discovery.unlinked.is_empty() {
         println!("\n{} unlinked workflow(s):", discovery.unlinked.len());
         for u in &discovery.unlinked {
-            println!("  {} (trigger: {})", u.name, if u.trigger_info.is_empty() { "none" } else { &u.trigger_info });
+            println!(
+                "  {} (trigger: {})",
+                u.name,
+                if u.trigger_info.is_empty() {
+                    "none"
+                } else {
+                    &u.trigger_info
+                }
+            );
         }
     }
     Ok(())

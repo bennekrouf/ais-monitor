@@ -1,8 +1,8 @@
+use crate::components::chain_detail::AzConfig;
+use crate::services::azure::{self, FunctionApp};
 use dioxus::prelude::*;
 use std::collections::VecDeque;
 use tokio::io::AsyncBufReadExt;
-use crate::services::azure::{self, FunctionApp};
-use crate::components::chain_detail::AzConfig;
 
 /// Cap on retained log lines — bounds memory on a long-running tail.
 const MAX_LOG_LINES: usize = 500;
@@ -39,7 +39,9 @@ pub fn ObservabilityPanel(props: ObservabilityPanelProps) -> Element {
             spawn(async move {
                 let sub = az.subscription.clone();
                 let rg = az.resource_group.clone();
-                match tokio::task::spawn_blocking(move || azure::list_function_apps(&sub, &rg)).await {
+                match tokio::task::spawn_blocking(move || azure::list_function_apps(&sub, &rg))
+                    .await
+                {
                     Ok(Ok(apps)) => func_apps.set(apps),
                     Ok(Err(e)) => apps_error.set(Some(e)),
                     Err(e) => apps_error.set(Some(format!("{e}"))),
@@ -60,10 +62,15 @@ pub fn ObservabilityPanel(props: ObservabilityPanelProps) -> Element {
             log_error.set(None);
             spawn(async move {
                 let mut cmd = azure::az_command_tokio(&[
-                    "webapp", "log", "tail",
-                    "--name", &app_name,
-                    "--resource-group", &az.resource_group,
-                    "--subscription", &az.subscription,
+                    "webapp",
+                    "log",
+                    "tail",
+                    "--name",
+                    &app_name,
+                    "--resource-group",
+                    &az.resource_group,
+                    "--subscription",
+                    &az.subscription,
                 ]);
                 cmd.stdout(std::process::Stdio::piped());
                 cmd.stderr(std::process::Stdio::null());
@@ -82,13 +89,19 @@ pub fn ObservabilityPanel(props: ObservabilityPanelProps) -> Element {
                 };
                 let mut reader = tokio::io::BufReader::new(stdout).lines();
                 loop {
-                    if *tail_generation.read() != my_generation { break; }
+                    if *tail_generation.read() != my_generation {
+                        break;
+                    }
                     match reader.next_line().await {
                         Ok(Some(line)) => {
-                            if *tail_generation.read() != my_generation { break; }
+                            if *tail_generation.read() != my_generation {
+                                break;
+                            }
                             let mut lines = log_lines.write();
                             lines.push_back(line);
-                            if lines.len() > MAX_LOG_LINES { lines.pop_front(); }
+                            if lines.len() > MAX_LOG_LINES {
+                                lines.pop_front();
+                            }
                         }
                         Ok(None) => break,
                         Err(_) => break,
@@ -119,7 +132,8 @@ pub fn ObservabilityPanel(props: ObservabilityPanelProps) -> Element {
             spawn(async move {
                 let sub = az.subscription.clone();
                 let rg = az.resource_group.clone();
-                let result = tokio::task::spawn_blocking(move || azure::get_cost_mtd(&sub, &rg)).await
+                let result = tokio::task::spawn_blocking(move || azure::get_cost_mtd(&sub, &rg))
+                    .await
                     .unwrap_or_else(|e| Err(format!("{e}")));
                 cost_result.set(Some(result));
                 cost_loading.set(false);

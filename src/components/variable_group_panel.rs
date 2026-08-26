@@ -1,8 +1,8 @@
-use dioxus::prelude::*;
-use std::collections::{HashMap, HashSet};
+use crate::components::chain_detail::AzConfig;
 use crate::services::azure::{self, VariableGroup};
 use crate::services::pipeline_scan;
-use crate::components::chain_detail::AzConfig;
+use dioxus::prelude::*;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Clone, Debug, PartialEq)]
 struct VarRow {
@@ -60,10 +60,22 @@ pub fn VariableGroupPanel(props: VariableGroupPanelProps) -> Element {
 
                 let org2 = org.clone();
                 let project2 = project.clone();
-                let groups: Vec<VariableGroup> = match tokio::task::spawn_blocking(move || azure::list_variable_groups(&org2, &project2)).await {
+                let groups: Vec<VariableGroup> = match tokio::task::spawn_blocking(move || {
+                    azure::list_variable_groups(&org2, &project2)
+                })
+                .await
+                {
                     Ok(Ok(g)) => g,
-                    Ok(Err(e)) => { error_msg.set(Some(e)); loading.set(false); return; }
-                    Err(e) => { error_msg.set(Some(format!("{e}"))); loading.set(false); return; }
+                    Ok(Err(e)) => {
+                        error_msg.set(Some(e));
+                        loading.set(false);
+                        return;
+                    }
+                    Err(e) => {
+                        error_msg.set(Some(format!("{e}")));
+                        loading.set(false);
+                        return;
+                    }
                 };
 
                 let app_config: HashMap<String, String> = if store.is_empty() {
@@ -71,19 +83,26 @@ pub fn VariableGroupPanel(props: VariableGroupPanelProps) -> Element {
                 } else {
                     let sub2 = sub.clone();
                     let store2 = store.clone();
-                    tokio::task::spawn_blocking(move || azure::appconfig_list_kv(&sub2, &store2)).await
-                        .ok().and_then(|r| r.ok()).unwrap_or_default()
+                    tokio::task::spawn_blocking(move || azure::appconfig_list_kv(&sub2, &store2))
+                        .await
+                        .ok()
+                        .and_then(|r| r.ok())
+                        .unwrap_or_default()
                 };
 
                 let referenced: HashSet<String> = tokio::task::spawn_blocking(move || {
                     pipeline_scan::scan_variable_references(std::path::Path::new(&local_dir))
-                }).await.unwrap_or_default();
+                })
+                .await
+                .unwrap_or_default();
 
                 let mut out = Vec::new();
                 for g in groups {
                     for v in g.variables {
                         let in_app_config = app_config.contains_key(&v.name);
-                        let values_match = v.value.as_ref()
+                        let values_match = v
+                            .value
+                            .as_ref()
                             .zip(app_config.get(&v.name))
                             .map(|(a, b)| a == b)
                             .unwrap_or(false);
@@ -100,7 +119,10 @@ pub fn VariableGroupPanel(props: VariableGroupPanelProps) -> Element {
                         });
                     }
                 }
-                out.sort_by(|a, b| (a.group_name.clone(), a.name.clone()).cmp(&(b.group_name.clone(), b.name.clone())));
+                out.sort_by(|a, b| {
+                    (a.group_name.clone(), a.name.clone())
+                        .cmp(&(b.group_name.clone(), b.name.clone()))
+                });
                 rows.set(out);
                 loading.set(false);
             });
@@ -131,16 +153,25 @@ pub fn VariableGroupPanel(props: VariableGroupPanelProps) -> Element {
                     let group_id2 = *group_id;
                     let result = tokio::task::spawn_blocking(move || {
                         azure::delete_variable_group_variable(&org2, &project2, group_id2, &name2)
-                    }).await.unwrap_or_else(|e| Err(format!("{e}")));
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("{e}")));
                     if let Err(e) = result {
-                        crate::services::activity::error("Delete variable failed", name.clone(), e.clone());
+                        crate::services::activity::error(
+                            "Delete variable failed",
+                            name.clone(),
+                            e.clone(),
+                        );
                         delete_error.set(Some(format!("{name}: {e}")));
                         deleting.set(false);
                         confirm_delete.set(false);
                         load();
                         return;
                     }
-                    crate::services::activity::info("Deleted variable-group variable", name.clone());
+                    crate::services::activity::info(
+                        "Deleted variable-group variable",
+                        name.clone(),
+                    );
                 }
                 selected.write().clear();
                 deleting.set(false);

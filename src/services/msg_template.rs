@@ -228,7 +228,14 @@ fn to_iso8601(v: &str) -> Result<String, String> {
             &digits[10..12],
             &digits[12..14],
         ),
-        8 => (&digits[0..4], &digits[4..6], &digits[6..8], "00", "00", "00"),
+        8 => (
+            &digits[0..4],
+            &digits[4..6],
+            &digits[6..8],
+            "00",
+            "00",
+            "00",
+        ),
         _ => {
             return Err(format!(
                 "iso8601 expects 8 or 14 digits, got '{v}' ({} digits)",
@@ -299,7 +306,9 @@ mod tests {
             r"^F\.(?P<ts>\d{14})\.(?P<flow>\w+)\.xlsx$",
             json!({ "when": "{{ts}}", "flow": "{{flow}}" }),
         );
-        let out = t.render("F.20260804101545.PY_TRANSFER.xlsx", &ctx()).unwrap();
+        let out = t
+            .render("F.20260804101545.PY_TRANSFER.xlsx", &ctx())
+            .unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["when"], "20260804101545");
         assert_eq!(v["flow"], "PY_TRANSFER");
@@ -307,7 +316,10 @@ mod tests {
 
     #[test]
     fn builtins_are_available() {
-        let t = tpl(r"^(?P<n>.+)$", json!({ "f": "{{filename}}", "e": "{{env}}" }));
+        let t = tpl(
+            r"^(?P<n>.+)$",
+            json!({ "f": "{{filename}}", "e": "{{env}}" }),
+        );
         let out = t.render("anything.xlsx", &ctx()).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["f"], "anything.xlsx");
@@ -350,7 +362,10 @@ mod tests {
 
     #[test]
     fn non_string_values_are_preserved() {
-        let t = tpl(r"^(?P<n>\w+)$", json!({ "num": 42, "yes": true, "nil": null }));
+        let t = tpl(
+            r"^(?P<n>\w+)$",
+            json!({ "num": 42, "yes": true, "nil": null }),
+        );
         let out = t.render("x", &ctx()).unwrap();
         let v: Value = serde_json::from_str(&out).unwrap();
         assert_eq!(v["num"], 42);
@@ -387,4 +402,3 @@ mod tests {
         assert_ne!(a, pseudo_guid());
     }
 }
-

@@ -9,9 +9,12 @@ use std::process::Command;
 #[cfg(target_os = "windows")]
 fn resolve_az_windows() -> String {
     let candidates: &[(&str, &str)] = &[
-        ("ProgramFiles(x86)", r"Microsoft SDKs\Azure\CLI2\wbin\az.cmd"),
-        ("ProgramFiles",      r"Microsoft SDKs\Azure\CLI2\wbin\az.cmd"),
-        ("LOCALAPPDATA",      r"Programs\Azure CLI\wbin\az.cmd"),
+        (
+            "ProgramFiles(x86)",
+            r"Microsoft SDKs\Azure\CLI2\wbin\az.cmd",
+        ),
+        ("ProgramFiles", r"Microsoft SDKs\Azure\CLI2\wbin\az.cmd"),
+        ("LOCALAPPDATA", r"Programs\Azure CLI\wbin\az.cmd"),
     ];
     for (env_var, suffix) in candidates {
         if let Ok(base) = std::env::var(env_var) {
@@ -31,10 +34,10 @@ fn resolve_az_windows() -> String {
 #[cfg(not(target_os = "windows"))]
 fn resolve_az_unix() -> String {
     let mut candidates: Vec<std::path::PathBuf> = vec![
-        "/opt/homebrew/bin/az".into(),   // brew on Apple Silicon
-        "/usr/local/bin/az".into(),      // brew on Intel / manual
-        "/usr/bin/az".into(),            // distro package
-        "/snap/bin/az".into(),           // snap
+        "/opt/homebrew/bin/az".into(), // brew on Apple Silicon
+        "/usr/local/bin/az".into(),    // brew on Intel / manual
+        "/usr/bin/az".into(),          // distro package
+        "/snap/bin/az".into(),         // snap
     ];
     if let Ok(home) = std::env::var("HOME") {
         candidates.push(std::path::Path::new(&home).join(".local/bin/az"));
@@ -49,11 +52,18 @@ fn resolve_az_unix() -> String {
 
 fn az_not_found_message() -> String {
     #[cfg(target_os = "macos")]
-    { "Azure CLI not found. Install with `brew install azure-cli` then restart the app.".to_string() }
+    {
+        "Azure CLI not found. Install with `brew install azure-cli` then restart the app."
+            .to_string()
+    }
     #[cfg(target_os = "linux")]
-    { "Azure CLI not found. Install from https://aka.ms/installazurecli-linux then restart the app.".to_string() }
+    {
+        "Azure CLI not found. Install from https://aka.ms/installazurecli-linux then restart the app.".to_string()
+    }
     #[cfg(target_os = "windows")]
-    { "Azure CLI not found. Install it from https://aka.ms/installazurecliwindows then restart the app.".to_string() }
+    {
+        "Azure CLI not found. Install it from https://aka.ms/installazurecliwindows then restart the app.".to_string()
+    }
 }
 
 /// True when an `az` failure means "the service or the local network stack is
@@ -193,7 +203,10 @@ pub fn az_command_tokio(args: &[&str]) -> tokio::process::Command {
 #[derive(Clone, Debug, PartialEq)]
 pub enum AzLoginState {
     Checking,
-    LoggedIn { account: String, subscription_id: String },
+    LoggedIn {
+        account: String,
+        subscription_id: String,
+    },
     Expired,
     NotLoggedIn,
     /// Azure CLI binary not found on this machine
@@ -231,11 +244,11 @@ pub fn classify_auth_error(s: &str) -> Option<AzAuthKind> {
         "access token has expired",
         "Please run 'az login'",
         "AuthenticationFailed",
-        "AADSTS70043",   // token expired
-        "AADSTS50173",   // session expired due to inactivity
-        "AADSTS700082",  // refresh token expired
-        "AADSTS50058",   // silent sign-in failed
-        "AADSTS50076",   // MFA required
+        "AADSTS70043",  // token expired
+        "AADSTS50173",  // session expired due to inactivity
+        "AADSTS700082", // refresh token expired
+        "AADSTS50058",  // silent sign-in failed
+        "AADSTS50076",  // MFA required
     ];
     if TOKEN_NEEDLES.iter().any(|n| s.contains(n)) {
         return Some(AzAuthKind::TokenExpired);
@@ -321,7 +334,7 @@ pub fn list_subscriptions() -> Result<Vec<AzSubscription>, String> {
 /// A Logic App site discovered directly — includes its resource group.
 #[derive(Clone, Debug, PartialEq, serde::Deserialize)]
 pub struct LogicAppSite {
-    pub name:           String,
+    pub name: String,
     pub resource_group: String,
 }
 
@@ -335,14 +348,19 @@ pub struct LogicAppSite {
 /// (unlike `az group list` which requires subscription-level read access).
 pub fn list_logic_app_sites(sub: &str) -> Result<Vec<LogicAppSite>, String> {
     let output = az_command(&[
-            "resource", "list",
-            "--subscription", sub,
-            "--resource-type", "Microsoft.Web/sites",
-            "--query", "[?contains(kind, 'workflowapp')].{name:name,resource_group:resourceGroup}",
-            "--output", "json",
-        ])
-        .output()
-        .map_err(|e| format!("az resource list failed: {e}"))?;
+        "resource",
+        "list",
+        "--subscription",
+        sub,
+        "--resource-type",
+        "Microsoft.Web/sites",
+        "--query",
+        "[?contains(kind, 'workflowapp')].{name:name,resource_group:resourceGroup}",
+        "--output",
+        "json",
+    ])
+    .output()
+    .map_err(|e| format!("az resource list failed: {e}"))?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).to_string());
     }
@@ -353,20 +371,27 @@ pub fn list_logic_app_sites(sub: &str) -> Result<Vec<LogicAppSite>, String> {
 #[allow(dead_code)]
 pub fn list_logic_apps(sub: &str, rg: &str) -> Result<Vec<String>, String> {
     let output = az_command(&[
-            "resource", "list",
-            "--subscription", sub,
-            "--resource-group", rg,
-            "--resource-type", "Microsoft.Web/sites",
-            "--output", "json",
-        ])
-        .output()
-        .map_err(|e| format!("az resource list failed: {e}"))?;
+        "resource",
+        "list",
+        "--subscription",
+        sub,
+        "--resource-group",
+        rg,
+        "--resource-type",
+        "Microsoft.Web/sites",
+        "--output",
+        "json",
+    ])
+    .output()
+    .map_err(|e| format!("az resource list failed: {e}"))?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).to_string());
     }
     let body = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
-    Ok(json.as_array().unwrap_or(&vec![])
+    Ok(json
+        .as_array()
+        .unwrap_or(&vec![])
         .iter()
         .filter_map(|v| {
             let kind = v["kind"].as_str().unwrap_or("");
@@ -385,12 +410,18 @@ pub fn list_logic_apps(sub: &str, rg: &str) -> Result<Vec<String>, String> {
 /// init with `ErrorInitializing: missing 'location'`.
 pub fn get_site_location(sub: &str, rg: &str, site: &str) -> Result<String, String> {
     let output = az_command(&[
-        "webapp", "show",
-        "--subscription", sub,
-        "--resource-group", rg,
-        "--name", site,
-        "--query", "location",
-        "--output", "tsv",
+        "webapp",
+        "show",
+        "--subscription",
+        sub,
+        "--resource-group",
+        rg,
+        "--name",
+        site,
+        "--query",
+        "location",
+        "--output",
+        "tsv",
     ])
     .output()
     .map_err(|e| format!("az webapp show failed: {e}"))?;
@@ -398,24 +429,35 @@ pub fn get_site_location(sub: &str, rg: &str, site: &str) -> Result<String, Stri
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
     let loc = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if loc.is_empty() { Err("empty location returned by az".into()) } else { Ok(loc) }
+    if loc.is_empty() {
+        Err("empty location returned by az".into())
+    } else {
+        Ok(loc)
+    }
 }
 
 pub fn list_service_bus_namespaces(sub: &str, rg: &str) -> Result<Vec<String>, String> {
     let output = az_command(&[
-            "servicebus", "namespace", "list",
-            "--subscription", sub,
-            "--resource-group", rg,
-            "--output", "json",
-        ])
-        .output()
-        .map_err(|e| format!("az servicebus namespace list failed: {e}"))?;
+        "servicebus",
+        "namespace",
+        "list",
+        "--subscription",
+        sub,
+        "--resource-group",
+        rg,
+        "--output",
+        "json",
+    ])
+    .output()
+    .map_err(|e| format!("az servicebus namespace list failed: {e}"))?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).to_string());
     }
     let body = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
-    Ok(json.as_array().unwrap_or(&vec![])
+    Ok(json
+        .as_array()
+        .unwrap_or(&vec![])
         .iter()
         .filter_map(|v| v["name"].as_str().map(String::from))
         .collect())
@@ -424,8 +466,7 @@ pub fn list_service_bus_namespaces(sub: &str, rg: &str) -> Result<Vec<String>, S
 /// Check current az login status (blocking — call from spawn_blocking)
 pub fn check_login() -> AzLoginState {
     // Step 1: get account metadata from local cache
-    let account_out = az_command(&["account", "show", "--output", "json"])
-        .output();
+    let account_out = az_command(&["account", "show", "--output", "json"]).output();
 
     let acc = match account_out {
         Ok(out) if out.status.success() => {
@@ -449,8 +490,7 @@ pub fn check_login() -> AzLoginState {
     // `az account show` reads local cache and succeeds even after AADSTS70043 expiry.
     // `az account get-access-token` calls the identity endpoint and fails when the
     // refresh token has expired (conditional access, sign-in frequency policy, etc.).
-    let token_out = az_command(&["account", "get-access-token", "--output", "none"])
-        .output();
+    let token_out = az_command(&["account", "get-access-token", "--output", "none"]).output();
 
     match token_out {
         Ok(out) if out.status.success() => AzLoginState::LoggedIn {
@@ -459,7 +499,10 @@ pub fn check_login() -> AzLoginState {
         },
         Ok(out) => {
             let stderr = String::from_utf8_lossy(&out.stderr);
-            if stderr.contains("AADSTS") || stderr.contains("expired") || stderr.contains("refresh token") {
+            if stderr.contains("AADSTS")
+                || stderr.contains("expired")
+                || stderr.contains("refresh token")
+            {
                 AzLoginState::Expired
             } else {
                 AzLoginState::NotLoggedIn
@@ -488,16 +531,13 @@ pub fn open_login(tenant: Option<&str>) -> Result<(), String> {
         args.extend_from_slice(&["--tenant", &tenant_owned]);
         args.extend_from_slice(&["--scope", "https://management.core.windows.net//.default"]);
     }
-    az_command(&args)
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| {
-            if e.kind() == std::io::ErrorKind::NotFound {
-                az_not_found_message()
-            } else {
-                format!("Failed to start 'az login': {e}")
-            }
-        })
+    az_command(&args).spawn().map(|_| ()).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::NotFound {
+            az_not_found_message()
+        } else {
+            format!("Failed to start 'az login': {e}")
+        }
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -513,7 +553,11 @@ pub struct WorkflowInfo {
 }
 
 /// List workflows deployed on a Logic App (blocking)
-pub fn list_deployed_workflows(sub: &str, rg: &str, app: &str) -> Result<Vec<WorkflowInfo>, String> {
+pub fn list_deployed_workflows(
+    sub: &str,
+    rg: &str,
+    app: &str,
+) -> Result<Vec<WorkflowInfo>, String> {
     let url = format!(
         "https://management.azure.com/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.Web/sites/{app}/hostruntime/runtime/webhooks/workflow/api/management/workflows?api-version=2024-04-01"
     );
@@ -528,8 +572,8 @@ pub fn list_deployed_workflows(sub: &str, rg: &str, app: &str) -> Result<Vec<Wor
     }
 
     let body = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value = serde_json::from_str(&body)
-        .map_err(|e| format!("parse error: {e}"))?;
+    let json: serde_json::Value =
+        serde_json::from_str(&body).map_err(|e| format!("parse error: {e}"))?;
 
     // API may return a plain array or {"value": [...]}
     let arr = if json.is_array() {
@@ -550,7 +594,8 @@ pub fn list_deployed_workflows(sub: &str, rg: &str, app: &str) -> Result<Vec<Wor
             // workflow, which killed the trigger-name fallback below in
             // `remote_chain`. Keep the `properties.*` lookups as a fallback so
             // an envelope-shaped response still works.
-            let state = v["health"]["state"].as_str()
+            let state = v["health"]["state"]
+                .as_str()
                 .or_else(|| v["properties"]["state"].as_str())
                 .map(String::from);
             // Extract trigger names — the keys of the "triggers" object.
@@ -561,7 +606,11 @@ pub fn list_deployed_workflows(sub: &str, rg: &str, app: &str) -> Result<Vec<Wor
                 .or_else(|| v["properties"]["triggers"].as_object())
                 .map(|t| t.keys().cloned().collect::<Vec<_>>())
                 .unwrap_or_default();
-            Some(WorkflowInfo { name, state, trigger_names })
+            Some(WorkflowInfo {
+                name,
+                state,
+                trigger_names,
+            })
         })
         .collect();
 
@@ -577,7 +626,13 @@ pub struct RunInfo {
 }
 
 /// List recent runs for a workflow (blocking)
-pub fn list_runs(sub: &str, rg: &str, app: &str, workflow: &str, top: u32) -> Result<Vec<RunInfo>, String> {
+pub fn list_runs(
+    sub: &str,
+    rg: &str,
+    app: &str,
+    workflow: &str,
+    top: u32,
+) -> Result<Vec<RunInfo>, String> {
     let url = format!(
         "https://management.azure.com/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.Web/sites/{app}/hostruntime/runtime/webhooks/workflow/api/management/workflows/{workflow}/runs?api-version=2024-04-01&$top={top}"
     );
@@ -591,8 +646,7 @@ pub fn list_runs(sub: &str, rg: &str, app: &str, workflow: &str, top: u32) -> Re
     }
 
     let body = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value = serde_json::from_str(&body)
-        .map_err(|e| format!("parse: {e}"))?;
+    let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
 
     let runs = json["value"]
         .as_array()
@@ -620,7 +674,13 @@ pub struct ActionInfo {
 }
 
 /// List actions for a specific run (blocking)
-pub fn list_actions(sub: &str, rg: &str, app: &str, workflow: &str, run_id: &str) -> Result<Vec<ActionInfo>, String> {
+pub fn list_actions(
+    sub: &str,
+    rg: &str,
+    app: &str,
+    workflow: &str,
+    run_id: &str,
+) -> Result<Vec<ActionInfo>, String> {
     let url = format!(
         "https://management.azure.com/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.Web/sites/{app}/hostruntime/runtime/webhooks/workflow/api/management/workflows/{workflow}/runs/{run_id}/actions?api-version=2024-04-01"
     );
@@ -634,8 +694,7 @@ pub fn list_actions(sub: &str, rg: &str, app: &str, workflow: &str, run_id: &str
     }
 
     let body = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value = serde_json::from_str(&body)
-        .map_err(|e| format!("parse: {e}"))?;
+    let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
 
     let actions = json["value"]
         .as_array()
@@ -664,7 +723,12 @@ pub struct QueueInfo {
 }
 
 /// List trigger names for a workflow (blocking)
-pub fn list_triggers(sub: &str, rg: &str, app: &str, workflow: &str) -> Result<Vec<String>, String> {
+pub fn list_triggers(
+    sub: &str,
+    rg: &str,
+    app: &str,
+    workflow: &str,
+) -> Result<Vec<String>, String> {
     let url = format!(
         "https://management.azure.com/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.Web/sites/{app}/hostruntime/runtime/webhooks/workflow/api/management/workflows/{workflow}/triggers?api-version=2024-04-01"
     );
@@ -678,10 +742,13 @@ pub fn list_triggers(sub: &str, rg: &str, app: &str, workflow: &str) -> Result<V
     }
 
     let body = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value = serde_json::from_str(&body)
-        .map_err(|e| format!("parse: {e}"))?;
+    let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
 
-    let arr = if json.is_array() { json.as_array() } else { json["value"].as_array() };
+    let arr = if json.is_array() {
+        json.as_array()
+    } else {
+        json["value"].as_array()
+    };
 
     Ok(arr
         .unwrap_or(&vec![])
@@ -693,19 +760,24 @@ pub fn list_triggers(sub: &str, rg: &str, app: &str, workflow: &str) -> Result<V
 /// Get the callback URL for a workflow trigger (blocking).
 /// Tries each trigger name until one returns a callback URL.
 pub fn get_trigger_url(sub: &str, rg: &str, app: &str, workflow: &str) -> Result<String, String> {
-    let triggers = list_triggers(sub, rg, app, workflow)
-        .unwrap_or_else(|_| vec!["manual".into()]);
+    let triggers = list_triggers(sub, rg, app, workflow).unwrap_or_else(|_| vec!["manual".into()]);
 
-    let trigger_names = if triggers.is_empty() { vec!["manual".into()] } else { triggers };
+    let trigger_names = if triggers.is_empty() {
+        vec!["manual".into()]
+    } else {
+        triggers
+    };
 
     for trigger_name in &trigger_names {
         let url = format!(
             "https://management.azure.com/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.Web/sites/{app}/hostruntime/runtime/webhooks/workflow/api/management/workflows/{workflow}/triggers/{trigger_name}/listCallbackUrl?api-version=2024-04-01"
         );
 
-        let output = az_command(&["rest", "--method", "POST", "--url", &url, "--output", "json"])
-            .output()
-            .map_err(|e| format!("az rest failed: {e}"))?;
+        let output = az_command(&[
+            "rest", "--method", "POST", "--url", &url, "--output", "json",
+        ])
+        .output()
+        .map_err(|e| format!("az rest failed: {e}"))?;
 
         if !output.status.success() {
             continue;
@@ -726,10 +798,15 @@ pub fn get_trigger_url(sub: &str, rg: &str, app: &str, workflow: &str) -> Result
 pub fn trigger_workflow(callback_url: &str, payload: &str) -> Result<TriggerResult, String> {
     let output = Command::new("curl")
         .args([
-            "-s", "-w", "\n%{http_code}",
-            "-X", "POST",
-            "-H", "Content-Type: application/json",
-            "-d", payload,
+            "-s",
+            "-w",
+            "\n%{http_code}",
+            "-X",
+            "POST",
+            "-H",
+            "Content-Type: application/json",
+            "-d",
+            payload,
             callback_url,
         ])
         .output()
@@ -738,7 +815,11 @@ pub fn trigger_workflow(callback_url: &str, payload: &str) -> Result<TriggerResu
     let full = String::from_utf8_lossy(&output.stdout).to_string();
     let lines: Vec<&str> = full.trim().rsplitn(2, '\n').collect();
     let status_code = lines[0].parse::<u16>().unwrap_or(0);
-    let response_body = if lines.len() > 1 { lines[1].to_string() } else { String::new() };
+    let response_body = if lines.len() > 1 {
+        lines[1].to_string()
+    } else {
+        String::new()
+    };
 
     Ok(TriggerResult {
         status_code,
@@ -754,26 +835,40 @@ pub struct TriggerResult {
 
 /// Fetch the app's published configuration as a key→value map (blocking).
 /// Used to resolve @appsetting('VAR') references in queue names.
-pub fn get_app_settings(sub: &str, rg: &str, app: &str) -> Result<std::collections::HashMap<String, String>, String> {
+pub fn get_app_settings(
+    sub: &str,
+    rg: &str,
+    app: &str,
+) -> Result<std::collections::HashMap<String, String>, String> {
     let output = az_command(&[
-            "webapp", "config", "appsettings", "list",
-            "--subscription", sub,
-            "--resource-group", rg,
-            "--name", app,
-            "--output", "json",
-        ])
-        .output()
-        .map_err(|e| format!("az appsettings failed: {e}"))?;
+        "webapp",
+        "config",
+        "appsettings",
+        "list",
+        "--subscription",
+        sub,
+        "--resource-group",
+        rg,
+        "--name",
+        app,
+        "--output",
+        "json",
+    ])
+    .output()
+    .map_err(|e| format!("az appsettings failed: {e}"))?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).to_string());
     }
     let body = String::from_utf8_lossy(&output.stdout);
     let arr: Vec<serde_json::Value> = serde_json::from_str(&body).unwrap_or_default();
-    Ok(arr.iter().filter_map(|v| {
-        let k = v["name"].as_str()?.to_string();
-        let val = v["value"].as_str().unwrap_or("").to_string();
-        Some((k, val))
-    }).collect())
+    Ok(arr
+        .iter()
+        .filter_map(|v| {
+            let k = v["name"].as_str()?.to_string();
+            let val = v["value"].as_str().unwrap_or("").to_string();
+            Some((k, val))
+        })
+        .collect())
 }
 
 /// Fetch every key-value pair from an Azure App Configuration store
@@ -785,25 +880,36 @@ pub fn get_app_settings(sub: &str, rg: &str, app: &str) -> Result<std::collectio
 /// Data Reader) rather than requiring a connection string.
 pub fn appconfig_list_kv(sub: &str, store_name: &str) -> Result<HashMap<String, String>, String> {
     let output = az_command(&[
-            "appconfig", "kv", "list",
-            "--subscription", sub,
-            "--name", store_name,
-            "--auth-mode", "login",
-            "--query", "[].{key:key,value:value}",
-            "-o", "json",
-        ])
-        .output()
-        .map_err(|e| format!("az appconfig kv list: {e}"))?;
+        "appconfig",
+        "kv",
+        "list",
+        "--subscription",
+        sub,
+        "--name",
+        store_name,
+        "--auth-mode",
+        "login",
+        "--query",
+        "[].{key:key,value:value}",
+        "-o",
+        "json",
+    ])
+    .output()
+    .map_err(|e| format!("az appconfig kv list: {e}"))?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
     let body = String::from_utf8_lossy(&output.stdout);
-    let arr: Vec<serde_json::Value> = serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
-    Ok(arr.iter().filter_map(|v| {
-        let k = v["key"].as_str()?.to_string();
-        let val = v["value"].as_str().unwrap_or("").to_string();
-        Some((k, val))
-    }).collect())
+    let arr: Vec<serde_json::Value> =
+        serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
+    Ok(arr
+        .iter()
+        .filter_map(|v| {
+            let k = v["key"].as_str()?.to_string();
+            let val = v["value"].as_str().unwrap_or("").to_string();
+            Some((k, val))
+        })
+        .collect())
 }
 
 /// Resolve a Key Vault secret's current value (blocking). Used to verify a
@@ -811,14 +917,20 @@ pub fn appconfig_list_kv(sub: &str, store_name: &str) -> Result<HashMap<String, 
 /// rather than just checking the reference syntax is well-formed.
 pub fn keyvault_resolve_secret(vault_name: &str, secret_name: &str) -> Result<String, String> {
     let output = az_command(&[
-            "keyvault", "secret", "show",
-            "--vault-name", vault_name,
-            "--name", secret_name,
-            "--query", "value",
-            "-o", "tsv",
-        ])
-        .output()
-        .map_err(|e| format!("az keyvault secret show: {e}"))?;
+        "keyvault",
+        "secret",
+        "show",
+        "--vault-name",
+        vault_name,
+        "--name",
+        secret_name,
+        "--query",
+        "value",
+        "-o",
+        "tsv",
+    ])
+    .output()
+    .map_err(|e| format!("az keyvault secret show: {e}"))?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
@@ -902,16 +1014,23 @@ fn is_kv_reference(value: &str) -> bool {
 /// Extract `(vault_name, secret_name)` from a Key Vault reference value.
 /// Supports both the `SecretUri=` form and the `VaultName=;SecretName=` form.
 fn parse_kv_reference(value: &str) -> Option<(String, String)> {
-    let inner = value.trim_start()
+    let inner = value
+        .trim_start()
         .strip_prefix("@Microsoft.KeyVault(")?
         .strip_suffix(')')?;
     let mut vault_name = None;
     let mut secret_name = None;
     let mut secret_uri = None;
     for part in inner.split(';') {
-        if let Some(v) = part.strip_prefix("VaultName=") { vault_name = Some(v.to_string()); }
-        if let Some(v) = part.strip_prefix("SecretName=") { secret_name = Some(v.to_string()); }
-        if let Some(v) = part.strip_prefix("SecretUri=") { secret_uri = Some(v.to_string()); }
+        if let Some(v) = part.strip_prefix("VaultName=") {
+            vault_name = Some(v.to_string());
+        }
+        if let Some(v) = part.strip_prefix("SecretName=") {
+            secret_name = Some(v.to_string());
+        }
+        if let Some(v) = part.strip_prefix("SecretUri=") {
+            secret_uri = Some(v.to_string());
+        }
     }
     if let (Some(vn), Some(sn)) = (vault_name, secret_name) {
         return Some((vn, sn));
@@ -921,7 +1040,11 @@ fn parse_kv_reference(value: &str) -> Option<(String, String)> {
         let trimmed = uri.trim_end_matches('/');
         let parts: Vec<&str> = trimmed.split('/').collect();
         let vault = trimmed.split("//").nth(1)?.split('.').next()?.to_string();
-        let name = parts.get(parts.len().saturating_sub(1)).copied().unwrap_or("").to_string();
+        let name = parts
+            .get(parts.len().saturating_sub(1))
+            .copied()
+            .unwrap_or("")
+            .to_string();
         if !vault.is_empty() && !name.is_empty() {
             return Some((vault, name));
         }
@@ -936,30 +1059,42 @@ pub fn compute_app_settings_drift(
     live: &HashMap<String, String>,
     expected: Option<&HashMap<String, String>>,
 ) -> Vec<AppSettingDrift> {
-    let mut rows: Vec<AppSettingDrift> = live.iter().map(|(key, live_value)| {
-        let expected_value = expected.and_then(|e| e.get(key)).cloned();
+    let mut rows: Vec<AppSettingDrift> = live
+        .iter()
+        .map(|(key, live_value)| {
+            let expected_value = expected.and_then(|e| e.get(key)).cloned();
 
-        let status = if is_kv_reference(live_value) {
-            match parse_kv_reference(live_value) {
-                Some((vault, secret)) => match keyvault_resolve_secret(&vault, &secret) {
-                    Ok(v) if !v.is_empty() => DriftStatus::KvOk,
-                    Ok(_) => DriftStatus::KvFail { error: "secret resolved to an empty value".to_string() },
-                    Err(e) => DriftStatus::KvFail { error: e },
-                },
-                None => DriftStatus::KvFail { error: "malformed Key Vault reference".to_string() },
-            }
-        } else if let Some(missing) = detect_partial_connection_string(live_value) {
-            DriftStatus::LiteralWarn { missing }
-        } else {
-            match &expected_value {
-                None => DriftStatus::NoExpected,
-                Some(exp) if exp == live_value => DriftStatus::Match,
-                Some(_) => DriftStatus::Diff,
-            }
-        };
+            let status = if is_kv_reference(live_value) {
+                match parse_kv_reference(live_value) {
+                    Some((vault, secret)) => match keyvault_resolve_secret(&vault, &secret) {
+                        Ok(v) if !v.is_empty() => DriftStatus::KvOk,
+                        Ok(_) => DriftStatus::KvFail {
+                            error: "secret resolved to an empty value".to_string(),
+                        },
+                        Err(e) => DriftStatus::KvFail { error: e },
+                    },
+                    None => DriftStatus::KvFail {
+                        error: "malformed Key Vault reference".to_string(),
+                    },
+                }
+            } else if let Some(missing) = detect_partial_connection_string(live_value) {
+                DriftStatus::LiteralWarn { missing }
+            } else {
+                match &expected_value {
+                    None => DriftStatus::NoExpected,
+                    Some(exp) if exp == live_value => DriftStatus::Match,
+                    Some(_) => DriftStatus::Diff,
+                }
+            };
 
-        AppSettingDrift { key: key.clone(), live_value: live_value.clone(), expected_value, status }
-    }).collect();
+            AppSettingDrift {
+                key: key.clone(),
+                live_value: live_value.clone(),
+                expected_value,
+                status,
+            }
+        })
+        .collect();
 
     if let Some(expected) = expected {
         for (key, exp_value) in expected {
@@ -981,17 +1116,30 @@ pub fn compute_app_settings_drift(
 /// Set a single app setting on a Function App / Logic App (blocking). Used
 /// by the drift view's "Reset to App Configuration value" action — merges
 /// the one key in without touching any other setting.
-pub fn set_app_setting(sub: &str, rg: &str, app: &str, key: &str, value: &str) -> Result<(), String> {
+pub fn set_app_setting(
+    sub: &str,
+    rg: &str,
+    app: &str,
+    key: &str,
+    value: &str,
+) -> Result<(), String> {
     let setting = format!("{key}={value}");
     let output = az_command(&[
-            "webapp", "config", "appsettings", "set",
-            "--subscription", sub,
-            "--resource-group", rg,
-            "--name", app,
-            "--settings", &setting,
-        ])
-        .output()
-        .map_err(|e| format!("az appsettings set: {e}"))?;
+        "webapp",
+        "config",
+        "appsettings",
+        "set",
+        "--subscription",
+        sub,
+        "--resource-group",
+        rg,
+        "--name",
+        app,
+        "--settings",
+        &setting,
+    ])
+    .output()
+    .map_err(|e| format!("az appsettings set: {e}"))?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
@@ -1039,7 +1187,12 @@ fn functionapp_lifecycle(verb: &[&str], sub: &str, rg: &str, app: &str) -> Resul
 ///
 /// NOTE: the hostruntime management endpoint returns only METADATA (trigger names
 /// but no parameters), so we use the ARM resource endpoint instead.
-pub fn get_workflow_definition(sub: &str, rg: &str, app: &str, workflow: &str) -> Result<serde_json::Value, String> {
+pub fn get_workflow_definition(
+    sub: &str,
+    rg: &str,
+    app: &str,
+    workflow: &str,
+) -> Result<serde_json::Value, String> {
     // ARM resource endpoint — returns the files including workflow.json content
     let uri = format!(
         "https://management.azure.com/subscriptions/{sub}/resourceGroups/{rg}\
@@ -1059,7 +1212,8 @@ pub fn get_workflow_definition(sub: &str, rg: &str, app: &str, workflow: &str) -
 
     // Extract the workflow.json content from properties.files["workflow.json"]
     // That value IS the workflow.json file (has "definition" key at root)
-    if let Some(wf) = json.get("properties")
+    if let Some(wf) = json
+        .get("properties")
         .and_then(|p| p.get("files"))
         .and_then(|f| f.get("workflow.json"))
     {
@@ -1073,22 +1227,27 @@ pub fn get_workflow_definition(sub: &str, rg: &str, app: &str, workflow: &str) -
 /// Get queue message counts (blocking)
 pub fn check_queue(sb_namespace: &str, rg: &str, queue_name: &str) -> Result<QueueInfo, String> {
     let output = az_command(&[
-            "servicebus", "queue", "show",
-            "--namespace-name", sb_namespace,
-            "--resource-group", rg,
-            "--name", queue_name,
-            "--output", "json",
-        ])
-        .output()
-        .map_err(|e| format!("az sb failed: {e}"))?;
+        "servicebus",
+        "queue",
+        "show",
+        "--namespace-name",
+        sb_namespace,
+        "--resource-group",
+        rg,
+        "--name",
+        queue_name,
+        "--output",
+        "json",
+    ])
+    .output()
+    .map_err(|e| format!("az sb failed: {e}"))?;
 
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).to_string());
     }
 
     let body = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value = serde_json::from_str(&body)
-        .map_err(|e| format!("parse: {e}"))?;
+    let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
 
     let cd = &json["countDetails"];
     Ok(QueueInfo {
@@ -1102,15 +1261,24 @@ pub fn check_queue(sb_namespace: &str, rg: &str, queue_name: &str) -> Result<Que
 /// Fetch the primary connection string for a Service Bus namespace via az CLI.
 pub fn sb_get_connection_string(rg: &str, namespace: &str) -> Result<String, String> {
     let output = az_command(&[
-            "servicebus", "namespace", "authorization-rule", "keys", "list",
-            "--resource-group", rg,
-            "--namespace-name", namespace,
-            "--name", "RootManageSharedAccessKey",
-            "--query", "primaryConnectionString",
-            "-o", "tsv",
-        ])
-        .output()
-        .map_err(|e| format!("az failed: {e}"))?;
+        "servicebus",
+        "namespace",
+        "authorization-rule",
+        "keys",
+        "list",
+        "--resource-group",
+        rg,
+        "--namespace-name",
+        namespace,
+        "--name",
+        "RootManageSharedAccessKey",
+        "--query",
+        "primaryConnectionString",
+        "-o",
+        "tsv",
+    ])
+    .output()
+    .map_err(|e| format!("az failed: {e}"))?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
@@ -1153,11 +1321,20 @@ pub async fn sb_send_message(conn_str: &str, queue: &str, body: &str) -> Result<
         }
     }
     if endpoint.is_empty() || key.is_empty() {
-        return Err(format!("Invalid connection string (endpoint={}, key_name={}, key_len={})",
-            endpoint.is_empty(), key_name, key.len()));
+        return Err(format!(
+            "Invalid connection string (endpoint={}, key_name={}, key_len={})",
+            endpoint.is_empty(),
+            key_name,
+            key.len()
+        ));
     }
 
-    eprintln!("[SB Send] endpoint='{}' key_name='{}' key_len={}", endpoint, key_name, key.len());
+    eprintln!(
+        "[SB Send] endpoint='{}' key_name='{}' key_len={}",
+        endpoint,
+        key_name,
+        key.len()
+    );
 
     let url = format!("https://{}/{}/messages", endpoint, queue);
 
@@ -1168,7 +1345,8 @@ pub async fn sb_send_message(conn_str: &str, queue: &str, body: &str) -> Result<
     let expiry = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
-        .as_secs() + 300;
+        .as_secs()
+        + 300;
 
     // The resource URI for signing — use https:// scheme per Azure REST API.
     // URL-encode must use lowercase hex (%3a not %3A) to match Azure's server-side
@@ -1187,8 +1365,7 @@ pub async fn sb_send_message(conn_str: &str, queue: &str, body: &str) -> Result<
 
     let decoded_key = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, key)
         .map_err(|e| format!("base64 decode: {e}"))?;
-    let mut mac = HmacSha256::new_from_slice(&decoded_key)
-        .map_err(|e| format!("hmac: {e}"))?;
+    let mut mac = HmacSha256::new_from_slice(&decoded_key).map_err(|e| format!("hmac: {e}"))?;
     mac.update(to_sign.as_bytes());
     let sig_bytes = mac.finalize().into_bytes();
     let signature = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, sig_bytes);
@@ -1203,7 +1380,10 @@ pub async fn sb_send_message(conn_str: &str, queue: &str, body: &str) -> Result<
     let resp = client
         .post(&url)
         .header("Authorization", &token)
-        .header("Content-Type", "application/atom+xml;type=entry;charset=utf-8")
+        .header(
+            "Content-Type",
+            "application/atom+xml;type=entry;charset=utf-8",
+        )
         .body(body.to_string())
         .send()
         .await
@@ -1211,7 +1391,11 @@ pub async fn sb_send_message(conn_str: &str, queue: &str, body: &str) -> Result<
 
     let status = resp.status();
     let text = resp.text().await.unwrap_or_default();
-    eprintln!("[SB Send] response: {} {}", status, &text[..200.min(text.len())]);
+    eprintln!(
+        "[SB Send] response: {} {}",
+        status,
+        &text[..200.min(text.len())]
+    );
     if status.is_success() || status.as_u16() == 201 {
         Ok(())
     } else if status.as_u16() == 401 && text.is_empty() {
@@ -1269,13 +1453,17 @@ pub async fn sb_peek_dead_letters(
     }
 
     let resource_path = format!("{}/$DeadLetterQueue", queue);
-    let url = format!("https://{}/{}/messages/head?timeout=5", endpoint, resource_path);
+    let url = format!(
+        "https://{}/{}/messages/head?timeout=5",
+        endpoint, resource_path
+    );
 
     // SAS token covering the whole DLQ path (same shape as the send path).
     let expiry = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
-        .as_secs() + 300;
+        .as_secs()
+        + 300;
     let resource_uri = format!("https://{}/{}", endpoint, resource_path).to_lowercase();
     let encoded_resource = lowercase_url_encode(&resource_uri);
     let to_sign = format!("{}\n{}", encoded_resource, expiry);
@@ -1285,8 +1473,7 @@ pub async fn sb_peek_dead_letters(
     type HmacSha256 = Hmac<Sha256>;
     let decoded_key = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, key)
         .map_err(|e| format!("base64 decode: {e}"))?;
-    let mut mac = HmacSha256::new_from_slice(&decoded_key)
-        .map_err(|e| format!("hmac: {e}"))?;
+    let mut mac = HmacSha256::new_from_slice(&decoded_key).map_err(|e| format!("hmac: {e}"))?;
     mac.update(to_sign.as_bytes());
     let sig_bytes = mac.finalize().into_bytes();
     let signature = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, sig_bytes);
@@ -1318,7 +1505,9 @@ pub async fn sb_peek_dead_letters(
 
         let status = resp.status();
         // 204 No Content = empty (no more messages currently visible).
-        if status.as_u16() == 204 { break; }
+        if status.as_u16() == 204 {
+            break;
+        }
 
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
@@ -1330,30 +1519,51 @@ pub async fn sb_peek_dead_letters(
 
         // BrokerProperties is sent back as a JSON header — that's where the
         // dead-letter reason and delivery count live.
-        let broker_props = resp.headers()
+        let broker_props = resp
+            .headers()
             .get("BrokerProperties")
             .and_then(|h| h.to_str().ok())
             .map(|s| s.to_string())
             .unwrap_or_default();
         // DeadLetterReason / DeadLetterErrorDescription are custom properties
         // promoted to top-level headers when present.
-        let dl_reason = resp.headers().get("DeadLetterReason")
-            .and_then(|h| h.to_str().ok()).unwrap_or("").to_string();
-        let dl_desc = resp.headers().get("DeadLetterErrorDescription")
-            .and_then(|h| h.to_str().ok()).unwrap_or("").to_string();
+        let dl_reason = resp
+            .headers()
+            .get("DeadLetterReason")
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("")
+            .to_string();
+        let dl_desc = resp
+            .headers()
+            .get("DeadLetterErrorDescription")
+            .and_then(|h| h.to_str().ok())
+            .unwrap_or("")
+            .to_string();
 
         let body_bytes = resp.bytes().await.unwrap_or_default();
         // Truncate at 8 KB to keep the UI snappy and the memory bounded.
         let body = String::from_utf8_lossy(&body_bytes[..body_bytes.len().min(8192)]).to_string();
 
-        let bp: serde_json::Value = serde_json::from_str(&broker_props).unwrap_or(serde_json::json!({}));
+        let bp: serde_json::Value =
+            serde_json::from_str(&broker_props).unwrap_or(serde_json::json!({}));
         out.push(DeadLetterMessage {
             body,
-            message_id: bp.get("MessageId").and_then(|v| v.as_str()).unwrap_or("").to_string(),
-            enqueued_time: bp.get("EnqueuedTimeUtc").and_then(|v| v.as_str()).unwrap_or("").to_string(),
+            message_id: bp
+                .get("MessageId")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
+            enqueued_time: bp
+                .get("EnqueuedTimeUtc")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string(),
             dead_letter_reason: dl_reason,
             dead_letter_description: dl_desc,
-            delivery_count: bp.get("DeliveryCount").and_then(|v| v.as_i64()).unwrap_or(0),
+            delivery_count: bp
+                .get("DeliveryCount")
+                .and_then(|v| v.as_i64())
+                .unwrap_or(0),
         });
     }
 
@@ -1384,7 +1594,12 @@ fn sb_parse_conn_str(conn_str: &str) -> Result<(String, String, String), String>
 
 /// Build a 5-minute SAS token authorizing `resource_path` under `endpoint`.
 /// Same signing scheme used by `sb_send_message` / `sb_peek_dead_letters`.
-fn sb_sas_token(endpoint: &str, key_name: &str, key: &str, resource_path: &str) -> Result<String, String> {
+fn sb_sas_token(
+    endpoint: &str,
+    key_name: &str,
+    key: &str,
+    resource_path: &str,
+) -> Result<String, String> {
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
     type HmacSha256 = Hmac<Sha256>;
@@ -1392,15 +1607,15 @@ fn sb_sas_token(endpoint: &str, key_name: &str, key: &str, resource_path: &str) 
     let expiry = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap()
-        .as_secs() + 300;
+        .as_secs()
+        + 300;
     let resource_uri = format!("https://{}/{}", endpoint, resource_path).to_lowercase();
     let encoded_resource = lowercase_url_encode(&resource_uri);
     let to_sign = format!("{}\n{}", encoded_resource, expiry);
 
     let decoded_key = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, key)
         .map_err(|e| format!("base64 decode: {e}"))?;
-    let mut mac = HmacSha256::new_from_slice(&decoded_key)
-        .map_err(|e| format!("hmac: {e}"))?;
+    let mut mac = HmacSha256::new_from_slice(&decoded_key).map_err(|e| format!("hmac: {e}"))?;
     mac.update(to_sign.as_bytes());
     let sig_bytes = mac.finalize().into_bytes();
     let signature = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, sig_bytes);
@@ -1417,10 +1632,17 @@ fn sb_sas_token(endpoint: &str, key_name: &str, key: &str, resource_path: &str) 
 /// dead-letter sub-queue). Uses the SB REST API's "receive and delete" mode
 /// (`DELETE .../messages/head`), which removes each message permanently —
 /// unlike `sb_peek_dead_letters`'s non-destructive peek-lock.
-async fn sb_receive_and_delete(conn_str: &str, resource_path: &str, max: usize) -> Result<usize, String> {
+async fn sb_receive_and_delete(
+    conn_str: &str,
+    resource_path: &str,
+    max: usize,
+) -> Result<usize, String> {
     let (endpoint, key_name, key) = sb_parse_conn_str(conn_str)?;
     let token = sb_sas_token(&endpoint, &key_name, &key, resource_path)?;
-    let url = format!("https://{}/{}/messages/head?timeout=5", endpoint, resource_path);
+    let url = format!(
+        "https://{}/{}/messages/head?timeout=5",
+        endpoint, resource_path
+    );
     let client = reqwest::Client::new();
     let mut deleted = 0usize;
     for _ in 0..max {
@@ -1431,7 +1653,9 @@ async fn sb_receive_and_delete(conn_str: &str, resource_path: &str, max: usize) 
             .await
             .map_err(|e| format!("HTTP error: {e}"))?;
         let status = resp.status();
-        if status.as_u16() == 204 { break; }
+        if status.as_u16() == 204 {
+            break;
+        }
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
             if status.as_u16() == 401 && text.is_empty() {
@@ -1474,7 +1698,11 @@ pub async fn sb_probe_roundtrip(conn_str: &str, queue: &str) -> Result<u128, Str
 
 /// Purge (permanently delete) up to `max` messages from a queue's
 /// dead-letter sub-queue.
-pub async fn sb_purge_dead_letters(conn_str: &str, queue: &str, max: usize) -> Result<usize, String> {
+pub async fn sb_purge_dead_letters(
+    conn_str: &str,
+    queue: &str,
+    max: usize,
+) -> Result<usize, String> {
     let dlq_path = format!("{}/$DeadLetterQueue", queue);
     sb_receive_and_delete(conn_str, &dlq_path, max).await
 }
@@ -1484,7 +1712,11 @@ pub async fn sb_purge_dead_letters(conn_str: &str, queue: &str, max: usize) -> R
 /// body to the main queue. If resubmission fails partway through, the
 /// already-removed message is dropped — the failure is surfaced immediately
 /// so remaining messages are left untouched rather than also drained.
-pub async fn sb_requeue_dead_letters(conn_str: &str, queue: &str, max: usize) -> Result<usize, String> {
+pub async fn sb_requeue_dead_letters(
+    conn_str: &str,
+    queue: &str,
+    max: usize,
+) -> Result<usize, String> {
     let (endpoint, key_name, key) = sb_parse_conn_str(conn_str)?;
     let dlq_path = format!("{}/$DeadLetterQueue", queue);
     let dlq_token = sb_sas_token(&endpoint, &key_name, &key, &dlq_path)?;
@@ -1502,7 +1734,9 @@ pub async fn sb_requeue_dead_letters(conn_str: &str, queue: &str, max: usize) ->
             .await
             .map_err(|e| format!("HTTP error: {e}"))?;
         let status = resp.status();
-        if status.as_u16() == 204 { break; }
+        if status.as_u16() == 204 {
+            break;
+        }
         if !status.is_success() {
             let text = resp.text().await.unwrap_or_default();
             return Err(format!("SB returned {}: {}", status, text));
@@ -1512,7 +1746,10 @@ pub async fn sb_requeue_dead_letters(conn_str: &str, queue: &str, max: usize) ->
         let send_resp = client
             .post(&send_url)
             .header("Authorization", &send_token)
-            .header("Content-Type", "application/atom+xml;type=entry;charset=utf-8")
+            .header(
+                "Content-Type",
+                "application/atom+xml;type=entry;charset=utf-8",
+            )
             .body(body.to_vec())
             .send()
             .await
@@ -1552,22 +1789,29 @@ pub struct EventGridSystemTopic {
 /// List EventGrid system topics in a resource group (blocking)
 pub fn list_eventgrid_system_topics(rg: &str) -> Result<Vec<EventGridSystemTopic>, String> {
     let output = az_command(&[
-            "eventgrid", "system-topic", "list",
-            "--resource-group", rg,
-            "--output", "json",
-        ])
-        .output()
-        .map_err(|e| format!("az eventgrid failed: {e}"))?;
+        "eventgrid",
+        "system-topic",
+        "list",
+        "--resource-group",
+        rg,
+        "--output",
+        "json",
+    ])
+    .output()
+    .map_err(|e| format!("az eventgrid failed: {e}"))?;
 
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).to_string());
     }
 
     let body = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value = serde_json::from_str(&body)
-        .map_err(|e| format!("parse: {e}"))?;
+    let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
 
-    let arr = if json.is_array() { json.as_array() } else { json["value"].as_array() };
+    let arr = if json.is_array() {
+        json.as_array()
+    } else {
+        json["value"].as_array()
+    };
 
     let topics = arr
         .unwrap_or(&vec![])
@@ -1586,25 +1830,37 @@ pub fn list_eventgrid_system_topics(rg: &str) -> Result<Vec<EventGridSystemTopic
 }
 
 /// List event subscriptions under a system topic (blocking)
-pub fn list_eventgrid_system_topic_subscriptions(rg: &str, topic_name: &str) -> Result<Vec<EventGridSubscription>, String> {
+pub fn list_eventgrid_system_topic_subscriptions(
+    rg: &str,
+    topic_name: &str,
+) -> Result<Vec<EventGridSubscription>, String> {
     let output = az_command(&[
-            "eventgrid", "system-topic", "event-subscription", "list",
-            "--resource-group", rg,
-            "--system-topic-name", topic_name,
-            "--output", "json",
-        ])
-        .output()
-        .map_err(|e| format!("az eventgrid failed: {e}"))?;
+        "eventgrid",
+        "system-topic",
+        "event-subscription",
+        "list",
+        "--resource-group",
+        rg,
+        "--system-topic-name",
+        topic_name,
+        "--output",
+        "json",
+    ])
+    .output()
+    .map_err(|e| format!("az eventgrid failed: {e}"))?;
 
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).to_string());
     }
 
     let body = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value = serde_json::from_str(&body)
-        .map_err(|e| format!("parse: {e}"))?;
+    let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
 
-    let arr = if json.is_array() { json.as_array() } else { json["value"].as_array() };
+    let arr = if json.is_array() {
+        json.as_array()
+    } else {
+        json["value"].as_array()
+    };
 
     let subs = arr
         .unwrap_or(&vec![])
@@ -1648,10 +1904,18 @@ pub fn list_eventgrid_system_topic_subscriptions(rg: &str, topic_name: &str) -> 
                         let op = af["operatorType"].as_str().unwrap_or("").to_string();
                         let values: Vec<String> = af["values"]
                             .as_array()
-                            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|v| v.as_str().map(String::from))
+                                    .collect()
+                            })
                             .or_else(|| af["value"].as_str().map(|s| vec![s.to_string()]))
                             .unwrap_or_default();
-                        filters.push(EventGridFilter { key, operator: op, values });
+                        filters.push(EventGridFilter {
+                            key,
+                            operator: op,
+                            values,
+                        });
                     }
                 }
             }
@@ -1683,24 +1947,33 @@ pub struct ResourceInfo {
 /// Cosmos/SQL/Storage/etc. resource individually in the profile.
 pub fn list_resources(sub: &str, rg: &str) -> Result<Vec<ResourceInfo>, String> {
     let output = az_command(&[
-            "resource", "list",
-            "--subscription", sub,
-            "--resource-group", rg,
-            "--query", "[].{name:name,type:type,id:id}",
-            "-o", "json",
-        ])
-        .output()
-        .map_err(|e| format!("az resource list: {e}"))?;
+        "resource",
+        "list",
+        "--subscription",
+        sub,
+        "--resource-group",
+        rg,
+        "--query",
+        "[].{name:name,type:type,id:id}",
+        "-o",
+        "json",
+    ])
+    .output()
+    .map_err(|e| format!("az resource list: {e}"))?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
     let body = String::from_utf8_lossy(&output.stdout);
-    let arr: Vec<serde_json::Value> = serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
-    Ok(arr.iter().map(|v| ResourceInfo {
-        name: v["name"].as_str().unwrap_or("").to_string(),
-        resource_type: v["type"].as_str().unwrap_or("").to_string(),
-        id: v["id"].as_str().unwrap_or("").to_string(),
-    }).collect())
+    let arr: Vec<serde_json::Value> =
+        serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
+    Ok(arr
+        .iter()
+        .map(|v| ResourceInfo {
+            name: v["name"].as_str().unwrap_or("").to_string(),
+            resource_type: v["type"].as_str().unwrap_or("").to_string(),
+            id: v["id"].as_str().unwrap_or("").to_string(),
+        })
+        .collect())
 }
 
 /// Fetch a resource's lifecycle state (blocking). Different resource types
@@ -1709,13 +1982,17 @@ pub fn list_resources(sub: &str, rg: &str) -> Result<Vec<ResourceInfo>, String> 
 /// fallback tries both rather than needing a per-type command.
 pub fn get_resource_state(resource_id: &str) -> Result<String, String> {
     let output = az_command(&[
-            "resource", "show",
-            "--ids", resource_id,
-            "--query", "properties.state || properties.provisioningState || 'Unknown'",
-            "-o", "tsv",
-        ])
-        .output()
-        .map_err(|e| format!("az resource show: {e}"))?;
+        "resource",
+        "show",
+        "--ids",
+        resource_id,
+        "--query",
+        "properties.state || properties.provisioningState || 'Unknown'",
+        "-o",
+        "tsv",
+    ])
+    .output()
+    .map_err(|e| format!("az resource show: {e}"))?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
@@ -1730,9 +2007,19 @@ pub fn get_resource_availability(resource_id: &str) -> Result<String, String> {
     let uri = format!(
         "https://management.azure.com{resource_id}/providers/Microsoft.ResourceHealth/availabilityStatuses/current?api-version=2020-05-01"
     );
-    let output = az_command(&["rest", "--method", "GET", "--uri", &uri, "--query", "properties.availabilityState", "-o", "tsv"])
-        .output()
-        .map_err(|e| format!("az rest failed: {e}"))?;
+    let output = az_command(&[
+        "rest",
+        "--method",
+        "GET",
+        "--uri",
+        &uri,
+        "--query",
+        "properties.availabilityState",
+        "-o",
+        "tsv",
+    ])
+    .output()
+    .map_err(|e| format!("az rest failed: {e}"))?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
@@ -1761,17 +2048,20 @@ pub fn list_resource_health(sub: &str, rg: &str) -> Result<Vec<ResourceHealthRow
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    Ok(resources.into_iter().map(|r| {
-        let state = get_resource_state(&r.id).unwrap_or_else(|_| "Unknown".to_string());
-        let health = get_resource_availability(&r.id).unwrap_or_else(|_| "Unknown".to_string());
-        ResourceHealthRow {
-            name: r.name,
-            resource_type: r.resource_type,
-            state,
-            health,
-            last_checked: now,
-        }
-    }).collect())
+    Ok(resources
+        .into_iter()
+        .map(|r| {
+            let state = get_resource_state(&r.id).unwrap_or_else(|_| "Unknown".to_string());
+            let health = get_resource_availability(&r.id).unwrap_or_else(|_| "Unknown".to_string());
+            ResourceHealthRow {
+                name: r.name,
+                resource_type: r.resource_type,
+                state,
+                health,
+                last_checked: now,
+            }
+        })
+        .collect())
 }
 
 /// Month-to-date cost for a resource group (blocking). `az consumption
@@ -1784,32 +2074,45 @@ pub fn get_cost_mtd(sub: &str, rg: &str) -> Result<(f64, String), String> {
     let start = now.format("%Y-%m-01").to_string();
     let end = now.format("%Y-%m-%d").to_string();
     let output = az_command(&[
-            "consumption", "usage", "list",
-            "--subscription", sub,
-            "--start-date", &start,
-            "--end-date", &end,
-            "--query", "[].{id:instanceId,cost:pretaxCost,currency:currency}",
-            "-o", "json",
-        ])
-        .output()
-        .map_err(|e| format!("az consumption usage list: {e}"))?;
+        "consumption",
+        "usage",
+        "list",
+        "--subscription",
+        sub,
+        "--start-date",
+        &start,
+        "--end-date",
+        &end,
+        "--query",
+        "[].{id:instanceId,cost:pretaxCost,currency:currency}",
+        "-o",
+        "json",
+    ])
+    .output()
+    .map_err(|e| format!("az consumption usage list: {e}"))?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
     let body = String::from_utf8_lossy(&output.stdout);
-    let arr: Vec<serde_json::Value> = serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
+    let arr: Vec<serde_json::Value> =
+        serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
     let needle = format!("/resourcegroups/{}/", rg.to_lowercase());
     let mut total = 0.0f64;
     let mut currency = String::from("USD");
     for row in &arr {
         let id = row["id"].as_str().unwrap_or("").to_lowercase();
-        if !id.contains(&needle) { continue; }
-        let cost: f64 = row["cost"].as_str()
+        if !id.contains(&needle) {
+            continue;
+        }
+        let cost: f64 = row["cost"]
+            .as_str()
             .and_then(|s| s.parse().ok())
             .or_else(|| row["cost"].as_f64())
             .unwrap_or(0.0);
         total += cost;
-        if let Some(c) = row["currency"].as_str() { currency = c.to_string(); }
+        if let Some(c) = row["currency"].as_str() {
+            currency = c.to_string();
+        }
     }
     Ok((total, currency))
 }
@@ -1817,22 +2120,29 @@ pub fn get_cost_mtd(sub: &str, rg: &str) -> Result<(f64, String), String> {
 /// List EventGrid topics in a resource group (blocking)
 pub fn list_eventgrid_topics(rg: &str) -> Result<Vec<EventGridTopic>, String> {
     let output = az_command(&[
-            "eventgrid", "topic", "list",
-            "--resource-group", rg,
-            "--output", "json",
-        ])
-        .output()
-        .map_err(|e| format!("az eventgrid failed: {e}"))?;
+        "eventgrid",
+        "topic",
+        "list",
+        "--resource-group",
+        rg,
+        "--output",
+        "json",
+    ])
+    .output()
+    .map_err(|e| format!("az eventgrid failed: {e}"))?;
 
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).to_string());
     }
 
     let body = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value = serde_json::from_str(&body)
-        .map_err(|e| format!("parse: {e}"))?;
+    let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
 
-    let arr = if json.is_array() { json.as_array() } else { json["value"].as_array() };
+    let arr = if json.is_array() {
+        json.as_array()
+    } else {
+        json["value"].as_array()
+    };
 
     let topics = arr
         .unwrap_or(&vec![])
@@ -1883,11 +2193,14 @@ pub fn build_eg_links(rg: &str) -> HashMap<String, EgLink> {
             if let Ok(subs) = list_eventgrid_subscriptions(&t.id) {
                 for s in &subs {
                     if !s.destination_queue.is_empty() {
-                        map.insert(s.destination_queue.clone(), EgLink {
-                            topic_name: t.name.clone(),
-                            subscription_name: s.name.clone(),
-                            filters: s.filters.clone(),
-                        });
+                        map.insert(
+                            s.destination_queue.clone(),
+                            EgLink {
+                                topic_name: t.name.clone(),
+                                subscription_name: s.name.clone(),
+                                filters: s.filters.clone(),
+                            },
+                        );
                     }
                 }
             }
@@ -1900,11 +2213,14 @@ pub fn build_eg_links(rg: &str) -> HashMap<String, EgLink> {
             if let Ok(subs) = list_eventgrid_system_topic_subscriptions(rg, &st.name) {
                 for s in &subs {
                     if !s.destination_queue.is_empty() {
-                        map.insert(s.destination_queue.clone(), EgLink {
-                            topic_name: st.name.clone(),
-                            subscription_name: s.name.clone(),
-                            filters: s.filters.clone(),
-                        });
+                        map.insert(
+                            s.destination_queue.clone(),
+                            EgLink {
+                                topic_name: st.name.clone(),
+                                subscription_name: s.name.clone(),
+                                filters: s.filters.clone(),
+                            },
+                        );
                     }
                 }
             }
@@ -1917,22 +2233,29 @@ pub fn build_eg_links(rg: &str) -> HashMap<String, EgLink> {
 /// List EventGrid subscriptions for a topic (blocking)
 pub fn list_eventgrid_subscriptions(topic_id: &str) -> Result<Vec<EventGridSubscription>, String> {
     let output = az_command(&[
-            "eventgrid", "event-subscription", "list",
-            "--source-resource-id", topic_id,
-            "--output", "json",
-        ])
-        .output()
-        .map_err(|e| format!("az eventgrid failed: {e}"))?;
+        "eventgrid",
+        "event-subscription",
+        "list",
+        "--source-resource-id",
+        topic_id,
+        "--output",
+        "json",
+    ])
+    .output()
+    .map_err(|e| format!("az eventgrid failed: {e}"))?;
 
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).to_string());
     }
 
     let body = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value = serde_json::from_str(&body)
-        .map_err(|e| format!("parse: {e}"))?;
+    let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
 
-    let arr = if json.is_array() { json.as_array() } else { json["value"].as_array() };
+    let arr = if json.is_array() {
+        json.as_array()
+    } else {
+        json["value"].as_array()
+    };
 
     let subs = arr
         .unwrap_or(&vec![])
@@ -1957,10 +2280,18 @@ pub fn list_eventgrid_subscriptions(topic_id: &str) -> Result<Vec<EventGridSubsc
                         let op = af["operatorType"].as_str().unwrap_or("").to_string();
                         let values: Vec<String> = af["values"]
                             .as_array()
-                            .map(|arr| arr.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+                            .map(|arr| {
+                                arr.iter()
+                                    .filter_map(|v| v.as_str().map(String::from))
+                                    .collect()
+                            })
                             .or_else(|| af["value"].as_str().map(|s| vec![s.to_string()]))
                             .unwrap_or_default();
-                        filters.push(EventGridFilter { key, operator: op, values });
+                        filters.push(EventGridFilter {
+                            key,
+                            operator: op,
+                            values,
+                        });
                     }
                 }
             }
@@ -2008,26 +2339,34 @@ pub struct FunctionMetrics {
 /// List all Function Apps in a resource group.
 pub fn list_function_apps(sub: &str, rg: &str) -> Result<Vec<FunctionApp>, String> {
     let output = az_command(&[
-            "functionapp", "list",
-            "--subscription", sub,
-            "--resource-group", rg,
-            "--query", "[].{name:name,state:state,principalId:identity.principalId}",
-            "-o", "json",
-        ])
-        .output()
-        .map_err(|e| format!("az functionapp list: {e}"))?;
+        "functionapp",
+        "list",
+        "--subscription",
+        sub,
+        "--resource-group",
+        rg,
+        "--query",
+        "[].{name:name,state:state,principalId:identity.principalId}",
+        "-o",
+        "json",
+    ])
+    .output()
+    .map_err(|e| format!("az functionapp list: {e}"))?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
     let body = String::from_utf8_lossy(&output.stdout);
-    let arr: Vec<serde_json::Value> = serde_json::from_str(&body)
-        .map_err(|e| format!("parse: {e}"))?;
-    Ok(arr.iter().map(|v| FunctionApp {
-        name: v["name"].as_str().unwrap_or("").to_string(),
-        state: v["state"].as_str().unwrap_or("Unknown").to_string(),
-        resource_group: rg.to_string(),
-        principal_id: v["principalId"].as_str().unwrap_or("").to_string(),
-    }).collect())
+    let arr: Vec<serde_json::Value> =
+        serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
+    Ok(arr
+        .iter()
+        .map(|v| FunctionApp {
+            name: v["name"].as_str().unwrap_or("").to_string(),
+            state: v["state"].as_str().unwrap_or("Unknown").to_string(),
+            resource_group: rg.to_string(),
+            principal_id: v["principalId"].as_str().unwrap_or("").to_string(),
+        })
+        .collect())
 }
 
 /// Get the system-assigned managed identity (principal ID) of a Logic App or Function App.
@@ -2035,15 +2374,22 @@ pub fn list_function_apps(sub: &str, rg: &str) -> Result<Vec<FunctionApp>, Strin
 /// Returns Ok("") if the site has no managed identity assigned.
 pub fn get_principal_id(sub: &str, rg: &str, app: &str) -> Result<String, String> {
     let output = az_command(&[
-            "webapp", "identity", "show",
-            "--subscription", sub,
-            "--resource-group", rg,
-            "--name", app,
-            "--query", "principalId",
-            "-o", "tsv",
-        ])
-        .output()
-        .map_err(|e| format!("az webapp identity show: {e}"))?;
+        "webapp",
+        "identity",
+        "show",
+        "--subscription",
+        sub,
+        "--resource-group",
+        rg,
+        "--name",
+        app,
+        "--query",
+        "principalId",
+        "-o",
+        "tsv",
+    ])
+    .output()
+    .map_err(|e| format!("az webapp identity show: {e}"))?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
@@ -2066,23 +2412,32 @@ pub fn list_role_assignments(principal_id: &str) -> Result<Vec<RoleAssignment>, 
         return Ok(Vec::new());
     }
     let output = az_command(&[
-            "role", "assignment", "list",
-            "--assignee", principal_id,
-            "--all",
-            "--query", "[].{roleName:roleDefinitionName,scope:scope}",
-            "-o", "json",
-        ])
-        .output()
-        .map_err(|e| format!("az role assignment list: {e}"))?;
+        "role",
+        "assignment",
+        "list",
+        "--assignee",
+        principal_id,
+        "--all",
+        "--query",
+        "[].{roleName:roleDefinitionName,scope:scope}",
+        "-o",
+        "json",
+    ])
+    .output()
+    .map_err(|e| format!("az role assignment list: {e}"))?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
     let body = String::from_utf8_lossy(&output.stdout);
-    let arr: Vec<serde_json::Value> = serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
-    Ok(arr.iter().map(|v| RoleAssignment {
-        role_name: v["roleName"].as_str().unwrap_or("Unknown").to_string(),
-        scope: v["scope"].as_str().unwrap_or("").to_string(),
-    }).collect())
+    let arr: Vec<serde_json::Value> =
+        serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
+    Ok(arr
+        .iter()
+        .map(|v| RoleAssignment {
+            role_name: v["roleName"].as_str().unwrap_or("Unknown").to_string(),
+            scope: v["scope"].as_str().unwrap_or("").to_string(),
+        })
+        .collect())
 }
 
 /// Grant an ARM RBAC role to a principal at a scope (blocking). Covers most
@@ -2092,13 +2447,18 @@ pub fn list_role_assignments(principal_id: &str) -> Result<Vec<RoleAssignment>, 
 /// `assign_cosmos_data_role`).
 pub fn assign_role_arm(principal_id: &str, role: &str, scope: &str) -> Result<(), String> {
     let output = az_command(&[
-            "role", "assignment", "create",
-            "--assignee", principal_id,
-            "--role", role,
-            "--scope", scope,
-        ])
-        .output()
-        .map_err(|e| format!("az role assignment create: {e}"))?;
+        "role",
+        "assignment",
+        "create",
+        "--assignee",
+        principal_id,
+        "--role",
+        role,
+        "--scope",
+        scope,
+    ])
+    .output()
+    .map_err(|e| format!("az role assignment create: {e}"))?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
@@ -2121,15 +2481,24 @@ pub fn assign_cosmos_data_role(
     data_scope: &str,
 ) -> Result<(), String> {
     let output = az_command(&[
-            "cosmosdb", "sql", "role", "assignment", "create",
-            "--resource-group", rg,
-            "--account-name", cosmos_account,
-            "--principal-id", principal_id,
-            "--role-definition-id", role_definition_id,
-            "--scope", data_scope,
-        ])
-        .output()
-        .map_err(|e| format!("az cosmosdb sql role assignment create: {e}"))?;
+        "cosmosdb",
+        "sql",
+        "role",
+        "assignment",
+        "create",
+        "--resource-group",
+        rg,
+        "--account-name",
+        cosmos_account,
+        "--principal-id",
+        principal_id,
+        "--role-definition-id",
+        role_definition_id,
+        "--scope",
+        data_scope,
+    ])
+    .output()
+    .map_err(|e| format!("az cosmosdb sql role assignment create: {e}"))?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
@@ -2163,54 +2532,89 @@ pub struct VariableGroup {
 /// rather than failing silently.
 pub fn list_variable_groups(org: &str, project: &str) -> Result<Vec<VariableGroup>, String> {
     let output = az_command(&[
-            "pipelines", "variable-group", "list",
-            "--organization", org,
-            "--project", project,
-            "-o", "json",
-        ])
-        .output()
-        .map_err(|e| format!("az pipelines variable-group list: {e}"))?;
+        "pipelines",
+        "variable-group",
+        "list",
+        "--organization",
+        org,
+        "--project",
+        project,
+        "-o",
+        "json",
+    ])
+    .output()
+    .map_err(|e| format!("az pipelines variable-group list: {e}"))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-        if stderr.contains("az extension add") || stderr.contains("is not a registered") || stderr.contains("'pipelines' is misspelled") {
-            return Err(format!("{stderr}\n\nRun: az extension add --name azure-devops"));
+        if stderr.contains("az extension add")
+            || stderr.contains("is not a registered")
+            || stderr.contains("'pipelines' is misspelled")
+        {
+            return Err(format!(
+                "{stderr}\n\nRun: az extension add --name azure-devops"
+            ));
         }
         return Err(stderr);
     }
     let body = String::from_utf8_lossy(&output.stdout);
-    let arr: Vec<serde_json::Value> = serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
-    Ok(arr.iter().map(|g| {
-        let variables = g["variables"].as_object().map(|obj| {
-            obj.iter().map(|(name, v)| VariableGroupVar {
-                name: name.clone(),
-                is_secret: v["isSecret"].as_bool().unwrap_or(false),
-                value: if v["isSecret"].as_bool().unwrap_or(false) { None } else { v["value"].as_str().map(|s| s.to_string()) },
-            }).collect()
-        }).unwrap_or_default();
-        VariableGroup {
-            id: g["id"].as_u64().unwrap_or(0),
-            name: g["name"].as_str().unwrap_or("").to_string(),
-            variables,
-        }
-    }).collect())
+    let arr: Vec<serde_json::Value> =
+        serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
+    Ok(arr
+        .iter()
+        .map(|g| {
+            let variables = g["variables"]
+                .as_object()
+                .map(|obj| {
+                    obj.iter()
+                        .map(|(name, v)| VariableGroupVar {
+                            name: name.clone(),
+                            is_secret: v["isSecret"].as_bool().unwrap_or(false),
+                            value: if v["isSecret"].as_bool().unwrap_or(false) {
+                                None
+                            } else {
+                                v["value"].as_str().map(|s| s.to_string())
+                            },
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+            VariableGroup {
+                id: g["id"].as_u64().unwrap_or(0),
+                name: g["name"].as_str().unwrap_or("").to_string(),
+                variables,
+            }
+        })
+        .collect())
 }
 
 /// Delete a single variable from a variable group (blocking) — used by the
 /// variable-group cleanup view's bulk-delete action. Never call this on a
 /// secret variable from an automated "safe to delete" pass; secrets can't
 /// be drift-checked so they should never be auto-suggested for deletion.
-pub fn delete_variable_group_variable(org: &str, project: &str, group_id: u64, name: &str) -> Result<(), String> {
+pub fn delete_variable_group_variable(
+    org: &str,
+    project: &str,
+    group_id: u64,
+    name: &str,
+) -> Result<(), String> {
     let group_id_str = group_id.to_string();
     let output = az_command(&[
-            "pipelines", "variable-group", "variable", "delete",
-            "--group-id", &group_id_str,
-            "--name", name,
-            "--organization", org,
-            "--project", project,
-            "--yes",
-        ])
-        .output()
-        .map_err(|e| format!("az pipelines variable-group variable delete: {e}"))?;
+        "pipelines",
+        "variable-group",
+        "variable",
+        "delete",
+        "--group-id",
+        &group_id_str,
+        "--name",
+        name,
+        "--organization",
+        org,
+        "--project",
+        project,
+        "--yes",
+    ])
+    .output()
+    .map_err(|e| format!("az pipelines variable-group variable delete: {e}"))?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
@@ -2220,41 +2624,56 @@ pub fn delete_variable_group_variable(org: &str, project: &str, group_id: u64, n
 /// List functions inside a Function App.
 pub fn list_functions(rg: &str, app: &str) -> Result<Vec<FunctionDetail>, String> {
     let output = az_command(&[
-            "functionapp", "function", "list",
-            "--resource-group", rg,
-            "--name", app,
-            "--query", "[].{name:name,language:language,isDisabled:isDisabled}",
-            "-o", "json",
-        ])
-        .output()
-        .map_err(|e| format!("az functionapp function list: {e}"))?;
+        "functionapp",
+        "function",
+        "list",
+        "--resource-group",
+        rg,
+        "--name",
+        app,
+        "--query",
+        "[].{name:name,language:language,isDisabled:isDisabled}",
+        "-o",
+        "json",
+    ])
+    .output()
+    .map_err(|e| format!("az functionapp function list: {e}"))?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
     let body = String::from_utf8_lossy(&output.stdout);
-    let arr: Vec<serde_json::Value> = serde_json::from_str(&body)
-        .map_err(|e| format!("parse: {e}"))?;
-    Ok(arr.iter().map(|v| {
-        let full = v["name"].as_str().unwrap_or("");
-        let short = full.rsplit('/').next().unwrap_or(full);
-        FunctionDetail {
-            name: short.to_string(),
-            language: v["language"].as_str().unwrap_or("").to_string(),
-            is_disabled: v["isDisabled"].as_bool().unwrap_or(false),
-        }
-    }).collect())
+    let arr: Vec<serde_json::Value> =
+        serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
+    Ok(arr
+        .iter()
+        .map(|v| {
+            let full = v["name"].as_str().unwrap_or("");
+            let short = full.rsplit('/').next().unwrap_or(full);
+            FunctionDetail {
+                name: short.to_string(),
+                language: v["language"].as_str().unwrap_or("").to_string(),
+                is_disabled: v["isDisabled"].as_bool().unwrap_or(false),
+            }
+        })
+        .collect())
 }
 
 /// Discover Application Insights resource names in a resource group.
 pub fn find_app_insights(rg: &str) -> Result<Vec<String>, String> {
     let output = az_command(&[
-            "monitor", "app-insights", "component", "show",
-            "--resource-group", rg,
-            "--query", "[].name",
-            "-o", "json",
-        ])
-        .output()
-        .map_err(|e| format!("az monitor app-insights: {e}"))?;
+        "monitor",
+        "app-insights",
+        "component",
+        "show",
+        "--resource-group",
+        rg,
+        "--query",
+        "[].name",
+        "-o",
+        "json",
+    ])
+    .output()
+    .map_err(|e| format!("az monitor app-insights: {e}"))?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
@@ -2272,7 +2691,13 @@ pub struct FunctionError {
 }
 
 /// Query failed invocation details for a specific function from Application Insights.
-pub fn query_function_errors(rg: &str, app_insights: &str, function_app: &str, function_name: &str, days: u32) -> Result<Vec<FunctionError>, String> {
+pub fn query_function_errors(
+    rg: &str,
+    app_insights: &str,
+    function_app: &str,
+    function_name: &str,
+    days: u32,
+) -> Result<Vec<FunctionError>, String> {
     let query = format!(
         "requests \
          | where timestamp > ago({days}d) \
@@ -2284,66 +2709,89 @@ pub fn query_function_errors(rg: &str, app_insights: &str, function_app: &str, f
          | take 50"
     );
     let output = az_command(&[
-            "monitor", "app-insights", "query",
-            "--app", app_insights,
-            "--resource-group", rg,
-            "--analytics-query", &query,
-            "-o", "json",
-        ])
-        .output()
-        .map_err(|e| format!("az app-insights query: {e}"))?;
+        "monitor",
+        "app-insights",
+        "query",
+        "--app",
+        app_insights,
+        "--resource-group",
+        rg,
+        "--analytics-query",
+        &query,
+        "-o",
+        "json",
+    ])
+    .output()
+    .map_err(|e| format!("az app-insights query: {e}"))?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
     let body = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value = serde_json::from_str(&body)
-        .map_err(|e| format!("parse: {e}"))?;
-    let rows = json["tables"][0]["rows"].as_array()
+    let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
+    let rows = json["tables"][0]["rows"]
+        .as_array()
         .ok_or_else(|| "No rows in response".to_string())?;
-    Ok(rows.iter().filter_map(|r| {
-        let arr = r.as_array()?;
-        Some(FunctionError {
-            timestamp: arr.first()?.as_str().unwrap_or("").to_string(),
-            operation_name: arr.get(1)?.as_str().unwrap_or("").to_string(),
-            result_code: arr.get(2)?.as_str().unwrap_or("").to_string(),
-            message: arr.get(3)?.as_str().unwrap_or("").to_string(),
+    Ok(rows
+        .iter()
+        .filter_map(|r| {
+            let arr = r.as_array()?;
+            Some(FunctionError {
+                timestamp: arr.first()?.as_str().unwrap_or("").to_string(),
+                operation_name: arr.get(1)?.as_str().unwrap_or("").to_string(),
+                result_code: arr.get(2)?.as_str().unwrap_or("").to_string(),
+                message: arr.get(3)?.as_str().unwrap_or("").to_string(),
+            })
         })
-    }).collect())
+        .collect())
 }
 
 /// Query function invocation metrics from Application Insights.
-pub fn query_function_metrics(rg: &str, app_insights: &str, function_app: &str, days: u32) -> Result<Vec<FunctionMetrics>, String> {
+pub fn query_function_metrics(
+    rg: &str,
+    app_insights: &str,
+    function_app: &str,
+    days: u32,
+) -> Result<Vec<FunctionMetrics>, String> {
     let query = format!(
         "requests | where timestamp > ago({days}d) | where cloud_RoleName == '{function_app}' \
          | summarize success=countif(success==true), errors=countif(success==false), lastRun=max(timestamp) \
          by operation_Name | order by operation_Name asc"
     );
     let output = az_command(&[
-            "monitor", "app-insights", "query",
-            "--app", app_insights,
-            "--resource-group", rg,
-            "--analytics-query", &query,
-            "-o", "json",
-        ])
-        .output()
-        .map_err(|e| format!("az app-insights query: {e}"))?;
+        "monitor",
+        "app-insights",
+        "query",
+        "--app",
+        app_insights,
+        "--resource-group",
+        rg,
+        "--analytics-query",
+        &query,
+        "-o",
+        "json",
+    ])
+    .output()
+    .map_err(|e| format!("az app-insights query: {e}"))?;
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
     }
     let body = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value = serde_json::from_str(&body)
-        .map_err(|e| format!("parse: {e}"))?;
-    let rows = json["tables"][0]["rows"].as_array()
+    let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
+    let rows = json["tables"][0]["rows"]
+        .as_array()
         .ok_or_else(|| "No rows in response".to_string())?;
-    Ok(rows.iter().filter_map(|r| {
-        let arr = r.as_array()?;
-        Some(FunctionMetrics {
-            function_name: arr.first()?.as_str()?.to_string(),
-            success: arr.get(1)?.as_i64().unwrap_or(0),
-            errors: arr.get(2)?.as_i64().unwrap_or(0),
-            last_run: arr.get(3)?.as_str().unwrap_or("").to_string(),
+    Ok(rows
+        .iter()
+        .filter_map(|r| {
+            let arr = r.as_array()?;
+            Some(FunctionMetrics {
+                function_name: arr.first()?.as_str()?.to_string(),
+                success: arr.get(1)?.as_i64().unwrap_or(0),
+                errors: arr.get(2)?.as_i64().unwrap_or(0),
+                last_run: arr.get(3)?.as_str().unwrap_or("").to_string(),
+            })
         })
-    }).collect())
+        .collect())
 }
 
 #[cfg(test)]

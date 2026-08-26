@@ -1,7 +1,7 @@
+use crate::components::chain_detail::AzConfig;
+use crate::services::azure::{self, AppSettingDrift, DriftStatus, FunctionApp};
 use dioxus::prelude::*;
 use std::collections::HashMap;
-use crate::services::azure::{self, FunctionApp, AppSettingDrift, DriftStatus};
-use crate::components::chain_detail::AzConfig;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct AppSettingsPanelProps {
@@ -32,14 +32,22 @@ pub fn AppSettingsPanel(props: AppSettingsPanelProps) -> Element {
 
                 let sub2 = sub.clone();
                 let rg2 = rg.clone();
-                let apps_result = tokio::task::spawn_blocking(move || {
-                    azure::list_function_apps(&sub2, &rg2)
-                }).await;
+                let apps_result =
+                    tokio::task::spawn_blocking(move || azure::list_function_apps(&sub2, &rg2))
+                        .await;
 
                 let apps = match apps_result {
                     Ok(Ok(apps)) => apps,
-                    Ok(Err(e)) => { error_msg.set(Some(e)); loading.set(false); return; }
-                    Err(e) => { error_msg.set(Some(format!("{e}"))); loading.set(false); return; }
+                    Ok(Err(e)) => {
+                        error_msg.set(Some(e));
+                        loading.set(false);
+                        return;
+                    }
+                    Err(e) => {
+                        error_msg.set(Some(format!("{e}")));
+                        loading.set(false);
+                        return;
+                    }
                 };
                 func_apps.set(apps.clone());
 
@@ -48,10 +56,20 @@ pub fn AppSettingsPanel(props: AppSettingsPanelProps) -> Element {
                 } else {
                     let sub3 = sub.clone();
                     let store2 = store.clone();
-                    match tokio::task::spawn_blocking(move || azure::appconfig_list_kv(&sub3, &store2)).await {
+                    match tokio::task::spawn_blocking(move || {
+                        azure::appconfig_list_kv(&sub3, &store2)
+                    })
+                    .await
+                    {
                         Ok(Ok(kv)) => Some(kv),
-                        Ok(Err(e)) => { error_msg.set(Some(format!("App Configuration store '{store}': {e}"))); None }
-                        Err(e) => { error_msg.set(Some(format!("{e}"))); None }
+                        Ok(Err(e)) => {
+                            error_msg.set(Some(format!("App Configuration store '{store}': {e}")));
+                            None
+                        }
+                        Err(e) => {
+                            error_msg.set(Some(format!("{e}")));
+                            None
+                        }
                     }
                 };
 
@@ -65,7 +83,9 @@ pub fn AppSettingsPanel(props: AppSettingsPanelProps) -> Element {
                     let rows = tokio::task::spawn_blocking(move || {
                         let live = azure::get_app_settings(&sub4, &rg4, &name).unwrap_or_default();
                         azure::compute_app_settings_drift(&live, expected2.as_ref())
-                    }).await.unwrap_or_default();
+                    })
+                    .await
+                    .unwrap_or_default();
                     all_drift.push((name2, rows));
                 }
                 drift.set(all_drift);
@@ -91,7 +111,8 @@ pub fn AppSettingsPanel(props: AppSettingsPanelProps) -> Element {
                 let rg = az.resource_group.clone();
                 let res = tokio::task::spawn_blocking(move || {
                     azure::set_app_setting(&sub, &rg, &app_name, &key, &value)
-                }).await;
+                })
+                .await;
                 if let Ok(Err(e)) = res {
                     error_msg.set(Some(e));
                 }
@@ -222,12 +243,40 @@ pub fn AppSettingsPanel(props: AppSettingsPanelProps) -> Element {
 /// (css class, short badge text, tooltip detail) for a drift status.
 fn drift_badge(status: &DriftStatus) -> (&'static str, &'static str, String) {
     match status {
-        DriftStatus::Match => ("func-badge-active", "=", "Live value matches App Configuration".to_string()),
-        DriftStatus::Diff => ("func-errors has-errors", "≠", "Live value differs from App Configuration".to_string()),
-        DriftStatus::KvOk => ("func-badge-active", "KV✓", "Key Vault reference resolves successfully".to_string()),
-        DriftStatus::KvFail { error } => ("func-errors has-errors", "KV✗", format!("Key Vault reference failed to resolve: {error}")),
-        DriftStatus::LiteralWarn { missing } => ("func-badge-disabled", "LITERAL⚠", format!("Looks like a partial connection string — missing '{missing}='")),
-        DriftStatus::NoExpected => ("func-no-data", "—", "No corresponding key in App Configuration".to_string()),
-        DriftStatus::MissingLive => ("func-errors has-errors", "MISSING", "Expected in App Configuration but not set live".to_string()),
+        DriftStatus::Match => (
+            "func-badge-active",
+            "=",
+            "Live value matches App Configuration".to_string(),
+        ),
+        DriftStatus::Diff => (
+            "func-errors has-errors",
+            "≠",
+            "Live value differs from App Configuration".to_string(),
+        ),
+        DriftStatus::KvOk => (
+            "func-badge-active",
+            "KV✓",
+            "Key Vault reference resolves successfully".to_string(),
+        ),
+        DriftStatus::KvFail { error } => (
+            "func-errors has-errors",
+            "KV✗",
+            format!("Key Vault reference failed to resolve: {error}"),
+        ),
+        DriftStatus::LiteralWarn { missing } => (
+            "func-badge-disabled",
+            "LITERAL⚠",
+            format!("Looks like a partial connection string — missing '{missing}='"),
+        ),
+        DriftStatus::NoExpected => (
+            "func-no-data",
+            "—",
+            "No corresponding key in App Configuration".to_string(),
+        ),
+        DriftStatus::MissingLive => (
+            "func-errors has-errors",
+            "MISSING",
+            "Expected in App Configuration but not set live".to_string(),
+        ),
     }
 }

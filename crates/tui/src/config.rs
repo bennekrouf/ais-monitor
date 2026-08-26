@@ -61,9 +61,9 @@ impl CliArgs {
                 Some((k, v)) => (k.to_string(), Some(v.to_string())),
                 None => (arg, None),
             };
-            let take_val = |it: &mut std::iter::Peekable<_>, inline: Option<String>| -> Option<String> {
-                inline.or_else(|| it.next())
-            };
+            let take_val = |it: &mut std::iter::Peekable<_>,
+                            inline: Option<String>|
+             -> Option<String> { inline.or_else(|| it.next()) };
             match key.as_str() {
                 "--help" | "-h" => out.help = true,
                 "--sub" | "--subscription" => out.subscription = take_val(&mut it, inline_val),

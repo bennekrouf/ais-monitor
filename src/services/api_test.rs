@@ -3,8 +3,8 @@
 //! independent of Azure Resource Manager discovery. Complements
 //! `azure::trigger_workflow`, which is scoped to Logic App callback URLs.
 
-use std::process::Command;
 use crate::services::azure;
+use std::process::Command;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ApiResponse {
@@ -67,7 +67,11 @@ pub fn send_request(
     let full = String::from_utf8_lossy(&output.stdout).to_string();
     let lines: Vec<&str> = full.trim().rsplitn(2, '\n').collect();
     let status_code = lines[0].parse::<u16>().unwrap_or(0);
-    let response_body = if lines.len() > 1 { lines[1].to_string() } else { String::new() };
+    let response_body = if lines.len() > 1 {
+        lines[1].to_string()
+    } else {
+        String::new()
+    };
 
     if status_code == 0 {
         let stderr = String::from_utf8_lossy(&output.stderr).to_string();
@@ -76,7 +80,10 @@ pub fn send_request(
         }
     }
 
-    Ok(ApiResponse { status_code, body: response_body })
+    Ok(ApiResponse {
+        status_code,
+        body: response_body,
+    })
 }
 
 // ── APIM subscription-key lookup ─────────────────────────────────────────────
@@ -158,12 +165,18 @@ fn list_apim_subscriptions_inner(
         .into_iter()
         .map(|v| {
             let id = v["name"].as_str().unwrap_or_default().to_string();
-            let display_name = v["properties"]["displayName"].as_str().map(|s| s.to_string());
+            let display_name = v["properties"]["displayName"]
+                .as_str()
+                .map(|s| s.to_string());
             let scope = v["properties"]["scope"].as_str().unwrap_or_default();
             let product = scope.rsplit('/').next().unwrap_or_default().to_string();
-            let display = display_name
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| if product.is_empty() { id.clone() } else { product });
+            let display = display_name.filter(|s| !s.is_empty()).unwrap_or_else(|| {
+                if product.is_empty() {
+                    id.clone()
+                } else {
+                    product
+                }
+            });
             ApimSubscription { id, display }
         })
         .collect();
@@ -177,8 +190,12 @@ pub fn get_apim_subscription_key(
     service: &str,
     subscription_id: &str,
 ) -> Result<String, String> {
-    let (sub, rg, service, subscription_id) =
-        (sub.to_string(), rg.to_string(), service.to_string(), subscription_id.to_string());
+    let (sub, rg, service, subscription_id) = (
+        sub.to_string(),
+        rg.to_string(),
+        service.to_string(),
+        subscription_id.to_string(),
+    );
     run_with_timeout(
         move || get_apim_subscription_key_inner(&sub, &rg, &service, &subscription_id),
         std::time::Duration::from_secs(20),
@@ -194,17 +211,19 @@ fn get_apim_subscription_key_inner(
     let url = format!(
         "https://management.azure.com/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.ApiManagement/service/{service}/subscriptions/{subscription_id}/listSecrets?api-version=2022-08-01"
     );
-    let output = azure::az_command(&["rest", "--method", "POST", "--url", &url, "--output", "json"])
-        .output()
-        .map_err(|e| format!("az rest failed: {e}"))?;
+    let output = azure::az_command(&[
+        "rest", "--method", "POST", "--url", &url, "--output", "json",
+    ])
+    .output()
+    .map_err(|e| format!("az rest failed: {e}"))?;
 
     if !output.status.success() {
         return Err(String::from_utf8_lossy(&output.stderr).to_string());
     }
 
     let body = String::from_utf8_lossy(&output.stdout);
-    let json: serde_json::Value = serde_json::from_str(&body)
-        .map_err(|e| format!("bad JSON from listSecrets: {e}"))?;
+    let json: serde_json::Value =
+        serde_json::from_str(&body).map_err(|e| format!("bad JSON from listSecrets: {e}"))?;
 
     json["primaryKey"]
         .as_str()
@@ -228,11 +247,16 @@ pub fn guess_apim_service_from_url(url: &str) -> Option<String> {
 pub fn discover_apim_resource_group(sub: &str, service: &str) -> Result<String, String> {
     let query = format!("[?name=='{service}'] | [0].resourceGroup");
     let output = azure::az_command(&[
-        "resource", "list",
-        "--subscription", sub,
-        "--resource-type", "Microsoft.ApiManagement/service",
-        "--query", &query,
-        "--output", "tsv",
+        "resource",
+        "list",
+        "--subscription",
+        sub,
+        "--resource-type",
+        "Microsoft.ApiManagement/service",
+        "--query",
+        &query,
+        "--output",
+        "tsv",
     ])
     .output()
     .map_err(|e| format!("az resource list failed: {e}"))?;
@@ -243,7 +267,9 @@ pub fn discover_apim_resource_group(sub: &str, service: &str) -> Result<String, 
 
     let rg = String::from_utf8_lossy(&output.stdout).trim().to_string();
     if rg.is_empty() {
-        return Err(format!("No APIM service named '{service}' found in this subscription"));
+        return Err(format!(
+            "No APIM service named '{service}' found in this subscription"
+        ));
     }
     Ok(rg)
 }

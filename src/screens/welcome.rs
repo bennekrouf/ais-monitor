@@ -1,6 +1,6 @@
-use dioxus::prelude::*;
-use crate::services::azure::{self, AzLoginState, AzSubscription, LogicAppSite};
 use crate::components::chain_detail::AzConfig;
+use crate::services::azure::{self, AzLoginState, AzSubscription, LogicAppSite};
+use dioxus::prelude::*;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct WelcomeProps {
@@ -27,14 +27,14 @@ pub fn Welcome(props: WelcomeProps) -> Element {
     let mut editing_profile = use_signal(|| Option::<usize>::None);
 
     // Browse mode state
-    let mut subscriptions    = use_signal(|| Vec::<AzSubscription>::new());
-    let mut selected_sub     = use_signal(|| String::new());
+    let mut subscriptions = use_signal(|| Vec::<AzSubscription>::new());
+    let mut selected_sub = use_signal(|| String::new());
     // Logic App sites loaded directly (no resource-group step)
-    let mut logic_app_sites  = use_signal(|| Vec::<LogicAppSite>::new());
-    let mut sites_error      = use_signal(|| Option::<String>::None);
-    let mut sb_namespaces    = use_signal(|| Vec::<String>::new());
+    let mut logic_app_sites = use_signal(|| Vec::<LogicAppSite>::new());
+    let mut sites_error = use_signal(|| Option::<String>::None);
+    let mut sb_namespaces = use_signal(|| Vec::<String>::new());
     // "" | "subs" | "apps"
-    let mut browse_loading   = use_signal(|| String::new());
+    let mut browse_loading = use_signal(|| String::new());
     // Error feedback when `az login` fails to spawn (Windows: az.cmd not on PATH, etc.)
     let mut login_error: Signal<Option<String>> = use_signal(|| None);
 
@@ -45,23 +45,40 @@ pub fn Welcome(props: WelcomeProps) -> Element {
             let state = tokio::task::spawn_blocking(azure::check_login)
                 .await
                 .unwrap_or(AzLoginState::NotLoggedIn);
-            if let AzLoginState::LoggedIn { ref subscription_id, .. } = state {
+            if let AzLoginState::LoggedIn {
+                ref subscription_id,
+                ..
+            } = state
+            {
                 sub_id.set(subscription_id.clone());
                 // Auto-open profile creation when logged in with no saved profiles
                 if profiles.read().is_empty() {
                     show_form.set(true);
                     browse_loading.set("subs".into());
                     let subs = tokio::task::spawn_blocking(azure::list_subscriptions)
-                        .await.unwrap_or(Ok(vec![])).unwrap_or_default();
+                        .await
+                        .unwrap_or(Ok(vec![]))
+                        .unwrap_or_default();
                     if subs.len() == 1 {
                         let sid = subs[0].id.clone();
                         selected_sub.set(sid.clone());
                         subscriptions.set(subs);
                         browse_loading.set("apps".into());
-                        match tokio::task::spawn_blocking(move || azure::list_logic_app_sites(&sid)).await {
-                            Ok(Ok(sites)) => { logic_app_sites.set(sites); sites_error.set(None); }
-                            Ok(Err(e))    => { logic_app_sites.set(vec![]); sites_error.set(Some(e)); }
-                            Err(e)        => { logic_app_sites.set(vec![]); sites_error.set(Some(e.to_string())); }
+                        match tokio::task::spawn_blocking(move || azure::list_logic_app_sites(&sid))
+                            .await
+                        {
+                            Ok(Ok(sites)) => {
+                                logic_app_sites.set(sites);
+                                sites_error.set(None);
+                            }
+                            Ok(Err(e)) => {
+                                logic_app_sites.set(vec![]);
+                                sites_error.set(Some(e));
+                            }
+                            Err(e) => {
+                                logic_app_sites.set(vec![]);
+                                sites_error.set(Some(e.to_string()));
+                            }
                         }
                     } else {
                         subscriptions.set(subs);

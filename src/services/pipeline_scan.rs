@@ -7,7 +7,15 @@
 use std::collections::HashSet;
 use std::path::Path;
 
-const SKIP_DIRS: &[&str] = &[".git", "node_modules", "target", "bin", "obj", ".vs", ".vscode"];
+const SKIP_DIRS: &[&str] = &[
+    ".git",
+    "node_modules",
+    "target",
+    "bin",
+    "obj",
+    ".vs",
+    ".vscode",
+];
 
 /// Recursively scan `root` for `*.yml`/`*.yaml` files and collect every
 /// `$(VarName)` reference found in their text. Best-effort: unreadable
@@ -20,7 +28,9 @@ pub fn scan_variable_references(root: &Path) -> HashSet<String> {
     let re = regex::Regex::new(r"\$\(([A-Za-z0-9_.\-]+)\)").unwrap();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
@@ -30,12 +40,17 @@ pub fn scan_variable_references(root: &Path) -> HashSet<String> {
                 }
                 continue;
             }
-            let is_yaml = path.extension()
+            let is_yaml = path
+                .extension()
                 .and_then(|e| e.to_str())
                 .map(|e| e.eq_ignore_ascii_case("yml") || e.eq_ignore_ascii_case("yaml"))
                 .unwrap_or(false);
-            if !is_yaml { continue; }
-            let Ok(content) = std::fs::read_to_string(&path) else { continue };
+            if !is_yaml {
+                continue;
+            }
+            let Ok(content) = std::fs::read_to_string(&path) else {
+                continue;
+            };
             for cap in re.captures_iter(&content) {
                 found.insert(cap[1].to_string());
             }

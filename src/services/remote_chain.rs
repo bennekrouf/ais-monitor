@@ -31,7 +31,10 @@ pub fn discover_chains_remote(
     // Return the cached chain graph immediately if available.
     if let Some(cached) = load_chains_result(sub, app) {
         let unlinked = load_unlinked_result(sub, app).unwrap_or_default();
-        return Ok(ChainDiscovery { chains: cached, unlinked });
+        return Ok(ChainDiscovery {
+            chains: cached,
+            unlinked,
+        });
     }
 
     let cache_dir = cache_path(sub, app);
@@ -92,7 +95,10 @@ pub fn discover_chains_remote(
                 .trigger_names
                 .iter()
                 .filter_map(|t| parse_queue_from_trigger_name(t))
-                .map(|q| ais_chain::parser::Link { kind: "queue".into(), target: q })
+                .map(|q| ais_chain::parser::Link {
+                    kind: "queue".into(),
+                    target: q,
+                })
                 .collect();
 
             if !fallback_triggers.is_empty() {
@@ -138,9 +144,13 @@ pub fn discover_chains_remote(
         std::path::PathBuf::from(format!("/remote/{sub}/{app}"))
     } else {
         let base = std::path::Path::new(local_dir);
-        if base.join("logic_apps").exists() { base.join("logic_apps") }
-        else if base.join("logic-apps").exists() { base.join("logic-apps") }
-        else { base.to_path_buf() }
+        if base.join("logic_apps").exists() {
+            base.join("logic_apps")
+        } else if base.join("logic-apps").exists() {
+            base.join("logic-apps")
+        } else {
+            base.to_path_buf()
+        }
     };
     let loaded = ais_chain::links::load(&links_key);
     for w in &loaded.warnings {
@@ -159,13 +169,17 @@ pub fn discover_chains_remote(
         eprintln!("[ais-chain links] {w}");
     }
     let known: HashSet<&str> = known_names.iter().copied().collect();
-    let (manual_links, stale): (Vec<String>, Vec<String>) = loaded.links
+    let (manual_links, stale): (Vec<String>, Vec<String>) = loaded
+        .links
         .into_iter()
         .partition(|l| link_endpoints_known(l, &known));
     if !stale.is_empty() {
         crate::services::activity::warn(
             "Stale chain links skipped",
-            format!("{} link(s) reference unknown or malformed workflows", stale.len()),
+            format!(
+                "{} link(s) reference unknown or malformed workflows",
+                stale.len()
+            ),
             format!(
                 "These links in {} do not name workflows deployed in {app}, so they were \
                  ignored rather than polled:\n{}",
@@ -185,14 +199,17 @@ pub fn discover_chains_remote(
     // used to just vanish from the UI. Surface them instead so a missing
     // manual link (or a genuinely standalone utility workflow) is visible
     // rather than silently dropped.
-    let unlinked: Vec<UnlinkedWorkflow> = raw_chains.iter()
+    let unlinked: Vec<UnlinkedWorkflow> = raw_chains
+        .iter()
         .filter(|c| c.steps.len() == 1)
         .map(|c| {
             let name = c.steps[0].workflow.clone();
-            let trigger_info = resolved_workflows.iter()
+            let trigger_info = resolved_workflows
+                .iter()
                 .find(|w| w.name == name)
                 .map(|w| {
-                    w.triggers.iter()
+                    w.triggers
+                        .iter()
                         .map(|t| format!("{}:{}", t.kind, t.target))
                         .collect::<Vec<_>>()
                         .join(", ")
@@ -203,11 +220,27 @@ pub fn discover_chains_remote(
         .collect();
     if multi_step.is_empty() && !raw_chains.is_empty() {
         // There are workflows but no connections detected — useful diagnostic
-        let wf_names: Vec<_> = resolved_workflows.iter().map(|w| {
-            let triggers: Vec<_> = w.triggers.iter().map(|t| format!("{}:{}", t.kind, t.target)).collect();
-            let sends: Vec<_> = w.sends.iter().map(|s| format!("{}:{}", s.kind, s.target)).collect();
-            format!("  {} → triggers:[{}] sends:[{}]", w.name, triggers.join(","), sends.join(","))
-        }).collect();
+        let wf_names: Vec<_> = resolved_workflows
+            .iter()
+            .map(|w| {
+                let triggers: Vec<_> = w
+                    .triggers
+                    .iter()
+                    .map(|t| format!("{}:{}", t.kind, t.target))
+                    .collect();
+                let sends: Vec<_> = w
+                    .sends
+                    .iter()
+                    .map(|s| format!("{}:{}", s.kind, s.target))
+                    .collect();
+                format!(
+                    "  {} → triggers:[{}] sends:[{}]",
+                    w.name,
+                    triggers.join(","),
+                    sends.join(",")
+                )
+            })
+            .collect();
         return Err(format!(
             "{} workflow(s) parsed but no chains found (no matching queue sender→receiver).\n\
              Workflow graph:\n{}\n\
@@ -221,26 +254,32 @@ pub fn discover_chains_remote(
         .iter()
         .map(|c| {
             let mut queues = HashSet::new();
-            let steps: Vec<StepDetail> = c.steps.iter().map(|s| {
-                if s.link_type.starts_with("queue:") {
-                    queues.insert(s.link_type.strip_prefix("queue:").unwrap().to_string());
-                }
-                let trigger_info = resolved_workflows.iter()
-                    .find(|w| w.name == s.workflow)
-                    .map(|w| {
-                        w.triggers.iter()
-                            .map(|t| format!("{}:{}", t.kind, t.target))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    })
-                    .unwrap_or_default();
+            let steps: Vec<StepDetail> = c
+                .steps
+                .iter()
+                .map(|s| {
+                    if s.link_type.starts_with("queue:") {
+                        queues.insert(s.link_type.strip_prefix("queue:").unwrap().to_string());
+                    }
+                    let trigger_info = resolved_workflows
+                        .iter()
+                        .find(|w| w.name == s.workflow)
+                        .map(|w| {
+                            w.triggers
+                                .iter()
+                                .map(|t| format!("{}:{}", t.kind, t.target))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        })
+                        .unwrap_or_default();
 
-                StepDetail {
-                    workflow: s.workflow.clone(),
-                    link_type: s.link_type.clone(),
-                    trigger_info,
-                }
-            }).collect();
+                    StepDetail {
+                        workflow: s.workflow.clone(),
+                        link_type: s.link_type.clone(),
+                        trigger_info,
+                    }
+                })
+                .collect();
 
             let mut queue_list: Vec<String> = queues.into_iter().collect();
             queue_list.sort();
@@ -282,7 +321,11 @@ fn summarize_fetch_errors(errors: &[(String, String)]) -> String {
         out.push_str(&format!(
             "\n  {} workflow(s): {reason}\n    e.g. {examples}{}",
             names.len(),
-            if more > 0 { format!(", +{more} more") } else { String::new() },
+            if more > 0 {
+                format!(", +{more} more")
+            } else {
+                String::new()
+            },
         ));
     }
     out
@@ -303,7 +346,11 @@ fn parse_queue_from_trigger_name(trigger_name: &str) -> Option<String> {
         .strip_suffix("_(peek-lock)")
         .or_else(|| rest.strip_suffix("_(receive-and-delete)"))
         .unwrap_or(rest);
-    if queue.is_empty() { None } else { Some(queue.to_string()) }
+    if queue.is_empty() {
+        None
+    } else {
+        Some(queue.to_string())
+    }
 }
 
 /// Resolve `@appsetting('VAR')` and `@appsetting(VAR)` references using
@@ -313,8 +360,8 @@ fn resolve_appsetting(s: &str, settings: &std::collections::HashMap<String, Stri
     // Match @{appsetting('KEY')} or @appsetting('KEY') or @appsetting(KEY)
     let patterns: &[(&str, &str, &str)] = &[
         ("@{appsetting('", "')}", ""),
-        ("@appsetting('",  "')", ""),
-        ("@{appsetting(\"","\")}",""),
+        ("@appsetting('", "')", ""),
+        ("@{appsetting(\"", "\")}", ""),
         ("@appsetting(\"", "\")", ""),
     ];
     for (prefix, suffix, _) in patterns {
@@ -335,7 +382,9 @@ fn resolve_appsetting(s: &str, settings: &std::collections::HashMap<String, Stri
 /// known — `graph::build` ignores them anyway, and surfacing them beats
 /// leaving a typo silently inert.
 fn link_endpoints_known(link: &str, known: &HashSet<&str>) -> bool {
-    let Some((from, rest)) = link.split_once("->") else { return false };
+    let Some((from, rest)) = link.split_once("->") else {
+        return false;
+    };
     let to = rest.split(':').next().unwrap_or(rest).trim();
     known.contains(from.trim()) && known.contains(to)
 }
@@ -450,7 +499,9 @@ mod tests {
     #[test]
     fn parse_queue_receive_and_delete() {
         assert_eq!(
-            parse_queue_from_trigger_name("When_messages_are_available_in_my-queue_(receive-and-delete)"),
+            parse_queue_from_trigger_name(
+                "When_messages_are_available_in_my-queue_(receive-and-delete)"
+            ),
             Some("my-queue".to_string())
         );
     }
@@ -487,7 +538,10 @@ mod tests {
             .map(|n| (n.to_string(), "ERROR: AuthorizationFailed".to_string()))
             .collect();
         let out = summarize_fetch_errors(&errs);
-        assert!(out.contains("4 workflow(s): ERROR: AuthorizationFailed"), "{out}");
+        assert!(
+            out.contains("4 workflow(s): ERROR: AuthorizationFailed"),
+            "{out}"
+        );
         assert!(out.contains("e.g. A, B, C, +1 more"), "{out}");
         // The reason must appear once, not once per workflow.
         assert_eq!(out.matches("AuthorizationFailed").count(), 1, "{out}");
@@ -512,14 +566,20 @@ mod tests {
     fn resolve_appsetting_single_quotes() {
         let mut settings = std::collections::HashMap::new();
         settings.insert("MY_QUEUE".to_string(), "orders-queue".to_string());
-        assert_eq!(resolve_appsetting("@appsetting('MY_QUEUE')", &settings), "orders-queue");
+        assert_eq!(
+            resolve_appsetting("@appsetting('MY_QUEUE')", &settings),
+            "orders-queue"
+        );
     }
 
     #[test]
     fn resolve_appsetting_with_braces() {
         let mut settings = std::collections::HashMap::new();
         settings.insert("MY_QUEUE".to_string(), "orders-queue".to_string());
-        assert_eq!(resolve_appsetting("@{appsetting('MY_QUEUE')}", &settings), "orders-queue");
+        assert_eq!(
+            resolve_appsetting("@{appsetting('MY_QUEUE')}", &settings),
+            "orders-queue"
+        );
     }
 
     #[test]
@@ -547,7 +607,10 @@ mod tests {
         let known: HashSet<&str> = ["A", "B"].into_iter().collect();
         // This is the real-world case: a links file carried over from another
         // tenant naming workflows this app never had.
-        assert!(!link_endpoints_known("Verify-Ignite-Invoice->Pivot-Ignite-Invoice:queue:x", &known));
+        assert!(!link_endpoints_known(
+            "Verify-Ignite-Invoice->Pivot-Ignite-Invoice:queue:x",
+            &known
+        ));
         assert!(!link_endpoints_known("A->Missing:EventGrid", &known));
         assert!(!link_endpoints_known("Missing->B:EventGrid", &known));
     }
@@ -562,6 +625,9 @@ mod tests {
     #[test]
     fn resolve_appsetting_plain_string_untouched() {
         let settings = std::collections::HashMap::new();
-        assert_eq!(resolve_appsetting("my-literal-queue", &settings), "my-literal-queue");
+        assert_eq!(
+            resolve_appsetting("my-literal-queue", &settings),
+            "my-literal-queue"
+        );
     }
 }
