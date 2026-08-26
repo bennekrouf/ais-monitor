@@ -1,12 +1,12 @@
-mod screens;
 mod components;
+mod screens;
 mod services;
 mod update_check;
 
-use dioxus::prelude::*;
-use dioxus::desktop::LogicalSize;
 use components::chain_detail::AzConfig;
-use screens::{welcome::Welcome, main_screen::MainScreen};
+use dioxus::desktop::LogicalSize;
+use dioxus::prelude::*;
+use screens::{main_screen::MainScreen, welcome::Welcome};
 
 const MAIN_CSS: &str = include_str!("../assets/main.css");
 
@@ -49,7 +49,11 @@ fn make_icon() -> Option<dioxus::desktop::tao::window::Icon> {
             let b = (200.0 - t * 30.0) as u8;
 
             let in_shape = is_monitor_shape(x, y, SIZE);
-            let (r, g, b) = if in_shape { (255u8, 255u8, 255u8) } else { (r, g, b) };
+            let (r, g, b) = if in_shape {
+                (255u8, 255u8, 255u8)
+            } else {
+                (r, g, b)
+            };
 
             rgba.extend_from_slice(&[r, g, b, alpha]);
         }
@@ -77,7 +81,9 @@ fn is_monitor_shape(x: u32, y: u32, size: u32) -> bool {
         let cur_w = w * (1.0 - frac);
         cur_w > s * 0.02 && (fx - scx).abs() < cur_w && (fx - scx).abs() > cur_w - s * 0.04
     };
-    if inside { return true; }
+    if inside {
+        return true;
+    }
     // Shield top arc
     if fy >= top - s * 0.02 && fy <= top + s * 0.02 && (fx - scx).abs() < w {
         return true;
@@ -86,7 +92,11 @@ fn is_monitor_shape(x: u32, y: u32, size: u32) -> bool {
     // Heartbeat / pulse line across the shield center
     let pulse_y = s * 0.48;
     let thick = s * 0.025;
-    if fy > pulse_y - s * 0.18 && fy < pulse_y + s * 0.18 && fx > scx - w + s * 0.06 && fx < scx + w - s * 0.06 {
+    if fy > pulse_y - s * 0.18
+        && fy < pulse_y + s * 0.18
+        && fx > scx - w + s * 0.06
+        && fx < scx + w - s * 0.06
+    {
         let left = scx - w + s * 0.06;
         let right = scx + w - s * 0.06;
         let span = right - left;
@@ -107,7 +117,9 @@ fn is_monitor_shape(x: u32, y: u32, size: u32) -> bool {
             pulse_y
         };
 
-        if (fy - py).abs() < thick { return true; }
+        if (fy - py).abs() < thick {
+            return true;
+        }
     }
 
     false
@@ -139,30 +151,37 @@ fn App() -> Element {
     });
 
     // Poll system preference every 2 s — skip when user has overridden
-    use_coroutine(move |_rx: dioxus::prelude::UnboundedReceiver<()>| async move {
-        loop {
-            tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
-            if *theme_overridden.read() { continue; }
-            let system_light = tokio::task::spawn_blocking(|| {
-                dark_light::detect() != dark_light::Mode::Dark
-            }).await.unwrap_or(*is_light.read());
-            if system_light != *is_light.read() {
-                is_light.set(system_light);
+    use_coroutine(
+        move |_rx: dioxus::prelude::UnboundedReceiver<()>| async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+                if *theme_overridden.read() {
+                    continue;
+                }
+                let system_light =
+                    tokio::task::spawn_blocking(|| dark_light::detect() != dark_light::Mode::Dark)
+                        .await
+                        .unwrap_or(*is_light.read());
+                if system_light != *is_light.read() {
+                    is_light.set(system_light);
+                }
             }
-        }
-    });
+        },
+    );
 
     let config_val = az_config.read().clone();
 
     // ── Auto-update check ──────────────────────────────────────────────────
-    let mut update_info      = use_signal(|| Option::<update_check::UpdateInfo>::None);
+    let mut update_info = use_signal(|| Option::<update_check::UpdateInfo>::None);
     let mut update_dismissed = use_signal(|| false);
-    use_coroutine(move |_rx: dioxus::prelude::UnboundedReceiver<()>| async move {
-        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-        if let Some(info) = update_check::check().await {
-            update_info.set(Some(info));
-        }
-    });
+    use_coroutine(
+        move |_rx: dioxus::prelude::UnboundedReceiver<()>| async move {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+            if let Some(info) = update_check::check().await {
+                update_info.set(Some(info));
+            }
+        },
+    );
 
     rsx! {
         if let (Some(info), false) = (update_info.read().clone(), *update_dismissed.read()) {

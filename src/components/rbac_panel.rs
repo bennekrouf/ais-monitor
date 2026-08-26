@@ -1,6 +1,6 @@
-use dioxus::prelude::*;
-use crate::services::azure::{self, FunctionApp, RoleAssignment};
 use crate::components::chain_detail::AzConfig;
+use crate::services::azure::{self, FunctionApp, RoleAssignment};
+use dioxus::prelude::*;
 
 const ARM_ROLE_SUGGESTIONS: &[&str] = &[
     "Storage Blob Data Contributor",
@@ -76,10 +76,22 @@ pub fn RbacPanel(props: RbacPanelProps) -> Element {
                 let rg = az.resource_group.clone();
                 let sub2 = sub.clone();
                 let rg2 = rg.clone();
-                let apps = match tokio::task::spawn_blocking(move || azure::list_function_apps(&sub2, &rg2)).await {
+                let apps = match tokio::task::spawn_blocking(move || {
+                    azure::list_function_apps(&sub2, &rg2)
+                })
+                .await
+                {
                     Ok(Ok(apps)) => apps,
-                    Ok(Err(e)) => { error_msg.set(Some(e)); loading.set(false); return; }
-                    Err(e) => { error_msg.set(Some(format!("{e}"))); loading.set(false); return; }
+                    Ok(Err(e)) => {
+                        error_msg.set(Some(e));
+                        loading.set(false);
+                        return;
+                    }
+                    Err(e) => {
+                        error_msg.set(Some(format!("{e}")));
+                        loading.set(false);
+                        return;
+                    }
                 };
                 func_apps.set(apps.clone());
 
@@ -87,8 +99,11 @@ pub fn RbacPanel(props: RbacPanelProps) -> Element {
                 for app in &apps {
                     let pid = app.principal_id.clone();
                     let pid2 = pid.clone();
-                    let assignments = tokio::task::spawn_blocking(move || azure::list_role_assignments(&pid2))
-                        .await.unwrap_or(Ok(Vec::new())).unwrap_or_default();
+                    let assignments =
+                        tokio::task::spawn_blocking(move || azure::list_role_assignments(&pid2))
+                            .await
+                            .unwrap_or(Ok(Vec::new()))
+                            .unwrap_or_default();
                     all_roles.push((app.name.clone(), assignments));
                 }
                 roles.set(all_roles);
@@ -112,14 +127,21 @@ pub fn RbacPanel(props: RbacPanelProps) -> Element {
             assign_error.set(None);
             spawn(async move {
                 let rg = az.resource_group.clone();
-                let result: Result<(), String> = tokio::task::spawn_blocking(move || {
-                    match p.kind {
-                        RoleKind::Arm => azure::assign_role_arm(&p.principal_id, &p.arm_role, &p.arm_scope),
+                let result: Result<(), String> =
+                    tokio::task::spawn_blocking(move || match p.kind {
+                        RoleKind::Arm => {
+                            azure::assign_role_arm(&p.principal_id, &p.arm_role, &p.arm_scope)
+                        }
                         RoleKind::CosmosData => azure::assign_cosmos_data_role(
-                            &rg, &p.cosmos_account, &p.principal_id, &p.cosmos_role_id, &p.cosmos_scope,
+                            &rg,
+                            &p.cosmos_account,
+                            &p.principal_id,
+                            &p.cosmos_role_id,
+                            &p.cosmos_scope,
                         ),
-                    }
-                }).await.unwrap_or_else(|e| Err(format!("{e}")));
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("{e}")));
 
                 match &result {
                     Ok(()) => {
@@ -129,7 +151,11 @@ pub fn RbacPanel(props: RbacPanelProps) -> Element {
                         load();
                     }
                     Err(e) => {
-                        crate::services::activity::error("Role assignment failed", "RBAC", e.clone());
+                        crate::services::activity::error(
+                            "Role assignment failed",
+                            "RBAC",
+                            e.clone(),
+                        );
                         assign_error.set(Some(e.clone()));
                     }
                 }

@@ -1,30 +1,32 @@
-use dioxus::prelude::*;
 use crate::components::{
     activity_panel::ActivityPanel,
-    chain_list::ChainList,
-    chain_detail::{AzConfig, ChainDetailView, ChainHealth, QueueStatus},
-    eventgrid_panel::EventGridPanel,
-    graph_panel::GraphPanel,
-    functions_panel::FunctionsPanel,
     api_test_panel::ApiTestPanel,
     app_settings_panel::AppSettingsPanel,
-    health_check_panel::HealthCheckPanel,
-    resource_health_panel::ResourceHealthPanel,
-    rbac_panel::RbacPanel,
-    observability_panel::ObservabilityPanel,
+    chain_detail::{AzConfig, ChainDetailView, ChainHealth, QueueStatus},
+    chain_list::ChainList,
     diagnostics_panel::DiagnosticsPanel,
-    variable_group_panel::VariableGroupPanel,
+    eventgrid_panel::EventGridPanel,
+    functions_panel::FunctionsPanel,
+    graph_panel::GraphPanel,
+    health_check_panel::HealthCheckPanel,
     home_panel::HomePanel,
+    observability_panel::ObservabilityPanel,
+    rbac_panel::RbacPanel,
+    resource_health_panel::ResourceHealthPanel,
+    variable_group_panel::VariableGroupPanel,
 };
-use crate::services::{activity, azure, azure::EgLink, chain, chain_probe, health_cache, history_cache, remote_chain};
+use crate::services::{
+    activity, azure, azure::EgLink, chain, chain_probe, health_cache, history_cache, remote_chain,
+};
+use dioxus::prelude::*;
 use std::collections::HashMap;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct MainScreenProps {
-    pub az_config:        AzConfig,
-    pub is_light:         Signal<bool>,
+    pub az_config: AzConfig,
+    pub is_light: Signal<bool>,
     pub theme_overridden: Signal<bool>,
-    pub on_back:          EventHandler<()>,
+    pub on_back: EventHandler<()>,
 }
 
 #[component]
@@ -52,12 +54,15 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
         let dir = dirs::config_dir()
             .unwrap_or_else(|| std::path::PathBuf::from("."))
             .join("ais-monitor")
-            .join(format!("{}_{}_{}", az.subscription, az.resource_group, az.app_name))
+            .join(format!(
+                "{}_{}_{}",
+                az.subscription, az.resource_group, az.app_name
+            ))
             .to_string_lossy()
             .to_string();
         use_signal(move || crate::services::names::load(&dir))
     };
-    let mut chain_health  = use_signal(|| HashMap::<String, ChainHealth>::new());
+    let mut chain_health = use_signal(|| HashMap::<String, ChainHealth>::new());
     // Per-chain, per-workflow raw run lists shared with ChainDetailView so
     // that "Check all" populates the per-workflow KPI columns (Success / Runs /
     // Avg / Streak) the same way an individual "Check" does. Without this the
@@ -94,33 +99,58 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     let mut visited_observability = use_signal(|| false);
     let mut visited_diagnostics = use_signal(|| false);
     let mut visited_var_groups = use_signal(|| false);
-    use_effect(move || {
-        match *view_mode.read() {
-            ViewMode::Graph          => graph_visible.set(true),
-            ViewMode::EventGrid      => { graph_visible.set(false); visited_eg.set(true); }
-            ViewMode::Functions      => { graph_visible.set(false); visited_fn.set(true); }
-            ViewMode::AppSettings    => { graph_visible.set(false); visited_settings.set(true); }
-            ViewMode::HealthCheck    => { graph_visible.set(false); visited_health.set(true); }
-            ViewMode::ResourceHealth => { graph_visible.set(false); visited_res_health.set(true); }
-            ViewMode::Rbac           => { graph_visible.set(false); visited_rbac.set(true); }
-            ViewMode::Observability  => { graph_visible.set(false); visited_observability.set(true); }
-            ViewMode::Diagnostics    => { graph_visible.set(false); visited_diagnostics.set(true); }
-            ViewMode::VariableGroups => { graph_visible.set(false); visited_var_groups.set(true); }
-            ViewMode::Home           => graph_visible.set(false),
-            ViewMode::Chains         => graph_visible.set(false),
-            ViewMode::ApiTest        => graph_visible.set(false),
+    use_effect(move || match *view_mode.read() {
+        ViewMode::Graph => graph_visible.set(true),
+        ViewMode::EventGrid => {
+            graph_visible.set(false);
+            visited_eg.set(true);
         }
+        ViewMode::Functions => {
+            graph_visible.set(false);
+            visited_fn.set(true);
+        }
+        ViewMode::AppSettings => {
+            graph_visible.set(false);
+            visited_settings.set(true);
+        }
+        ViewMode::HealthCheck => {
+            graph_visible.set(false);
+            visited_health.set(true);
+        }
+        ViewMode::ResourceHealth => {
+            graph_visible.set(false);
+            visited_res_health.set(true);
+        }
+        ViewMode::Rbac => {
+            graph_visible.set(false);
+            visited_rbac.set(true);
+        }
+        ViewMode::Observability => {
+            graph_visible.set(false);
+            visited_observability.set(true);
+        }
+        ViewMode::Diagnostics => {
+            graph_visible.set(false);
+            visited_diagnostics.set(true);
+        }
+        ViewMode::VariableGroups => {
+            graph_visible.set(false);
+            visited_var_groups.set(true);
+        }
+        ViewMode::Home => graph_visible.set(false),
+        ViewMode::Chains => graph_visible.set(false),
+        ViewMode::ApiTest => graph_visible.set(false),
     });
     let mut loading_chains = use_signal(|| true);
-    let mut load_error     = use_signal(|| Option::<String>::None);
+    let mut load_error = use_signal(|| Option::<String>::None);
     // Gates the Refresh-button confirmation modal. Refresh clears the
     // chain-discovery cache and re-fetches everything from Azure, which can
     // take a while on large Logic Apps — better to ask first.
     let mut confirm_refresh = use_signal(|| false);
-    let mut checking_all   = use_signal(|| false);
+    let mut checking_all = use_signal(|| false);
     let mut check_progress = use_signal(|| (0usize, 0usize)); // (done, total)
-    // Shared run-history sample size — both "Check all" and the per-chain
-    // detail view read this so their KPIs come from the same sample.
+                                                              // Shared run-history sample size — both "Check all" and the per-chain
+                                                              // detail view read this so their KPIs come from the same sample.
     let run_depth = use_signal(|| 20u32);
     let eg_links: Signal<HashMap<String, EgLink>> = use_signal(HashMap::new);
 
@@ -147,24 +177,28 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
             let az = az.clone();
             spawn(async move {
                 let sub = az.subscription.clone();
-                let rg  = az.resource_group.clone();
+                let rg = az.resource_group.clone();
                 let app = az.app_name.clone();
                 // Site location for the Logic App site.
                 let sub_loc = sub.clone();
-                let rg_loc  = rg.clone();
+                let rg_loc = rg.clone();
                 let app_loc = app.clone();
                 if let Ok(Ok(loc)) = tokio::task::spawn_blocking(move || {
                     azure::get_site_location(&sub_loc, &rg_loc, &app_loc)
-                }).await {
+                })
+                .await
+                {
                     discovered_location.set(Some(loc));
                 }
                 // SB namespace — only discover if profile didn't have one set.
                 if az.sb_namespace.is_empty() {
                     let sub2 = sub.clone();
-                    let rg2  = rg.clone();
+                    let rg2 = rg.clone();
                     if let Ok(Ok(mut list)) = tokio::task::spawn_blocking(move || {
                         azure::list_service_bus_namespaces(&sub2, &rg2)
-                    }).await {
+                    })
+                    .await
+                    {
                         if let Some(ns) = list.drain(..).next() {
                             discovered_sb_namespace.set(Some(ns));
                         }
@@ -183,7 +217,10 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     let workspace_dir: String = dirs::config_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
         .join("ais-monitor")
-        .join(format!("{}_{}_{}", az.subscription, az.resource_group, az.app_name))
+        .join(format!(
+            "{}_{}_{}",
+            az.subscription, az.resource_group, az.app_name
+        ))
         .to_string_lossy()
         .to_string();
     // Point the activity log at this workspace, so events from anywhere in the
@@ -232,7 +269,9 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     use_effect({
         let dir = workspace_dir.clone();
         move || {
-            if !*hydrated.read() { return; }
+            if !*hydrated.read() {
+                return;
+            }
             let snap = health_cache::HealthSnapshot {
                 health: chain_health.read().clone(),
                 last_checked: last_checked.read().clone(),
@@ -242,14 +281,17 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
             spawn(async move {
                 tokio::task::spawn_blocking(move || {
                     health_cache::save(&dir, &snap);
-                }).await.ok();
+                })
+                .await
+                .ok();
             });
         }
     });
 
     // ── Resize handle script ────────────────────────────────────────────
     use_effect(move || {
-        document::eval(r#"
+        document::eval(
+            r#"
             (function() {
                 if (window.__ais_monitor_resize_init) return;
                 window.__ais_monitor_resize_init = true;
@@ -283,7 +325,8 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                     document.addEventListener('mouseup', onUp);
                 });
             })();
-        "#);
+        "#,
+        );
     });
 
     // ── Discover chains from Azure on mount ─────────────────────────────
@@ -300,20 +343,24 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                 let local_dir = az.local_dir.clone();
                 let result = tokio::task::spawn_blocking(move || {
                     remote_chain::discover_chains_remote(&sub, &rg, &app, &local_dir)
-                }).await;
+                })
+                .await;
 
                 match result {
                     Ok(Ok(discovery)) => {
                         let discovered = discovery.chains;
                         // Extract deployed workflow names
-                        let deployed: Vec<String> = discovered.iter()
+                        let deployed: Vec<String> = discovered
+                            .iter()
                             .flat_map(|c| c.steps.iter().map(|s| s.workflow.clone()))
                             .collect();
                         activity::info(
                             "Discovered chains",
                             format!(
                                 "{} chain(s), {} workflow(s), {} unlinked",
-                                discovered.len(), deployed.len(), discovery.unlinked.len(),
+                                discovered.len(),
+                                deployed.len(),
+                                discovery.unlinked.len(),
                             ),
                         );
                         deployed_workflows.set(deployed);
@@ -342,9 +389,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
         move || {
             let rg = rg.clone();
             spawn(async move {
-                let result = tokio::task::spawn_blocking(move || {
-                    azure::build_eg_links(&rg)
-                }).await;
+                let result = tokio::task::spawn_blocking(move || azure::build_eg_links(&rg)).await;
                 if let Ok(links) = result {
                     eg_links.set(links);
                 }
@@ -358,7 +403,9 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     // from a stale selection (chain removed after a refresh).
     use_effect(move || {
         let chains_now = chains.read();
-        if chains_now.is_empty() { return; }
+        if chains_now.is_empty() {
+            return;
+        }
         // `peek()` reads without subscribing — the effect should re-run on
         // chain-list changes, not on its own write to `selected_chain`.
         let needs_default = match selected_chain.peek().as_ref() {
@@ -372,25 +419,28 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
 
     // ── Render ────────────────────────────────────────────────────────────
     let sel = selected_chain.read().clone();
-    let selected_chain_detail = sel.as_ref().and_then(|label| {
-        chains.read().iter().find(|c| c.label == *label).cloned()
-    });
+    let selected_chain_detail = sel
+        .as_ref()
+        .and_then(|label| chains.read().iter().find(|c| c.label == *label).cloned());
 
     let app_label = format!("{} / {}", az.resource_group, az.app_name);
 
     // Principal ID of the Logic App's managed identity — fetched once and shown
     // in the topbar so the user can copy it for RBAC role assignments.
     let mut principal_id: Signal<Option<String>> = use_signal(|| None);
-    let mut copied_pid: Signal<bool>             = use_signal(|| false);
+    let mut copied_pid: Signal<bool> = use_signal(|| false);
     use_effect({
         let az = az.clone();
         move || {
-            if principal_id.read().is_some() { return; }
+            if principal_id.read().is_some() {
+                return;
+            }
             let az = az.clone();
             spawn(async move {
                 let result = tokio::task::spawn_blocking(move || {
                     azure::get_principal_id(&az.subscription, &az.resource_group, &az.app_name)
-                }).await;
+                })
+                .await;
                 if let Ok(Ok(pid)) = result {
                     if !pid.is_empty() {
                         principal_id.set(Some(pid));
@@ -401,20 +451,51 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     });
 
     // Derive an environment colour from the label or resource/app names
-    let env_source = if !az.label.is_empty() { az.label.to_lowercase() }
-                     else { format!("{} {}", az.resource_group, az.app_name).to_lowercase() };
-    let (env_label, env_color) = if env_source.contains("prod") {
-        (if !az.label.is_empty() { az.label.clone() } else { "PROD".into() }, "#e07070")
-    } else if env_source.contains("stg") || env_source.contains("staging") {
-        (if !az.label.is_empty() { az.label.clone() } else { "STG".into()  }, "#d29922")
-    } else if env_source.contains("dev") {
-        (if !az.label.is_empty() { az.label.clone() } else { "DEV".into()  }, "#3fb950")
-    } else if env_source.contains("uat") || env_source.contains("test") {
-        (if !az.label.is_empty() { az.label.clone() } else { "UAT".into()  }, "#bc8cff")
-    } else if !az.label.is_empty() {
-        (az.label.clone(), "#58a6ff")   // custom label, blue
+    let env_source = if !az.label.is_empty() {
+        az.label.to_lowercase()
     } else {
-        (String::new(), "")             // no label, no badge
+        format!("{} {}", az.resource_group, az.app_name).to_lowercase()
+    };
+    let (env_label, env_color) = if env_source.contains("prod") {
+        (
+            if !az.label.is_empty() {
+                az.label.clone()
+            } else {
+                "PROD".into()
+            },
+            "#e07070",
+        )
+    } else if env_source.contains("stg") || env_source.contains("staging") {
+        (
+            if !az.label.is_empty() {
+                az.label.clone()
+            } else {
+                "STG".into()
+            },
+            "#d29922",
+        )
+    } else if env_source.contains("dev") {
+        (
+            if !az.label.is_empty() {
+                az.label.clone()
+            } else {
+                "DEV".into()
+            },
+            "#3fb950",
+        )
+    } else if env_source.contains("uat") || env_source.contains("test") {
+        (
+            if !az.label.is_empty() {
+                az.label.clone()
+            } else {
+                "UAT".into()
+            },
+            "#bc8cff",
+        )
+    } else if !az.label.is_empty() {
+        (az.label.clone(), "#58a6ff") // custom label, blue
+    } else {
+        (String::new(), "") // no label, no badge
     };
 
     rsx! {

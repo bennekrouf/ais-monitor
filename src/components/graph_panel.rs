@@ -1,6 +1,6 @@
+use crate::services::chain::ChainDetail;
 use dioxus::prelude::*;
 use std::collections::{HashMap, HashSet};
-use crate::services::chain::ChainDetail;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct GraphPanelProps {
@@ -58,45 +58,65 @@ pub fn GraphPanel(props: GraphPanelProps) -> Element {
             let eff_data = data.clone();
             let visible_sig = props.visible;
             use_effect(move || {
-                let sel      = selected_chain.read().clone();
-                let light    = *is_light.read();
+                let sel = selected_chain.read().clone();
+                let light = *is_light.read();
                 let excluded = excluded_nodes.read().clone();
                 let data_ref = eff_data.clone();
                 // Subscribe to visibility: when the panel becomes the active tab,
                 // re-run so D3 measures the now-visible container instead of 0×0.
                 let is_visible = *visible_sig.read();
-                if !is_visible { return; }
+                if !is_visible {
+                    return;
+                }
 
                 spawn(async move {
                     let script = tokio::task::spawn_blocking(move || {
                         let theme = Theme::from_light(light);
 
                         let chain_ids: HashSet<String> = if sel == "All" {
-                            data_ref.node_objects.iter().map(|(id, _)| id.clone()).collect()
-                        } else if let Some(chain) = data_ref.chains.iter().find(|c| c.label == sel) {
+                            data_ref
+                                .node_objects
+                                .iter()
+                                .map(|(id, _)| id.clone())
+                                .collect()
+                        } else if let Some(chain) = data_ref.chains.iter().find(|c| c.label == sel)
+                        {
                             chain.workflows.clone()
                         } else {
-                            data_ref.node_objects.iter().map(|(id, _)| id.clone()).collect()
+                            data_ref
+                                .node_objects
+                                .iter()
+                                .map(|(id, _)| id.clone())
+                                .collect()
                         };
 
-                        let visible: HashSet<&str> = chain_ids.iter()
+                        let visible: HashSet<&str> = chain_ids
+                            .iter()
                             .filter(|id| !excluded.contains(*id))
                             .map(|s| s.as_str())
                             .collect();
 
-                        let nodes: Vec<&str> = data_ref.node_objects.iter()
+                        let nodes: Vec<&str> = data_ref
+                            .node_objects
+                            .iter()
                             .filter(|(id, _)| visible.contains(id.as_str()))
                             .map(|(_, json)| json.as_str())
                             .collect();
-                        let edges: Vec<&str> = data_ref.edge_objects.iter()
-                            .filter(|(from, to, _)| visible.contains(from.as_str()) && visible.contains(to.as_str()))
+                        let edges: Vec<&str> = data_ref
+                            .edge_objects
+                            .iter()
+                            .filter(|(from, to, _)| {
+                                visible.contains(from.as_str()) && visible.contains(to.as_str())
+                            })
                             .map(|(_, _, json)| json.as_str())
                             .collect();
 
                         let fn_str = format!("[{}]", nodes.join(","));
                         let fe_str = format!("[{}]", edges.join(","));
                         build_d3_script(&fn_str, &fe_str, &theme)
-                    }).await.unwrap_or_default();
+                    })
+                    .await
+                    .unwrap_or_default();
 
                     document::eval(&script);
                 });
@@ -379,13 +399,16 @@ pub fn GraphPanel(props: GraphPanelProps) -> Element {
 // ── Data ─────────────────────────────────────────────────────────────────────
 
 fn build_graph_data(chains: &[ChainDetail]) -> Option<GraphData> {
-    if chains.is_empty() { return None; }
+    if chains.is_empty() {
+        return None;
+    }
 
     // Collect unique nodes: workflow name → trigger_info
     let mut node_map: HashMap<String, String> = HashMap::new();
     for chain in chains {
         for step in &chain.steps {
-            node_map.entry(step.workflow.clone())
+            node_map
+                .entry(step.workflow.clone())
                 .or_insert_with(|| step.trigger_info.clone());
         }
     }
@@ -398,36 +421,54 @@ fn build_graph_data(chains: &[ChainDetail]) -> Option<GraphData> {
         let steps = &chain.steps;
         for i in 1..steps.len() {
             let from = &steps[i - 1].workflow;
-            let to   = &steps[i].workflow;
+            let to = &steps[i].workflow;
             let link = &steps[i].link_type;
-            let key  = format!("{from}→{to}");
+            let key = format!("{from}→{to}");
             if edges_seen.insert(key) {
-                let kind = if link.starts_with("queue:") { "queue" }
-                    else if link == "EventGrid"           { "eventgrid" }
-                    else if link == "invoke"              { "invoke" }
-                    else                                  { "other" };
+                let kind = if link.starts_with("queue:") {
+                    "queue"
+                } else if link == "EventGrid" {
+                    "eventgrid"
+                } else if link == "invoke" {
+                    "invoke"
+                } else {
+                    "other"
+                };
                 let label_safe = link.replace('"', "'");
-                let json = format!(r#"{{ "source": "{from}", "target": "{to}", "label": "{label_safe}", "kind": "{kind}" }}"#);
+                let json = format!(
+                    r#"{{ "source": "{from}", "target": "{to}", "label": "{label_safe}", "kind": "{kind}" }}"#
+                );
                 edge_objects.push((from.clone(), to.clone(), json));
             }
         }
     }
 
     // Build node JSON objects
-    let mut node_objects: Vec<(String, String)> = node_map.iter().map(|(name, trigger)| {
-        let group = if trigger.contains("http") { "http" }
-            else if trigger.contains("queue") || trigger.contains("ServiceBus") { "queue" }
-            else if trigger.contains("blob")  { "blob" }
-            else if trigger.contains("recurrence") { "recurrence" }
-            else { "generic" };
-        let trigger_safe = trigger.replace('"', "'");
-        let json = format!(r#"{{ "id": "{name}", "trigger": "{trigger_safe}", "group": "{group}" }}"#);
-        (name.clone(), json)
-    }).collect();
+    let mut node_objects: Vec<(String, String)> = node_map
+        .iter()
+        .map(|(name, trigger)| {
+            let group = if trigger.contains("http") {
+                "http"
+            } else if trigger.contains("queue") || trigger.contains("ServiceBus") {
+                "queue"
+            } else if trigger.contains("blob") {
+                "blob"
+            } else if trigger.contains("recurrence") {
+                "recurrence"
+            } else {
+                "generic"
+            };
+            let trigger_safe = trigger.replace('"', "'");
+            let json =
+                format!(r#"{{ "id": "{name}", "trigger": "{trigger_safe}", "group": "{group}" }}"#);
+            (name.clone(), json)
+        })
+        .collect();
     node_objects.sort_by(|a, b| a.0.cmp(&b.0));
 
     // Chain infos for pills
-    let chain_infos: Vec<ChainInfo> = chains.iter()
+    let chain_infos: Vec<ChainInfo> = chains
+        .iter()
         .filter(|c| c.steps.len() > 1)
         .map(|c| ChainInfo {
             label: c.label.clone(),
@@ -436,7 +477,11 @@ fn build_graph_data(chains: &[ChainDetail]) -> Option<GraphData> {
         })
         .collect();
 
-    Some(GraphData { node_objects, edge_objects, chains: chain_infos })
+    Some(GraphData {
+        node_objects,
+        edge_objects,
+        chains: chain_infos,
+    })
 }
 
 // ── Theme ─────────────────────────────────────────────────────────────────────
@@ -529,7 +574,8 @@ fn build_d3_script(nodes_json: &str, edges_json: &str, theme: &Theme) -> String 
     let nodes = nodes_json.replace('\\', "\\\\");
     let edges = edges_json.replace('\\', "\\\\");
 
-    format!(r#"
+    format!(
+        r#"
 (function() {{
     var oldSvg = document.getElementById('graph-svg');
     if (!oldSvg) return;

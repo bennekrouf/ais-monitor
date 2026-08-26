@@ -17,7 +17,11 @@ const PORTAL_BASE: &str = "https://portal.azure.com";
 /// `#resource/...` instead of the bad `#/resource/...` URL that silently
 /// routes to the Portal home page.
 fn tenant_fragment(tenant: &str) -> String {
-    if tenant.is_empty() { "#".to_string() } else { format!("#@{tenant}/") }
+    if tenant.is_empty() {
+        "#".to_string()
+    } else {
+        format!("#@{tenant}/")
+    }
 }
 
 /// Logic App Standard site (the app, not a specific workflow).
@@ -87,7 +91,13 @@ pub fn workflow(
 /// default Overview, because monitor users coming from a DL alert almost
 /// always want to peek/repair messages — saving the extra click into
 /// "Service Bus Explorer" in the left nav.
-pub fn sb_queue(tenant: &str, subscription: &str, rg: &str, namespace: &str, queue: &str) -> String {
+pub fn sb_queue(
+    tenant: &str,
+    subscription: &str,
+    rg: &str,
+    namespace: &str,
+    queue: &str,
+) -> String {
     format!(
         "{base}/{frag}resource/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.ServiceBus/namespaces/{ns}/queues/{q}/explorer",
         base = PORTAL_BASE,
@@ -127,7 +137,13 @@ pub fn function_app(tenant: &str, subscription: &str, rg: &str, app: &str) -> St
 /// A single Function inside a Function App. Lands on the **Invocations** tab,
 /// directly equivalent to the workflow run-history view. Like `workflow()`,
 /// this uses the blade-extension `#view/...` form (no tenant prefix).
-pub fn function(_tenant: &str, subscription: &str, rg: &str, app: &str, function_name: &str) -> String {
+pub fn function(
+    _tenant: &str,
+    subscription: &str,
+    rg: &str,
+    app: &str,
+    function_name: &str,
+) -> String {
     let resource_id = format!(
         "/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.Web/sites/{app}/functions/{fn}",
         sub = subscription, rg = rg, app = app, fn = function_name,
@@ -146,11 +162,7 @@ pub fn open_in_browser(url: &str) {
     let url = url.to_string();
     std::thread::spawn(move || {
         if let Err(e) = open_url(&url) {
-            crate::services::activity::error(
-                "Failed to open Portal link",
-                url.clone(),
-                e,
-            );
+            crate::services::activity::error("Failed to open Portal link", url.clone(), e);
         } else {
             crate::services::activity::info("Opened Portal link", url);
         }
@@ -163,7 +175,11 @@ fn open_url(url: &str) -> Result<(), String> {
         .arg(url)
         .status()
         .map_err(|e| format!("{e}"))?;
-    if status.success() { Ok(()) } else { Err(format!("`open` exited {}", status)) }
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("`open` exited {}", status))
+    }
 }
 
 #[cfg(target_os = "windows")]
@@ -173,7 +189,11 @@ fn open_url(url: &str) -> Result<(), String> {
         .args(["/c", "start", "", url])
         .status()
         .map_err(|e| format!("{e}"))?;
-    if status.success() { Ok(()) } else { Err(format!("`start` exited {}", status)) }
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("`start` exited {}", status))
+    }
 }
 
 #[cfg(all(unix, not(target_os = "macos")))]
@@ -182,5 +202,9 @@ fn open_url(url: &str) -> Result<(), String> {
         .arg(url)
         .status()
         .map_err(|e| format!("{e}"))?;
-    if status.success() { Ok(()) } else { Err(format!("`xdg-open` exited {}", status)) }
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("`xdg-open` exited {}", status))
+    }
 }

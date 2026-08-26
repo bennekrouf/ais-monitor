@@ -1,6 +1,6 @@
-use dioxus::prelude::*;
-use crate::services::azure::{self, EventGridTopic, EventGridSubscription, EventGridSystemTopic};
 use crate::components::chain_detail::AzConfig;
+use crate::services::azure::{self, EventGridSubscription, EventGridSystemTopic, EventGridTopic};
+use dioxus::prelude::*;
 
 #[derive(Props, Clone, PartialEq)]
 pub struct EventGridPanelProps {
@@ -29,7 +29,8 @@ pub fn EventGridPanel(props: EventGridPanelProps) -> Element {
 
     // Load saved profiles (exclude current env)
     let all_profiles = load_profiles();
-    let other_profiles: Vec<AzConfig> = all_profiles.into_iter()
+    let other_profiles: Vec<AzConfig> = all_profiles
+        .into_iter()
         .filter(|p| p.resource_group != az.resource_group || p.subscription != az.subscription)
         .collect();
 
@@ -182,19 +183,24 @@ async fn fetch_eg(
 ) {
     // Custom topics
     let rg2 = rg.to_string();
-    let custom_result = tokio::task::spawn_blocking(move || {
-        azure::list_eventgrid_topics(&rg2)
-    }).await;
+    let custom_result =
+        tokio::task::spawn_blocking(move || azure::list_eventgrid_topics(&rg2)).await;
 
     match custom_result {
         Ok(Ok(topic_list)) => {
             let mut all = Vec::new();
             for t in &topic_list {
                 let tid = t.id.clone();
-                let subs = tokio::task::spawn_blocking(move || {
-                    azure::list_eventgrid_subscriptions(&tid)
-                }).await.ok().and_then(|r| r.ok()).unwrap_or_default();
-                all.push(TopicWithSubs { topic: t.clone(), subscriptions: subs });
+                let subs =
+                    tokio::task::spawn_blocking(move || azure::list_eventgrid_subscriptions(&tid))
+                        .await
+                        .ok()
+                        .and_then(|r| r.ok())
+                        .unwrap_or_default();
+                all.push(TopicWithSubs {
+                    topic: t.clone(),
+                    subscriptions: subs,
+                });
             }
             topics.set(all);
         }
@@ -204,9 +210,8 @@ async fn fetch_eg(
 
     // System topics
     let rg3 = rg.to_string();
-    let sys_result = tokio::task::spawn_blocking(move || {
-        azure::list_eventgrid_system_topics(&rg3)
-    }).await;
+    let sys_result =
+        tokio::task::spawn_blocking(move || azure::list_eventgrid_system_topics(&rg3)).await;
 
     if let Ok(Ok(st_list)) = sys_result {
         let mut all = Vec::new();
@@ -215,8 +220,15 @@ async fn fetch_eg(
             let name = st.name.clone();
             let subs = tokio::task::spawn_blocking(move || {
                 azure::list_eventgrid_system_topic_subscriptions(&rg4, &name)
-            }).await.ok().and_then(|r| r.ok()).unwrap_or_default();
-            all.push(SysTopicWithSubs { topic: st.clone(), subscriptions: subs });
+            })
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            .unwrap_or_default();
+            all.push(SysTopicWithSubs {
+                topic: st.clone(),
+                subscriptions: subs,
+            });
         }
         sys_topics.set(all);
     }
@@ -294,7 +306,10 @@ fn render_topic_block(tws: &TopicWithSubs, mut expanded: Signal<Option<String>>)
     }
 }
 
-fn render_sys_topic_block(stws: &SysTopicWithSubs, mut expanded: Signal<Option<String>>) -> Element {
+fn render_sys_topic_block(
+    stws: &SysTopicWithSubs,
+    mut expanded: Signal<Option<String>>,
+) -> Element {
     let topic_name = stws.topic.name.clone();
     let key = format!("sys:{}", topic_name);
     let key_click = key.clone();
@@ -419,7 +434,10 @@ fn save_eg_cache(rg: &str, topics: &[TopicWithSubs], sys_topics: &[SysTopicWithS
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let cache = EgCache { topics: topics.to_vec(), sys_topics: sys_topics.to_vec() };
+    let cache = EgCache {
+        topics: topics.to_vec(),
+        sys_topics: sys_topics.to_vec(),
+    };
     if let Ok(json) = serde_json::to_string(&cache) {
         let _ = std::fs::write(path, json);
     }

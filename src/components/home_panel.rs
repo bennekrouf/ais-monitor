@@ -1,8 +1,10 @@
+use crate::components::chain_detail::{AzConfig, ChainHealth, QueueStatus};
+use crate::services::{
+    azure, chain, chain_probe, functions_cache, health_cache, history_cache, resource_health_cache,
+};
+use chrono::{DateTime, Duration, Local, TimeZone, Utc};
 use dioxus::prelude::*;
 use std::collections::HashMap;
-use chrono::{DateTime, Duration, Local, TimeZone, Utc};
-use crate::services::{azure, chain, chain_probe, health_cache, history_cache, functions_cache, resource_health_cache};
-use crate::components::chain_detail::{AzConfig, ChainHealth, QueueStatus};
 
 /// A chain whose success rate has dropped meaningfully below its own recent
 /// average — caught by comparing the latest history point against the mean
@@ -174,12 +176,21 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                 // Resource health
                 let sub_r = sub.clone();
                 let rg_r = rg.clone();
-                if let Ok(Ok(rows)) = tokio::task::spawn_blocking(move || azure::list_resource_health(&sub_r, &rg_r)).await {
+                if let Ok(Ok(rows)) =
+                    tokio::task::spawn_blocking(move || azure::list_resource_health(&sub_r, &rg_r))
+                        .await
+                {
                     let total = rows.len();
-                    let bad = rows.iter().filter(|r| {
-                        !matches!(r.state.as_str(), "Running" | "Succeeded" | "Active" | "Enabled")
-                            || r.health == "Degraded" || r.health == "Unavailable"
-                    }).count();
+                    let bad = rows
+                        .iter()
+                        .filter(|r| {
+                            !matches!(
+                                r.state.as_str(),
+                                "Running" | "Succeeded" | "Active" | "Enabled"
+                            ) || r.health == "Degraded"
+                                || r.health == "Unavailable"
+                        })
+                        .count();
                     res_unhealthy.set(Some((bad, total)));
                     res_fetched_at.set(epoch_secs());
                 }
@@ -187,8 +198,11 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                 // Function apps — shared by the drift and RBAC rollups.
                 let sub_a = sub.clone();
                 let rg_a = rg.clone();
-                let apps = tokio::task::spawn_blocking(move || azure::list_function_apps(&sub_a, &rg_a))
-                    .await.unwrap_or(Ok(Vec::new())).unwrap_or_default();
+                let apps =
+                    tokio::task::spawn_blocking(move || azure::list_function_apps(&sub_a, &rg_a))
+                        .await
+                        .unwrap_or(Ok(Vec::new()))
+                        .unwrap_or_default();
 
                 // Config drift across all function apps
                 let expected = if store.is_empty() {
@@ -196,8 +210,10 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                 } else {
                     let sub_c = sub.clone();
                     let store2 = store.clone();
-                    tokio::task::spawn_blocking(move || azure::appconfig_list_kv(&sub_c, &store2)).await
-                        .ok().and_then(|r| r.ok())
+                    tokio::task::spawn_blocking(move || azure::appconfig_list_kv(&sub_c, &store2))
+                        .await
+                        .ok()
+                        .and_then(|r| r.ok())
                 };
                 let mut drift = 0usize;
                 for app in &apps {
@@ -206,34 +222,51 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                     let name = app.name.clone();
                     let expected2 = expected.clone();
                     let rows = tokio::task::spawn_blocking(move || {
-                        let live = azure::get_app_settings(&sub_d, &rg_d, &name).unwrap_or_default();
+                        let live =
+                            azure::get_app_settings(&sub_d, &rg_d, &name).unwrap_or_default();
                         azure::compute_app_settings_drift(&live, expected2.as_ref())
-                    }).await.unwrap_or_default();
-                    drift += rows.iter().filter(|r| matches!(
-                        r.status,
-                        azure::DriftStatus::Diff
-                            | azure::DriftStatus::LiteralWarn { .. }
-                            | azure::DriftStatus::KvFail { .. }
-                            | azure::DriftStatus::MissingLive
-                    )).count();
+                    })
+                    .await
+                    .unwrap_or_default();
+                    drift += rows
+                        .iter()
+                        .filter(|r| {
+                            matches!(
+                                r.status,
+                                azure::DriftStatus::Diff
+                                    | azure::DriftStatus::LiteralWarn { .. }
+                                    | azure::DriftStatus::KvFail { .. }
+                                    | azure::DriftStatus::MissingLive
+                            )
+                        })
+                        .count();
                 }
                 drift_count.set(Some(drift));
 
                 // RBAC gaps — identities with no role assignments at all.
                 let mut gaps = 0usize;
                 for app in &apps {
-                    if app.principal_id.is_empty() { continue; }
+                    if app.principal_id.is_empty() {
+                        continue;
+                    }
                     let pid = app.principal_id.clone();
-                    let roles = tokio::task::spawn_blocking(move || azure::list_role_assignments(&pid))
-                        .await.unwrap_or(Ok(Vec::new())).unwrap_or_default();
-                    if roles.is_empty() { gaps += 1; }
+                    let roles =
+                        tokio::task::spawn_blocking(move || azure::list_role_assignments(&pid))
+                            .await
+                            .unwrap_or(Ok(Vec::new()))
+                            .unwrap_or_default();
+                    if roles.is_empty() {
+                        gaps += 1;
+                    }
                 }
                 rbac_gaps.set(Some(gaps));
 
                 // Cost MTD
                 let sub_x = sub.clone();
                 let rg_x = rg.clone();
-                if let Ok(Ok(c)) = tokio::task::spawn_blocking(move || azure::get_cost_mtd(&sub_x, &rg_x)).await {
+                if let Ok(Ok(c)) =
+                    tokio::task::spawn_blocking(move || azure::get_cost_mtd(&sub_x, &rg_x)).await
+                {
                     cost.set(Some(c));
                 }
 
@@ -270,7 +303,9 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                 let app = az.app_name.clone();
                 let result = tokio::task::spawn_blocking(move || {
                     azure::list_actions(&sub, &rg, &app, &workflow, &run_id)
-                }).await.unwrap_or_else(|e| Err(format!("{e}")));
+                })
+                .await
+                .unwrap_or_else(|e| Err(format!("{e}")));
                 match result {
                     Ok(actions) => log_actions.set(actions),
                     Err(e) => log_error.set(Some(e)),
@@ -347,9 +382,13 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
             // `peek` throughout, never `read`: this closure is called from
             // effects and from the poll loop, and subscribing those scopes to
             // signals we then write would rerun them and re-trigger the poll.
-            if *chain_polling.peek() { return; }
+            if *chain_polling.peek() {
+                return;
+            }
             let chains = chains_sig.peek().clone();
-            if chains.is_empty() { return; }
+            if chains.is_empty() {
+                return;
+            }
             let az = az.clone();
             chain_polling.set(true);
             spawn(async move {
@@ -372,12 +411,14 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                 // thirds of its calls re-reading identical run history, at a
                 // sustained rate that is itself what trips the subscription's
                 // hostruntime throttle.
-                let mut wf_names: Vec<String> = chains.iter()
+                let mut wf_names: Vec<String> = chains
+                    .iter()
                     .flat_map(|c| c.steps.iter().map(|s| s.workflow.clone()))
                     .collect();
                 wf_names.sort();
                 wf_names.dedup();
-                let mut queue_names: Vec<String> = chains.iter()
+                let mut queue_names: Vec<String> = chains
+                    .iter()
                     .flat_map(|c| c.queues.iter().cloned())
                     .collect();
                 queue_names.sort();
@@ -397,9 +438,14 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                         }));
                     }
                     for handle in pending {
-                        let Ok((wf, result)) = handle.await else { errs += 1; continue };
+                        let Ok((wf, result)) = handle.await else {
+                            errs += 1;
+                            continue;
+                        };
                         match result {
-                            Ok(runs) => { all_runs.insert(wf, runs); }
+                            Ok(runs) => {
+                                all_runs.insert(wf, runs);
+                            }
                             Err(e) => {
                                 errs += 1;
                                 halt = halt.or(chain_probe::classify(&e));
@@ -411,7 +457,9 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                         }
                     }
                     // App-wide failure: the rest would fail identically.
-                    if halt.is_some() { break 'runs; }
+                    if halt.is_some() {
+                        break 'runs;
+                    }
                 }
 
                 let mut all_queues: HashMap<String, QueueStatus> = HashMap::new();
@@ -428,13 +476,19 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                             }));
                         }
                         for handle in pending {
-                            let Ok((q, result)) = handle.await else { errs += 1; continue };
+                            let Ok((q, result)) = handle.await else {
+                                errs += 1;
+                                continue;
+                            };
                             match result {
                                 Ok(qi) => {
-                                    all_queues.insert(q, QueueStatus {
-                                        active: qi.active,
-                                        dead_letter: qi.dead_letter,
-                                    });
+                                    all_queues.insert(
+                                        q,
+                                        QueueStatus {
+                                            active: qi.active,
+                                            dead_letter: qi.dead_letter,
+                                        },
+                                    );
                                 }
                                 Err(e) => {
                                     errs += 1;
@@ -446,7 +500,9 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                                 }
                             }
                         }
-                        if halt.is_some() { break 'queues; }
+                        if halt.is_some() {
+                            break 'queues;
+                        }
                     }
                 }
 
@@ -456,8 +512,12 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                     let steps: Vec<String> = ch.steps.iter().map(|s| s.workflow.clone()).collect();
                     let probe = chain_probe::assemble(&steps, &ch.queues, &all_runs, &all_queues);
                     chain_runs.write().insert(ch.label.clone(), probe.runs);
-                    chain_health_sig.write().insert(ch.label.clone(), probe.health);
-                    queue_statuses.write().insert(ch.label.clone(), probe.queues);
+                    chain_health_sig
+                        .write()
+                        .insert(ch.label.clone(), probe.health);
+                    queue_statuses
+                        .write()
+                        .insert(ch.label.clone(), probe.queues);
                     last_checked_sig.write().insert(ch.label.clone(), now);
                 }
                 if errs > 0 {
@@ -486,7 +546,11 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                         } else {
                             base_interval
                         };
-                        let next = if prev == 0 { floor } else { (prev * 2).max(floor) };
+                        let next = if prev == 0 {
+                            floor
+                        } else {
+                            (prev * 2).max(floor)
+                        };
                         poll_backoff_secs.set(next.min(MAX_POLL_BACKOFF_SECS));
                         if reason == chain_probe::ProbeHalt::Throttled {
                             crate::services::activity::warn(
@@ -574,7 +638,9 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                         let last = *chain_poll_at.peek();
                         let interval = *poll_interval_secs.peek() + *poll_backoff_secs.peek();
                         let due = last == 0 || epoch_secs().saturating_sub(last) >= interval;
-                        if due { poll_chains(); }
+                        if due {
+                            poll_chains();
+                        }
                     }
                     tokio::time::sleep(std::time::Duration::from_secs(POLL_TICK_SECS)).await;
                 }
@@ -623,22 +689,34 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
             for (workflow, runs) in workflows {
                 // Parse and order newest-first; skip runs with unparseable
                 // timestamps rather than guessing their position.
-                let mut dated: Vec<(DateTime<Utc>, &azure::RunInfo)> = runs.iter()
-                    .filter_map(|r| DateTime::parse_from_rfc3339(&r.start).ok()
-                        .map(|dt| (dt.with_timezone(&Utc), r)))
+                let mut dated: Vec<(DateTime<Utc>, &azure::RunInfo)> = runs
+                    .iter()
+                    .filter_map(|r| {
+                        DateTime::parse_from_rfc3339(&r.start)
+                            .ok()
+                            .map(|dt| (dt.with_timezone(&Utc), r))
+                    })
                     .collect();
                 dated.sort_by(|a, b| b.0.cmp(&a.0));
 
                 // Runs still in flight aren't evidence either way, so the
                 // verdict comes from the most recent finished run.
-                let terminal: Vec<&(DateTime<Utc>, &azure::RunInfo)> = dated.iter()
+                let terminal: Vec<&(DateTime<Utc>, &azure::RunInfo)> = dated
+                    .iter()
                     .filter(|(_, r)| r.status == "Succeeded" || r.status == "Failed")
                     .collect();
-                let Some((failed_at, newest)) = terminal.first().copied() else { continue };
-                if newest.status != "Failed" { continue; }
-                if *failed_at < cutoff { continue; }
+                let Some((failed_at, newest)) = terminal.first().copied() else {
+                    continue;
+                };
+                if newest.status != "Failed" {
+                    continue;
+                }
+                if *failed_at < cutoff {
+                    continue;
+                }
 
-                let consecutive = terminal.iter()
+                let consecutive = terminal
+                    .iter()
                     .take_while(|(_, r)| r.status == "Failed")
                     .count();
                 v.push(UnrecoveredFailure {
@@ -658,7 +736,8 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
     // failed still inserts an (empty) entry per chain, so testing the outer
     // map would report "have data" and make the card claim nothing is
     // failing when really nothing could be read.
-    let fetched_runs: usize = all_runs.values()
+    let fetched_runs: usize = all_runs
+        .values()
         .flat_map(|workflows| workflows.values())
         .map(|runs| runs.len())
         .sum();
@@ -678,7 +757,9 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
         for (chain, workflows) in &all_runs {
             for (workflow, runs) in workflows {
                 for r in runs.iter().filter(|r| r.status == "Running") {
-                    let Ok(dt) = DateTime::parse_from_rfc3339(&r.start) else { continue };
+                    let Ok(dt) = DateTime::parse_from_rfc3339(&r.start) else {
+                        continue;
+                    };
                     by_run
                         .entry((workflow.clone(), r.id.clone()))
                         .or_insert_with(|| LiveRun {
@@ -699,26 +780,40 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
         // Oldest first — the run that has been going far longer than the rest
         // is the likely stuck one, so it sits at the top rather than scrolling
         // away. Ties broken by name so the order doesn't jitter between polls.
-        v.sort_by(|a, b| a.started.cmp(&b.started).then_with(|| a.workflow.cmp(&b.workflow)));
+        v.sort_by(|a, b| {
+            a.started
+                .cmp(&b.started)
+                .then_with(|| a.workflow.cmp(&b.workflow))
+        });
         v
     };
     let live_chains: Vec<LiveChain> = {
-        let mut by_chain: HashMap<String, (usize, std::collections::HashSet<String>, DateTime<Utc>)> = HashMap::new();
+        let mut by_chain: HashMap<
+            String,
+            (usize, std::collections::HashSet<String>, DateTime<Utc>),
+        > = HashMap::new();
         // A shared workflow's run counts toward every chain it belongs to —
         // this is the per-chain view, where the run really is in flight for
         // each of them. Only the flat run list above is deduplicated.
         for r in &live_runs {
             for chain in &r.chains {
-                let entry = by_chain.entry(chain.clone())
+                let entry = by_chain
+                    .entry(chain.clone())
                     .or_insert_with(|| (0, std::collections::HashSet::new(), r.started));
                 entry.0 += 1;
                 entry.1.insert(r.workflow.clone());
-                if r.started < entry.2 { entry.2 = r.started; }
+                if r.started < entry.2 {
+                    entry.2 = r.started;
+                }
             }
         }
-        let mut v: Vec<LiveChain> = by_chain.into_iter()
+        let mut v: Vec<LiveChain> = by_chain
+            .into_iter()
             .map(|(chain, (runs, workflows, oldest))| LiveChain {
-                chain, runs, workflows: workflows.len(), oldest,
+                chain,
+                runs,
+                workflows: workflows.len(),
+                oldest,
             })
             .collect();
         v.sort_by(|a, b| a.oldest.cmp(&b.oldest));
@@ -730,9 +825,11 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
     // (queue, chain, count)
     let queue_statuses = props.chain_queue_statuses.read().clone();
     let dlq: Vec<(String, String, i64)> = {
-        let mut v: Vec<(String, String, i64)> = queue_statuses.iter()
+        let mut v: Vec<(String, String, i64)> = queue_statuses
+            .iter()
             .flat_map(|(chain, queues)| {
-                queues.iter()
+                queues
+                    .iter()
                     .filter(|(_, s)| s.dead_letter > 0)
                     .map(move |(queue, s)| (queue.clone(), chain.clone(), s.dead_letter))
             })
@@ -752,24 +849,38 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
 
     // Success-rate regression vs. each chain's own recent average.
     let history = history_cache::load(&workspace_dir);
-    let regressions: Vec<(String, f64, f64)> = history.chains.iter().filter_map(|(name, points)| {
-        let rates: Vec<f64> = points.iter().filter_map(|p| p.success_rate).collect();
-        if rates.len() < 3 { return None; }
-        let latest = *rates.last()?;
-        let prior = &rates[..rates.len() - 1];
-        let avg = prior.iter().sum::<f64>() / prior.len() as f64;
-        if avg - latest >= REGRESSION_DROP_PCT { Some((name.clone(), latest, avg)) } else { None }
-    }).collect();
+    let regressions: Vec<(String, f64, f64)> = history
+        .chains
+        .iter()
+        .filter_map(|(name, points)| {
+            let rates: Vec<f64> = points.iter().filter_map(|p| p.success_rate).collect();
+            if rates.len() < 3 {
+                return None;
+            }
+            let latest = *rates.last()?;
+            let prior = &rates[..rates.len() - 1];
+            let avg = prior.iter().sum::<f64>() / prior.len() as f64;
+            if avg - latest >= REGRESSION_DROP_PCT {
+                Some((name.clone(), latest, avg))
+            } else {
+                None
+            }
+        })
+        .collect();
     // Timestamp of the newest history point across all chains, so the
     // regression card can say what moment it is describing.
-    let history_at = history.chains.values()
+    let history_at = history
+        .chains
+        .values()
         .filter_map(|points| points.last().map(|p| p.ts))
         .max()
         .unwrap_or(0);
 
     // Function errors from the Functions tab's cached metrics.
     let fn_snap = functions_cache::load_for(&az.subscription, &az.resource_group, &az.app_name);
-    let fn_errors: i64 = fn_snap.metrics.iter()
+    let fn_errors: i64 = fn_snap
+        .metrics
+        .iter()
         .flat_map(|(_, m)| m.iter())
         .map(|m| m.errors)
         .sum();
@@ -778,14 +889,22 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
     // Resource health falls back to its own cache if the live call hasn't
     // returned yet, so the tile isn't blank on first paint.
     let res_summary = *res_unhealthy.read();
-    let res_cached = resource_health_cache::load_for(&az.subscription, &az.resource_group, &az.app_name);
+    let res_cached =
+        resource_health_cache::load_for(&az.subscription, &az.resource_group, &az.app_name);
     let (res_bad, res_total, res_at) = match res_summary {
         Some((bad, total)) => (Some(bad), total, *res_fetched_at.read()),
         None if !res_cached.rows.is_empty() => {
-            let bad = res_cached.rows.iter().filter(|r| {
-                !matches!(r.state.as_str(), "Running" | "Succeeded" | "Active" | "Enabled")
-                    || r.health == "Degraded" || r.health == "Unavailable"
-            }).count();
+            let bad = res_cached
+                .rows
+                .iter()
+                .filter(|r| {
+                    !matches!(
+                        r.state.as_str(),
+                        "Running" | "Succeeded" | "Active" | "Enabled"
+                    ) || r.health == "Degraded"
+                        || r.health == "Unavailable"
+                })
+                .count();
             (Some(bad), res_cached.rows.len(), res_cached.last_fetched)
         }
         None => (None, 0, 0),
@@ -802,7 +921,10 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
     // raw label, so a rename is applied only here, at render time.
     let chain_names_map = props.chain_names.read().clone();
     let disp_chain = |label: &str| -> String {
-        chain_names_map.get(label).cloned().unwrap_or_else(|| label.to_string())
+        chain_names_map
+            .get(label)
+            .cloned()
+            .unwrap_or_else(|| label.to_string())
     };
 
     rsx! {
@@ -1330,7 +1452,11 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
 
 /// Logic Apps run IDs are long; show enough of the tail to disambiguate.
 fn short_id(s: &str) -> String {
-    if s.len() <= 14 { s.to_string() } else { format!("…{}", &s[s.len() - 13..]) }
+    if s.len() <= 14 {
+        s.to_string()
+    } else {
+        format!("…{}", &s[s.len() - 13..])
+    }
 }
 
 #[derive(Props, Clone, PartialEq)]
@@ -1355,12 +1481,14 @@ fn StatTile(props: StatTileProps) -> Element {
 /// `az` calls one sweep costs: each distinct workflow and each distinct queue
 /// is read once, regardless of how many chains reference them.
 fn calls_per_sweep(chains: &[chain::ChainDetail]) -> usize {
-    let mut wf: Vec<&str> = chains.iter()
+    let mut wf: Vec<&str> = chains
+        .iter()
         .flat_map(|c| c.steps.iter().map(|s| s.workflow.as_str()))
         .collect();
     wf.sort_unstable();
     wf.dedup();
-    let mut q: Vec<&str> = chains.iter()
+    let mut q: Vec<&str> = chains
+        .iter()
         .flat_map(|c| c.queues.iter().map(|s| s.as_str()))
         .collect();
     q.sort_unstable();
@@ -1389,7 +1517,12 @@ fn recommended_interval(calls: usize) -> u64 {
         .iter()
         .map(|(secs, _)| *secs)
         .find(|secs| *secs >= needed)
-        .unwrap_or_else(|| POLL_INTERVAL_CHOICES.last().map(|(s, _)| *s).unwrap_or(POLL_SECS))
+        .unwrap_or_else(|| {
+            POLL_INTERVAL_CHOICES
+                .last()
+                .map(|(s, _)| *s)
+                .unwrap_or(POLL_SECS)
+        })
 }
 
 /// Offered poll intervals, ascending — also the ladder `recommended_interval`
@@ -1400,7 +1533,11 @@ const POLL_INTERVAL_CHOICES: [(u64, &str); 4] = [(10, "10s"), (30, "30s"), (60, 
 /// expanded state only swaps clipping for a scrollbar, so opening a card never
 /// reflows the cards beside it or shifts the page below.
 fn card_body_class(expanded: &std::collections::HashSet<&'static str>, id: &str) -> &'static str {
-    if expanded.contains(id) { "home-card-body expanded" } else { "home-card-body" }
+    if expanded.contains(id) {
+        "home-card-body expanded"
+    } else {
+        "home-card-body"
+    }
 }
 
 /// "Show more / Show less" toggle, rendered only when a card actually has more
@@ -1487,7 +1624,11 @@ fn window_cutoff(days: i64) -> DateTime<Utc> {
 }
 
 fn window_label(days: i64) -> String {
-    if days <= 1 { "today".into() } else { format!("last {days}d") }
+    if days <= 1 {
+        "today".into()
+    } else {
+        format!("last {days}d")
+    }
 }
 
 /// Absolute local timestamp for a UTC instant, e.g. "11 Aug 09:42".
@@ -1504,23 +1645,35 @@ fn format_dt_utc(dt: DateTime<Utc>) -> String {
 /// How long an in-flight run has been going, as a compact duration.
 fn format_elapsed(started: DateTime<Utc>) -> String {
     let secs = (Utc::now() - started).num_seconds().max(0);
-    if secs < 60 { return format!("{secs}s"); }
-    if secs < 3600 { return format!("{}m {}s", secs / 60, secs % 60); }
+    if secs < 60 {
+        return format!("{secs}s");
+    }
+    if secs < 3600 {
+        return format!("{}m {}s", secs / 60, secs % 60);
+    }
     format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
 }
 
 fn format_ago_utc(dt: DateTime<Utc>) -> String {
     let mins = (Utc::now() - dt).num_minutes();
-    if mins < 1 { return "(just now)".into(); }
-    if mins < 60 { return format!("({mins}m)"); }
+    if mins < 1 {
+        return "(just now)".into();
+    }
+    if mins < 60 {
+        return format!("({mins}m)");
+    }
     let hours = mins / 60;
-    if hours < 24 { return format!("({hours}h)"); }
+    if hours < 24 {
+        return format!("({hours}h)");
+    }
     format!("({}d)", hours / 24)
 }
 
 /// Absolute local timestamp for an epoch-seconds value.
 fn format_dt(ts: u64) -> String {
-    if ts == 0 { return "never".into(); }
+    if ts == 0 {
+        return "never".into();
+    }
     match Utc.timestamp_opt(ts as i64, 0).single() {
         Some(dt) => format_dt_utc(dt),
         None => "never".into(),
@@ -1528,12 +1681,19 @@ fn format_dt(ts: u64) -> String {
 }
 
 fn format_age(ts: u64) -> String {
-    if ts == 0 { return "never".into(); }
+    if ts == 0 {
+        return "never".into();
+    }
     let age = epoch_secs().saturating_sub(ts);
-    if age < 60 { format!("{age}s ago") }
-    else if age < 3600 { format!("{}m ago", age / 60) }
-    else if age < 86400 { format!("{}h ago", age / 3600) }
-    else { format!("{}d ago", age / 86400) }
+    if age < 60 {
+        format!("{age}s ago")
+    } else if age < 3600 {
+        format!("{}m ago", age / 60)
+    } else if age < 86400 {
+        format!("{}h ago", age / 3600)
+    } else {
+        format!("{}d ago", age / 86400)
+    }
 }
 
 fn epoch_secs() -> u64 {
@@ -1563,7 +1723,9 @@ mod tests {
         // than inventing a value the picker cannot display as selected.
         let slowest = POLL_INTERVAL_CHOICES.last().unwrap().0;
         assert_eq!(recommended_interval(100_000), slowest);
-        assert!(POLL_INTERVAL_CHOICES.iter().any(|(s, _)| *s == recommended_interval(118)));
+        assert!(POLL_INTERVAL_CHOICES
+            .iter()
+            .any(|(s, _)| *s == recommended_interval(118)));
     }
 
     #[test]
@@ -1574,9 +1736,16 @@ mod tests {
     #[test]
     fn summarize_clips_arm_json_to_one_line() {
         // The real payload: a single enormous line of ARM JSON.
-        let raw = format!("Too Many Requests({{\"Code\":\"429\",\"Message\":\"{}\"}})", "x".repeat(4000));
+        let raw = format!(
+            "Too Many Requests({{\"Code\":\"429\",\"Message\":\"{}\"}})",
+            "x".repeat(4000)
+        );
         let out = summarize_error(&raw);
-        assert!(out.chars().count() <= 161, "got {} chars", out.chars().count());
+        assert!(
+            out.chars().count() <= 161,
+            "got {} chars",
+            out.chars().count()
+        );
         assert!(out.ends_with('\u{2026}'));
     }
 

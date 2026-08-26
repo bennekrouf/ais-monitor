@@ -1,7 +1,7 @@
-use dioxus::prelude::*;
-use crate::services::azure::{self, FunctionApp, FunctionDetail, FunctionMetrics, FunctionError};
-use crate::services::functions_cache;
 use crate::components::chain_detail::AzConfig;
+use crate::services::azure::{self, FunctionApp, FunctionDetail, FunctionError, FunctionMetrics};
+use crate::services::functions_cache;
+use dioxus::prelude::*;
 
 #[derive(Clone, Debug, PartialEq)]
 enum LifecycleAction {
@@ -70,7 +70,8 @@ pub fn FunctionsPanel(props: FunctionsPanelProps) -> Element {
             error_msg.set(None);
 
             // Hydrate from disk first so the user sees something immediately.
-            let snap = functions_cache::load_for(&az.subscription, &az.resource_group, &az.app_name);
+            let snap =
+                functions_cache::load_for(&az.subscription, &az.resource_group, &az.app_name);
             let has_cache = !snap.func_apps.is_empty();
             if has_cache {
                 func_apps.set(snap.func_apps);
@@ -90,9 +91,9 @@ pub fn FunctionsPanel(props: FunctionsPanelProps) -> Element {
                 // 1. List function apps
                 let rg2 = rg.clone();
                 let sub2 = sub.clone();
-                let apps_result = tokio::task::spawn_blocking(move || {
-                    azure::list_function_apps(&sub2, &rg2)
-                }).await;
+                let apps_result =
+                    tokio::task::spawn_blocking(move || azure::list_function_apps(&sub2, &rg2))
+                        .await;
 
                 match apps_result {
                     Ok(Ok(apps)) => {
@@ -106,7 +107,9 @@ pub fn FunctionsPanel(props: FunctionsPanelProps) -> Element {
                             let name2 = name.clone();
                             if let Ok(Ok(fns)) = tokio::task::spawn_blocking(move || {
                                 azure::list_functions(&rg3, &name)
-                            }).await {
+                            })
+                            .await
+                            {
                                 all_funcs.push((name2, fns));
                             }
                         }
@@ -114,12 +117,12 @@ pub fn FunctionsPanel(props: FunctionsPanelProps) -> Element {
 
                         // 3. Discover App Insights
                         let rg4 = rg.clone();
-                        let ai_name: Option<String> = tokio::task::spawn_blocking(move || {
-                            azure::find_app_insights(&rg4)
-                        }).await
-                            .ok()
-                            .and_then(|r| r.ok())
-                            .and_then(|list| list.into_iter().next());
+                        let ai_name: Option<String> =
+                            tokio::task::spawn_blocking(move || azure::find_app_insights(&rg4))
+                                .await
+                                .ok()
+                                .and_then(|r| r.ok())
+                                .and_then(|list| list.into_iter().next());
                         app_insights_name.set(ai_name.clone());
 
                         // 4. Persist what we just discovered. Metrics are kept
@@ -134,7 +137,9 @@ pub fn FunctionsPanel(props: FunctionsPanelProps) -> Element {
                         };
                         tokio::task::spawn_blocking(move || {
                             functions_cache::save_for(&sub, &rg, &app, &snap);
-                        }).await.ok();
+                        })
+                        .await
+                        .ok();
                     }
                     Ok(Err(e)) => error_msg.set(Some(e)),
                     Err(e) => error_msg.set(Some(format!("{e}"))),
@@ -152,7 +157,9 @@ pub fn FunctionsPanel(props: FunctionsPanelProps) -> Element {
             let ai = app_insights_name.read().clone();
             let apps = func_apps.read().clone();
             let days = *days_range.read();
-            if ai.is_none() || apps.is_empty() { return; }
+            if ai.is_none() || apps.is_empty() {
+                return;
+            }
             let ai_name = ai.unwrap();
             metrics_loading.set(true);
             spawn(async move {
@@ -164,7 +171,9 @@ pub fn FunctionsPanel(props: FunctionsPanelProps) -> Element {
                     let app_name2 = app_name.clone();
                     if let Ok(Ok(m)) = tokio::task::spawn_blocking(move || {
                         azure::query_function_metrics(&rg, &ai, &app_name, days)
-                    }).await {
+                    })
+                    .await
+                    {
                         all_metrics.push((app_name2, m));
                     }
                 }
@@ -184,7 +193,9 @@ pub fn FunctionsPanel(props: FunctionsPanelProps) -> Element {
                 let app = az.app_name.clone();
                 tokio::task::spawn_blocking(move || {
                     functions_cache::save_for(&sub, &rg, &app, &snap);
-                }).await.ok();
+                })
+                .await
+                .ok();
             });
         }
     };
@@ -210,7 +221,8 @@ pub fn FunctionsPanel(props: FunctionsPanelProps) -> Element {
                 let rg = az.resource_group.clone();
                 let result = tokio::task::spawn_blocking(move || {
                     azure::query_function_errors(&rg, &ai_name, &app_name, &fn_name, days)
-                }).await;
+                })
+                .await;
                 match result {
                     Ok(Ok(errs)) => error_details.set(errs),
                     _ => error_details.set(Vec::new()),
@@ -236,14 +248,17 @@ pub fn FunctionsPanel(props: FunctionsPanelProps) -> Element {
                 let rg2 = rg.clone();
                 let sub2 = sub.clone();
                 let app2 = app_name.clone();
-                let result: Result<(), String> = tokio::task::spawn_blocking(move || {
-                    match action {
+                let result: Result<(), String> =
+                    tokio::task::spawn_blocking(move || match action {
                         LifecycleAction::Start => azure::functionapp_start(&sub2, &rg2, &app2),
                         LifecycleAction::Stop => azure::functionapp_stop(&sub2, &rg2, &app2),
                         LifecycleAction::Restart => azure::functionapp_restart(&sub2, &rg2, &app2),
-                        LifecycleAction::SyncTriggers => azure::functionapp_sync_triggers(&sub2, &rg2, &app2),
-                    }
-                }).await.unwrap_or_else(|e| Err(format!("{e}")));
+                        LifecycleAction::SyncTriggers => {
+                            azure::functionapp_sync_triggers(&sub2, &rg2, &app2)
+                        }
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("{e}")));
 
                 match &result {
                     Ok(()) => {
@@ -266,7 +281,10 @@ pub fn FunctionsPanel(props: FunctionsPanelProps) -> Element {
                 // Re-list so the state badge picks up the change.
                 let sub3 = sub.clone();
                 let rg3 = rg.clone();
-                if let Ok(Ok(apps)) = tokio::task::spawn_blocking(move || azure::list_function_apps(&sub3, &rg3)).await {
+                if let Ok(Ok(apps)) =
+                    tokio::task::spawn_blocking(move || azure::list_function_apps(&sub3, &rg3))
+                        .await
+                {
                     func_apps.set(apps);
                 }
                 action_running.set(false);
@@ -633,7 +651,9 @@ pub fn FunctionsPanel(props: FunctionsPanelProps) -> Element {
 }
 
 fn format_last_run(ts: &str) -> String {
-    if ts.is_empty() { return "—".into(); }
+    if ts.is_empty() {
+        return "—".into();
+    }
     // Try to parse and show relative time
     if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(ts) {
         let now = chrono::Utc::now();

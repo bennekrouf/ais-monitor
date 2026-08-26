@@ -1,6 +1,6 @@
-use dioxus::prelude::*;
-use crate::services::azure;
 use crate::components::chain_detail::AzConfig;
+use crate::services::azure;
+use dioxus::prelude::*;
 
 #[derive(Clone, Debug, PartialEq)]
 enum ProbeResult {
@@ -29,14 +29,21 @@ pub fn DiagnosticsPanel(props: DiagnosticsPanelProps) -> Element {
     let run_kv_probe = move |_| {
         let vault = kv_vault.read().trim().to_string();
         let secret = kv_secret.read().trim().to_string();
-        if vault.is_empty() || secret.is_empty() { return; }
+        if vault.is_empty() || secret.is_empty() {
+            return;
+        }
         kv_running.set(true);
         kv_result.set(None);
         spawn(async move {
             let started = std::time::Instant::now();
-            let result = tokio::task::spawn_blocking(move || azure::keyvault_resolve_secret(&vault, &secret)).await;
+            let result = tokio::task::spawn_blocking(move || {
+                azure::keyvault_resolve_secret(&vault, &secret)
+            })
+            .await;
             let outcome = match result {
-                Ok(Ok(v)) if !v.is_empty() => ProbeResult::Ok { latency_ms: started.elapsed().as_millis() },
+                Ok(Ok(v)) if !v.is_empty() => ProbeResult::Ok {
+                    latency_ms: started.elapsed().as_millis(),
+                },
                 Ok(Ok(_)) => ProbeResult::Err("Secret resolved to an empty value".into()),
                 Ok(Err(e)) => ProbeResult::Err(e),
                 Err(e) => ProbeResult::Err(format!("{e}")),
@@ -51,21 +58,28 @@ pub fn DiagnosticsPanel(props: DiagnosticsPanelProps) -> Element {
         move |_| {
             let az = az.clone();
             let queue = sb_queue.read().trim().to_string();
-            if queue.is_empty() { return; }
+            if queue.is_empty() {
+                return;
+            }
             sb_running.set(true);
             sb_result.set(None);
             spawn(async move {
                 let rg = az.resource_group.clone();
                 let ns = az.sb_namespace.clone();
                 if ns.is_empty() {
-                    sb_result.set(Some(ProbeResult::Err("No Service Bus namespace configured for this profile".into())));
+                    sb_result.set(Some(ProbeResult::Err(
+                        "No Service Bus namespace configured for this profile".into(),
+                    )));
                     sb_running.set(false);
                     return;
                 }
                 let rg2 = rg.clone();
                 let ns2 = ns.clone();
-                let conn = tokio::task::spawn_blocking(move || azure::sb_get_connection_string(&rg2, &ns2)).await
-                    .unwrap_or_else(|e| Err(format!("{e}")));
+                let conn = tokio::task::spawn_blocking(move || {
+                    azure::sb_get_connection_string(&rg2, &ns2)
+                })
+                .await
+                .unwrap_or_else(|e| Err(format!("{e}")));
                 let cs = match conn {
                     Ok(cs) => cs,
                     Err(e) => {

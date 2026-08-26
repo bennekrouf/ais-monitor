@@ -1,2 +1,2 @@
-pub mod welcome;
 pub mod main_screen;
+pub mod welcome;

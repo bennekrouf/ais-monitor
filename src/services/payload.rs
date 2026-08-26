@@ -31,11 +31,12 @@ pub fn suggest_payload(logic_apps_dir: &str, workflow_name: &str) -> String {
     let defn = workflow.get("definition").unwrap_or(&workflow);
 
     // Detect Service Bus trigger so we can unwrap the contentData envelope.
-    let is_sb_trigger = defn["triggers"].as_object()
+    let is_sb_trigger = defn["triggers"]
+        .as_object()
         .and_then(|t| t.values().next())
         .map(|trigger| {
-            trigger["inputs"]["serviceProviderConfiguration"]["serviceProviderId"]
-                .as_str() == Some("/serviceProviders/serviceBus")
+            trigger["inputs"]["serviceProviderConfiguration"]["serviceProviderId"].as_str()
+                == Some("/serviceProviders/serviceBus")
         })
         .unwrap_or(false);
 
@@ -205,12 +206,12 @@ fn sample_object_by_name(name: &str) -> Value {
 
 fn scan_trigger_body_refs(content: &str) -> Option<Value> {
     let chain_re = Regex::new(r"triggerBody\(\)\??(?:\[?'([^']+)'\]?\??)+").ok()?;
-    let seg_re   = Regex::new(r"\[?'([^']+)'\]?").ok()?;
+    let seg_re = Regex::new(r"\[?'([^']+)'\]?").ok()?;
 
     let mut paths: Vec<Vec<String>> = Vec::new();
     for cap in chain_re.find_iter(content) {
         let matched = cap.as_str();
-        let after   = &matched["triggerBody()".len()..];
+        let after = &matched["triggerBody()".len()..];
         let segs: Vec<String> = seg_re
             .captures_iter(after)
             .filter_map(|c| c.get(1).map(|m| m.as_str().to_string()))
@@ -220,7 +221,9 @@ fn scan_trigger_body_refs(content: &str) -> Option<Value> {
         }
     }
 
-    if paths.is_empty() { return None; }
+    if paths.is_empty() {
+        return None;
+    }
 
     let mut root = serde_json::Map::new();
     for path in &paths {
@@ -230,7 +233,9 @@ fn scan_trigger_body_refs(content: &str) -> Option<Value> {
 }
 
 fn insert_path(map: &mut serde_json::Map<String, Value>, path: &[String]) {
-    if path.is_empty() { return; }
+    if path.is_empty() {
+        return;
+    }
     let key = &path[0];
     if path.len() == 1 {
         map.entry(key.clone()).or_insert_with(|| leaf_value(key));
@@ -303,20 +308,35 @@ mod tests {
 
     #[test]
     fn leaf_id_fields_produce_test_id() {
-        assert_eq!(leaf_value("correlationId"), Value::String("TEST-001".into()));
-        assert_eq!(leaf_value("identifier"),    Value::String("TEST-001".into()));
+        assert_eq!(
+            leaf_value("correlationId"),
+            Value::String("TEST-001".into())
+        );
+        assert_eq!(leaf_value("identifier"), Value::String("TEST-001".into()));
     }
 
     #[test]
     fn leaf_time_fields_produce_timestamp() {
-        assert_eq!(leaf_value("startTime"), Value::String("2026-04-29T10:00:00Z".into()));
-        assert_eq!(leaf_value("date"),      Value::String("2026-04-29T10:00:00Z".into()));
+        assert_eq!(
+            leaf_value("startTime"),
+            Value::String("2026-04-29T10:00:00Z".into())
+        );
+        assert_eq!(
+            leaf_value("date"),
+            Value::String("2026-04-29T10:00:00Z".into())
+        );
     }
 
     #[test]
     fn leaf_error_fields_produce_message() {
-        assert_eq!(leaf_value("errorMessage"), Value::String("Something went wrong".into()));
-        assert_eq!(leaf_value("error"),        Value::String("Something went wrong".into()));
+        assert_eq!(
+            leaf_value("errorMessage"),
+            Value::String("Something went wrong".into())
+        );
+        assert_eq!(
+            leaf_value("error"),
+            Value::String("Something went wrong".into())
+        );
     }
 
     #[test]
@@ -368,12 +388,18 @@ mod tests {
 
     #[test]
     fn schema_boolean() {
-        assert_eq!(schema_to_sample("flag", &json!({ "type": "boolean" })), json!(false));
+        assert_eq!(
+            schema_to_sample("flag", &json!({ "type": "boolean" })),
+            json!(false)
+        );
     }
 
     #[test]
     fn schema_number() {
-        assert_eq!(schema_to_sample("count", &json!({ "type": "number" })), json!(0));
+        assert_eq!(
+            schema_to_sample("count", &json!({ "type": "number" })),
+            json!(0)
+        );
     }
 
     // ── scan_trigger_body_refs ─────────────────────────────────────────────
@@ -411,7 +437,8 @@ mod tests {
 
     #[test]
     fn find_schema_from_parse_json_action() {
-        let actions = serde_json::from_str::<serde_json::Map<String, Value>>(r#"{
+        let actions = serde_json::from_str::<serde_json::Map<String, Value>>(
+            r#"{
             "Parse_body": {
                 "type": "ParseJson",
                 "inputs": {
@@ -422,13 +449,16 @@ mod tests {
                     }
                 }
             }
-        }"#).unwrap();
+        }"#,
+        )
+        .unwrap();
         assert!(find_trigger_body_schema(&actions).is_some());
     }
 
     #[test]
     fn find_schema_ignores_non_trigger_parse_json() {
-        let actions = serde_json::from_str::<serde_json::Map<String, Value>>(r#"{
+        let actions = serde_json::from_str::<serde_json::Map<String, Value>>(
+            r#"{
             "Parse_other": {
                 "type": "ParseJson",
                 "inputs": {
@@ -436,7 +466,9 @@ mod tests {
                     "schema": { "type": "object", "properties": { "x": { "type": "string" } } }
                 }
             }
-        }"#).unwrap();
+        }"#,
+        )
+        .unwrap();
         assert!(find_trigger_body_schema(&actions).is_none());
     }
 }

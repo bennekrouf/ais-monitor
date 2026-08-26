@@ -3,8 +3,8 @@
 //! Reads from the global `activity` ring on a 750ms poll. The badge shows the
 //! number of error-level events since the user last opened the drawer.
 
-use dioxus::prelude::*;
 use crate::services::activity::{self, ActivityEvent, ActivityLevel};
+use dioxus::prelude::*;
 
 #[component]
 pub fn ActivityPanel() -> Element {
@@ -36,13 +36,18 @@ pub fn ActivityPanel() -> Element {
     let unread_n = *unread.read();
     let all = events.read().clone();
     let level_filter = filter_level.read().clone();
-    let filtered: Vec<ActivityEvent> = all.iter()
+    let filtered: Vec<ActivityEvent> = all
+        .iter()
         .rev() // newest first
         .filter(|e| level_filter.as_ref().map_or(true, |l| &e.level == l))
         .cloned()
         .collect();
 
-    let fab_class = if unread_n > 0 { "activity-fab activity-fab-alert" } else { "activity-fab" };
+    let fab_class = if unread_n > 0 {
+        "activity-fab activity-fab-alert"
+    } else {
+        "activity-fab"
+    };
 
     rsx! {
         // Floating launcher button (bottom-right)
@@ -153,20 +158,24 @@ pub fn ActivityPanel() -> Element {
 fn ActivityRow(event: ActivityEvent) -> Element {
     let mut expanded = use_signal(|| false);
     let level_class = match event.level {
-        ActivityLevel::Info  => "activity-row activity-info",
-        ActivityLevel::Ok    => "activity-row activity-ok",
-        ActivityLevel::Warn  => "activity-row activity-warn",
+        ActivityLevel::Info => "activity-row activity-info",
+        ActivityLevel::Ok => "activity-row activity-ok",
+        ActivityLevel::Warn => "activity-row activity-warn",
         ActivityLevel::Error => "activity-row activity-error",
     };
     let icon = match event.level {
-        ActivityLevel::Info  => "·",
-        ActivityLevel::Ok    => "✓",
-        ActivityLevel::Warn  => "!",
+        ActivityLevel::Info => "·",
+        ActivityLevel::Ok => "✓",
+        ActivityLevel::Warn => "!",
         ActivityLevel::Error => "✕",
     };
     let has_detail = !event.detail.is_empty();
     let is_exp = *expanded.read();
-    let row_class = if has_detail { format!("{} clickable", level_class) } else { level_class.to_string() };
+    let row_class = if has_detail {
+        format!("{} clickable", level_class)
+    } else {
+        level_class.to_string()
+    };
 
     rsx! {
         div {

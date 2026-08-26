@@ -1,6 +1,6 @@
-use dioxus::prelude::*;
-use crate::services::azure::{self, FunctionApp, AppSettingDrift, DriftStatus, RoleAssignment};
 use crate::components::chain_detail::AzConfig;
+use crate::services::azure::{self, AppSettingDrift, DriftStatus, FunctionApp, RoleAssignment};
+use dioxus::prelude::*;
 
 #[derive(Clone, Debug, PartialEq)]
 struct AuthCheckRow {
@@ -20,7 +20,8 @@ pub fn HealthCheckPanel(props: HealthCheckPanelProps) -> Element {
     let has_store = !az.app_config_store.trim().is_empty();
 
     let mut settings_running: Signal<bool> = use_signal(|| false);
-    let mut settings_results: Signal<Option<Vec<(String, Vec<AppSettingDrift>)>>> = use_signal(|| None);
+    let mut settings_results: Signal<Option<Vec<(String, Vec<AppSettingDrift>)>>> =
+        use_signal(|| None);
     let mut settings_error: Signal<Option<String>> = use_signal(|| None);
 
     let mut auth_running: Signal<bool> = use_signal(|| false);
@@ -40,10 +41,22 @@ pub fn HealthCheckPanel(props: HealthCheckPanelProps) -> Element {
 
                 let sub2 = sub.clone();
                 let rg2 = rg.clone();
-                let apps = match tokio::task::spawn_blocking(move || azure::list_function_apps(&sub2, &rg2)).await {
+                let apps = match tokio::task::spawn_blocking(move || {
+                    azure::list_function_apps(&sub2, &rg2)
+                })
+                .await
+                {
                     Ok(Ok(apps)) => apps,
-                    Ok(Err(e)) => { settings_error.set(Some(e)); settings_running.set(false); return; }
-                    Err(e) => { settings_error.set(Some(format!("{e}"))); settings_running.set(false); return; }
+                    Ok(Err(e)) => {
+                        settings_error.set(Some(e));
+                        settings_running.set(false);
+                        return;
+                    }
+                    Err(e) => {
+                        settings_error.set(Some(format!("{e}")));
+                        settings_running.set(false);
+                        return;
+                    }
                 };
 
                 let expected = if store.is_empty() {
@@ -51,8 +64,10 @@ pub fn HealthCheckPanel(props: HealthCheckPanelProps) -> Element {
                 } else {
                     let sub3 = sub.clone();
                     let store2 = store.clone();
-                    tokio::task::spawn_blocking(move || azure::appconfig_list_kv(&sub3, &store2)).await
-                        .ok().and_then(|r| r.ok())
+                    tokio::task::spawn_blocking(move || azure::appconfig_list_kv(&sub3, &store2))
+                        .await
+                        .ok()
+                        .and_then(|r| r.ok())
                 };
 
                 let mut results = Vec::new();
@@ -65,7 +80,9 @@ pub fn HealthCheckPanel(props: HealthCheckPanelProps) -> Element {
                     let rows = tokio::task::spawn_blocking(move || {
                         let live = azure::get_app_settings(&sub4, &rg4, &name).unwrap_or_default();
                         azure::compute_app_settings_drift(&live, expected2.as_ref())
-                    }).await.unwrap_or_default();
+                    })
+                    .await
+                    .unwrap_or_default();
                     results.push((name2, rows));
                 }
                 settings_results.set(Some(results));
@@ -86,19 +103,38 @@ pub fn HealthCheckPanel(props: HealthCheckPanelProps) -> Element {
 
                 let sub2 = sub.clone();
                 let rg2 = rg.clone();
-                let apps: Vec<FunctionApp> = match tokio::task::spawn_blocking(move || azure::list_function_apps(&sub2, &rg2)).await {
+                let apps: Vec<FunctionApp> = match tokio::task::spawn_blocking(move || {
+                    azure::list_function_apps(&sub2, &rg2)
+                })
+                .await
+                {
                     Ok(Ok(apps)) => apps,
-                    Ok(Err(e)) => { auth_error.set(Some(e)); auth_running.set(false); return; }
-                    Err(e) => { auth_error.set(Some(format!("{e}"))); auth_running.set(false); return; }
+                    Ok(Err(e)) => {
+                        auth_error.set(Some(e));
+                        auth_running.set(false);
+                        return;
+                    }
+                    Err(e) => {
+                        auth_error.set(Some(format!("{e}")));
+                        auth_running.set(false);
+                        return;
+                    }
                 };
 
                 let mut results = Vec::new();
                 for app in &apps {
                     let pid = app.principal_id.clone();
                     let pid2 = pid.clone();
-                    let roles = tokio::task::spawn_blocking(move || azure::list_role_assignments(&pid2))
-                        .await.unwrap_or(Ok(Vec::new())).unwrap_or_default();
-                    results.push(AuthCheckRow { app_name: app.name.clone(), principal_id: pid, roles });
+                    let roles =
+                        tokio::task::spawn_blocking(move || azure::list_role_assignments(&pid2))
+                            .await
+                            .unwrap_or(Ok(Vec::new()))
+                            .unwrap_or_default();
+                    results.push(AuthCheckRow {
+                        app_name: app.name.clone(),
+                        principal_id: pid,
+                        roles,
+                    });
                 }
                 auth_results.set(Some(results));
                 auth_running.set(false);
@@ -254,13 +290,21 @@ pub fn HealthCheckPanel(props: HealthCheckPanelProps) -> Element {
 }
 
 fn is_settings_failure(status: &DriftStatus) -> bool {
-    matches!(status, DriftStatus::Diff | DriftStatus::LiteralWarn { .. } | DriftStatus::KvFail { .. } | DriftStatus::MissingLive)
+    matches!(
+        status,
+        DriftStatus::Diff
+            | DriftStatus::LiteralWarn { .. }
+            | DriftStatus::KvFail { .. }
+            | DriftStatus::MissingLive
+    )
 }
 
 fn settings_issue_text(status: &DriftStatus) -> String {
     match status {
         DriftStatus::Diff => "Live value differs from App Configuration".to_string(),
-        DriftStatus::LiteralWarn { missing } => format!("Partial connection string — missing '{missing}='"),
+        DriftStatus::LiteralWarn { missing } => {
+            format!("Partial connection string — missing '{missing}='")
+        }
         DriftStatus::KvFail { error } => format!("Key Vault reference failed: {error}"),
         DriftStatus::MissingLive => "Expected in App Configuration but not set live".to_string(),
         _ => String::new(),
@@ -277,7 +321,8 @@ fn settings_fix_command(rg: &str, app: &str, row: &AppSettingDrift) -> String {
             format!("Add the missing '{missing}=' segment, or replace with a Key Vault reference")
         }
         DriftStatus::KvFail { .. } => {
-            "Verify vault/secret name and grant this identity 'Key Vault Secrets User' on the vault".to_string()
+            "Verify vault/secret name and grant this identity 'Key Vault Secrets User' on the vault"
+                .to_string()
         }
         _ => String::new(),
     }

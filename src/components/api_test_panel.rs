@@ -1,5 +1,5 @@
-use dioxus::prelude::*;
 use crate::services::api_test;
+use dioxus::prelude::*;
 
 /// Generic "Postman-like" panel: hit any URL with any method/headers/body.
 /// Unlike TriggerPanel (scoped to a Logic App's ARM-issued callback URL),
@@ -23,7 +23,11 @@ pub fn ApiTestPanel(props: ApiTestPanelProps) -> Element {
     let last_state = load_last_state(&props.save_dir);
     let mut method = use_signal({
         let last = last_state.clone();
-        move || last.as_ref().map(|r| r.method.clone()).unwrap_or_else(|| "POST".to_string())
+        move || {
+            last.as_ref()
+                .map(|r| r.method.clone())
+                .unwrap_or_else(|| "POST".to_string())
+        }
     });
     let mut url = use_signal({
         let last = last_state.clone();
@@ -31,12 +35,19 @@ pub fn ApiTestPanel(props: ApiTestPanelProps) -> Element {
     });
     let mut headers = use_signal({
         let last = last_state.clone();
-        move || last.as_ref().map(|r| r.headers.clone())
-            .unwrap_or_else(|| vec![("Content-Type".to_string(), "application/json".to_string())])
+        move || {
+            last.as_ref().map(|r| r.headers.clone()).unwrap_or_else(|| {
+                vec![("Content-Type".to_string(), "application/json".to_string())]
+            })
+        }
     });
     let mut body_text = use_signal({
         let last = last_state.clone();
-        move || last.as_ref().map(|r| r.body.clone()).unwrap_or_else(default_body)
+        move || {
+            last.as_ref()
+                .map(|r| r.body.clone())
+                .unwrap_or_else(default_body)
+        }
     });
     let mut sending = use_signal(|| false);
     let mut result = use_signal(|| Option::<ApiState>::None);
@@ -584,14 +595,16 @@ struct ApiState {
 }
 
 fn default_body() -> String {
-    serde_json::to_string_pretty(&serde_json::json!({}))
-        .unwrap_or_else(|_| "{}".into())
+    serde_json::to_string_pretty(&serde_json::json!({})).unwrap_or_else(|_| "{}".into())
 }
 
 /// Update an existing header's value (case-insensitive key match), or append
 /// a new row if it isn't present yet.
 fn upsert_header(headers: &mut Vec<(String, String)>, key: &str, value: String) {
-    if let Some(pair) = headers.iter_mut().find(|(k, _)| k.eq_ignore_ascii_case(key)) {
+    if let Some(pair) = headers
+        .iter_mut()
+        .find(|(k, _)| k.eq_ignore_ascii_case(key))
+    {
         pair.1 = value;
     } else {
         headers.push((key.to_string(), value));
@@ -599,7 +612,10 @@ fn upsert_header(headers: &mut Vec<(String, String)>, key: &str, value: String) 
 }
 
 fn build_curl_preview(method: &str, url: &str, headers: &[(String, String)]) -> String {
-    let mut s = format!("curl -X {}", if method.is_empty() { "POST" } else { method });
+    let mut s = format!(
+        "curl -X {}",
+        if method.is_empty() { "POST" } else { method }
+    );
     for (k, v) in headers {
         if k.trim().is_empty() {
             continue;
