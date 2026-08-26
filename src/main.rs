@@ -10,25 +10,59 @@ use screens::{main_screen::MainScreen, welcome::Welcome};
 
 const MAIN_CSS: &str = include_str!("../assets/main.css");
 
+fn webview_data_dir() -> std::path::PathBuf {
+    dirs::data_local_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("AIS Monitor")
+}
+
+fn window_config(title: &str) -> dioxus::desktop::Config {
+    dioxus::desktop::Config::new()
+        .with_data_directory(webview_data_dir())
+        .with_window(
+            dioxus::desktop::WindowBuilder::new()
+                .with_title(title)
+                .with_inner_size(LogicalSize::new(1280.0, 820.0))
+                .with_always_on_top(false)
+                .with_window_icon(make_icon()),
+        )
+}
+
+/// Opens another window connected to `config`, in this same process.
+///
+/// One process, many windows — not many processes. Two copies of the binary
+/// would race each other on on-disk profiles/caches. Windows inside one
+/// process share none of that: each gets its own VirtualDom and its own
+/// signals, and the OS sees a single app.
+pub fn open_in_new_window(config: AzConfig) {
+    let tag = if !config.label.is_empty() {
+        config.label.clone()
+    } else {
+        config.app_name.clone()
+    };
+    let dom = VirtualDom::new_with_props(
+        WindowRoot,
+        WindowRootProps {
+            initial: Some(config),
+        },
+    );
+    dioxus::desktop::window().new_window(
+        dom,
+        window_config(&format!(
+            "AIS Monitor {} — {}",
+            env!("CARGO_PKG_VERSION"),
+            tag
+        )),
+    );
+}
+
 fn main() {
     // Suppress noisy debug logs from hyper/reqwest unless the user overrides RUST_LOG
     if std::env::var("RUST_LOG").is_err() {
         std::env::set_var("RUST_LOG", "info,hyper_util=warn,hyper=warn,reqwest=warn");
     }
 
-    let webview_data_dir = dirs::data_local_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("AIS Monitor");
-
-    let cfg = dioxus::desktop::Config::new()
-        .with_data_directory(webview_data_dir)
-        .with_window(
-            dioxus::desktop::WindowBuilder::new()
-                .with_title(concat!("AIS Monitor ", env!("CARGO_PKG_VERSION")))
-                .with_inner_size(LogicalSize::new(1280.0, 820.0))
-                .with_always_on_top(false)
-                .with_window_icon(make_icon()),
-        );
+    let cfg = window_config(concat!("AIS Monitor ", env!("CARGO_PKG_VERSION")));
     LaunchBuilder::desktop().with_cfg(cfg).launch(App);
 }
 
@@ -127,7 +161,15 @@ fn is_monitor_shape(x: u32, y: u32, size: u32) -> bool {
 
 #[component]
 fn App() -> Element {
-    let mut az_config = use_signal(|| Option::<AzConfig>::None);
+    rsx! { WindowRoot { initial: Option::<AzConfig>::None } }
+}
+
+/// One window. Each has its own VirtualDom, so its own signals, its own theme
+/// state and its own connected profile — and its own welcome screen to go
+/// back to.
+#[component]
+fn WindowRoot(initial: Option<AzConfig>) -> Element {
+    let mut az_config = use_signal(|| initial);
 
     // ── System theme — applies to both Welcome and MainScreen ────────────
     // Start with the OS preference; stop syncing once the user toggles manually.
@@ -207,19 +249,11 @@ fn App() -> Element {
         match config_val {
             None => rsx! {
                 Welcome {
+                    // Connecting always opens a new window and leaves this one
+                    // on the welcome screen — it's a launcher, not a profile
+                    // you leave.
                     on_connect: move |config: AzConfig| {
-                        // Reflect the active customer profile in the window title.
-                        let tag = if !config.label.is_empty() {
-                            config.label.clone()
-                        } else {
-                            config.app_name.clone()
-                        };
-                        dioxus::desktop::window().set_title(&format!(
-                            "AIS Monitor {} — {}",
-                            env!("CARGO_PKG_VERSION"),
-                            tag,
-                        ));
-                        az_config.set(Some(config));
+                        crate::open_in_new_window(config);
                     },
                 }
             },
