@@ -27,9 +27,9 @@ Both: macOS · Windows · Linux. Both read live data from Azure via the `az` CLI
 
 | Platform | One-liner / link |
 |---|---|
-| **macOS** (Apple Silicon) | Download [`ais-monitor-macos-arm64.dmg`](https://github.com/Bennekrouf/ais-monitor/releases/latest/download/ais-monitor-macos-arm64.dmg), open it, drag **AIS Monitor** to Applications. Signed with Apple Developer ID + notarized — opens with a normal double-click. |
+| **macOS** (Apple Silicon) | Download [`ais-monitor-macos-arm64.dmg`](https://mayorana.ch/downloads/ais-monitor/latest/ais-monitor-macos-arm64.dmg), open it, drag **AIS Monitor** to Applications. Signed with Apple Developer ID + notarized — opens with a normal double-click. |
 | **Windows** | Download [`ais-monitor-setup.exe`](https://github.com/Bennekrouf/ais-monitor/releases/latest) and run the installer. |
-| **Linux** (x86_64) | `curl -L https://github.com/Bennekrouf/ais-monitor/releases/latest/download/ais-monitor-linux-x86_64.tar.gz \| tar xz && cd ais-monitor-linux-x86_64 && sudo ./setup-linux.sh && ./ais-monitor` |
+| **Linux** (x86_64) | `curl -L https://mayorana.ch/downloads/ais-monitor/latest/ais-monitor-linux-x86_64.tar.gz \| tar xz && cd ais-monitor-linux-x86_64 && sudo ./setup-linux.sh && ./ais-monitor` |
 
 ### Terminal (TUI)
 
@@ -41,7 +41,7 @@ Invoke-WebRequest https://raw.githubusercontent.com/Bennekrouf/ais-monitor/maste
 
 Drops the binary into `%USERPROFILE%\bin`, adds it to your PATH, clears the SmartScreen mark, checks for `az`. No admin rights. On `cmd.exe`, run the same script via `powershell -ExecutionPolicy Bypass -File install-tui.ps1` after downloading it.
 
-No script at all: [download the `.exe` directly](https://github.com/Bennekrouf/ais-monitor/releases/latest/download/ais-monitor-tui-x86_64-pc-windows-msvc.exe), rename to `ais-monitor-tui.exe`, put it on your PATH, then right-click → Properties → **Unblock** (or `Unblock-File ais-monitor-tui.exe`).
+No script at all: [download the `.exe` directly](https://mayorana.ch/downloads/ais-monitor/latest/ais-monitor-tui-x86_64-pc-windows-msvc.exe), rename to `ais-monitor-tui.exe`, put it on your PATH, then right-click → Properties → **Unblock** (or `Unblock-File ais-monitor-tui.exe`).
 
 **macOS / Linux — paste into your shell:**
 
