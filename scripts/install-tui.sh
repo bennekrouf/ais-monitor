@@ -30,12 +30,19 @@ case "$os/$arch" in
 esac
 
 asset="ais-monitor-tui-$target"
-echo "==> Querying latest release…"
-tag=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
-        | sed -n 's/.*"tag_name": *"\([^"]*\)".*/\1/p' | head -1)
-[ -n "$tag" ] || { echo "Could not parse latest release tag." >&2; exit 1; }
-url="https://github.com/$REPO/releases/download/$tag/$asset"
-echo "    Latest: $tag"
+
+# Binaries are served from mayorana.ch, where `latest/` is a stable path that
+# release CI overwrites. No API call is needed to discover a tag — the version
+# lookup below is only to print something friendly, and is not fatal.
+DL_BASE="${DL_BASE:-https://mayorana.ch/downloads/ais-monitor}"
+url="$DL_BASE/latest/$asset"
+tag=$(curl -fsSL "$DL_BASE/latest/latest.json" 2>/dev/null \
+        | sed -n 's/.*"tag": *"\([^"]*\)".*/\1/p' | head -1)
+if [ -n "$tag" ]; then
+    echo "==> Latest: $tag"
+else
+    echo "==> Downloading the current build"
+fi
 
 # Pick a writable directory: try PREFIX/bin, fall back to $HOME/.local/bin.
 SUDO=""

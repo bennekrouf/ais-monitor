@@ -5,7 +5,7 @@
 #   Invoke-WebRequest https://raw.githubusercontent.com/Bennekrouf/ais-monitor/master/scripts/install-tui.ps1 -UseBasicParsing | Invoke-Expression
 #
 # What this does:
-#   1. Fetches the latest GitHub Release.
+#   1. Resolves the current build on mayorana.ch.
 #   2. Downloads `ais-monitor-tui-x86_64-pc-windows-msvc.exe` into
 #      `%USERPROFILE%\bin\ais-monitor-tui.exe`.
 #   3. Removes the "downloaded from internet" mark-of-the-web so SmartScreen
@@ -47,41 +47,39 @@ function Pause-IfStandalone {
 # off-screen on the way out. Every failure path falls through to the pause.
 try {
 
-# ── 1. Resolve latest release ────────────────────────────────────────────────
-Info "Querying latest ais-monitor release..."
+# ── 1. Resolve the download URL ──────────────────────────────────────────────
+# Binaries are served from mayorana.ch, where `latest/` is a stable path that
+# release CI overwrites. That removes the GitHub API round-trip this used to
+# do, along with its rate limits and its "asset missing from the release"
+# failure mode - a missing build is now just a 404 on the download below.
+$DlBase = "https://mayorana.ch/downloads/ais-monitor"
+$url    = "$DlBase/latest/$Asset"
+
+# Version lookup is cosmetic and must never block the install.
+$tag = $null
 try {
-    $release = Invoke-RestMethod -Uri "https://api.github.com/repos/$Repo/releases/latest" `
-                                 -UseBasicParsing `
-                                 -Headers @{ "User-Agent" = "ais-monitor-installer" }
-} catch {
-    Bad  "Could not reach GitHub: $($_.Exception.Message)"
-    Bad  "If you're behind a corporate proxy, set HTTPS_PROXY and retry."
-    throw "github-unreachable"
-}
-$tag = $release.tag_name
-$url = $release.assets | Where-Object { $_.name -eq $Asset } | Select-Object -ExpandProperty browser_download_url
-if (-not $url) {
-    Bad  "Release $tag has no asset named '$Asset'."
-    Bad  ""
-    Bad  "This usually means: the Windows TUI binary wasn't built for this"
-    Bad  "release yet - only the desktop installer was attached."
-    Bad  ""
-    Bad  "Workarounds:"
-    Bad  "  1. Push a new tag so CI builds the Windows TUI binary."
-    Bad  "  2. cargo install --git https://github.com/$Repo ais-monitor-tui"
-    Bad  ""
-    Bad  "Assets actually in release $tag :"
-    $release.assets | ForEach-Object { Bad ("  - " + $_.name) }
-    throw "asset-missing"
-}
-Ok   "Latest release: $tag"
+    $manifest = Invoke-RestMethod -Uri "$DlBase/latest/latest.json" -UseBasicParsing
+    $tag = $manifest.tag
+} catch { }
+if ($tag) { Ok "Latest release: $tag" } else { Info "Downloading the current build..." }
 
 # ── 2. Download ──────────────────────────────────────────────────────────────
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
 Info "Downloading $Asset to $Target ..."
 # `Invoke-WebRequest` is fine for a single binary; -UseBasicParsing keeps it
 # light even on Windows PowerShell 5.1.
-Invoke-WebRequest -Uri $url -OutFile $Target -UseBasicParsing
+try {
+    Invoke-WebRequest -Uri $url -OutFile $Target -UseBasicParsing
+} catch {
+    Bad  "Could not download $Asset from $url"
+    Bad  "$($_.Exception.Message)"
+    Bad  ""
+    Bad  "A 404 here means this release did not build the Windows TUI binary."
+    Bad  "Workarounds:"
+    Bad  "  1. Push a new tag so CI builds it."
+    Bad  "  2. cargo install --git https://github.com/$Repo ais-monitor-tui"
+    throw "download-failed"
+}
 Ok   "Saved $([math]::Round((Get-Item $Target).Length / 1MB, 1)) MB."
 
 # ── 3. Clear mark-of-the-web (avoids SmartScreen on first run) ───────────────
