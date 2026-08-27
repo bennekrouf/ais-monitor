@@ -12,6 +12,7 @@ version = "0.3.16"
 name = "ais-monitor"
 version.workspace = true
 edition = "2021"
+license-file = "LICENSE"
 description = "Azure Logic Apps chain monitor — discover, test, and debug workflow chains"
 
 [dependencies]
