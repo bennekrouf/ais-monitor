@@ -3,7 +3,8 @@ name = "ais-monitor-tui"
 version.workspace = true
 edition = "2021"
 description = "Terminal UI for AIS Monitor — chain discovery, runs, KPIs"
-license = "MIT OR Apache-2.0"
+# Inherits the workspace licence: PolyForm Noncommercial 1.0.0 (../../LICENSE).
+license-file = "../../LICENSE"
 repository = "https://github.com/Bennekrouf/ais-monitor"
 default-run = "ais-monitor-tui"
 
