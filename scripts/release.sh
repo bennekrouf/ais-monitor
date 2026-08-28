@@ -104,8 +104,25 @@ fi
 # for every release.
 cargo metadata --format-version 1 --quiet >/dev/null
 
-git add "$CARGO" Cargo.lock
-git commit -m "chore: release $TAG"
+git add "$CARGO"
+
+# Only when git actually tracks it. This repository gitignores Cargo.lock, and
+# `git add` on an ignored path is a hard error rather than a no-op — which is
+# what stopped the v0.3.18 release.
+if git ls-files --error-unmatch Cargo.lock >/dev/null 2>&1; then
+    git add Cargo.lock
+fi
+
+# The version may already be right, bumped by an earlier pull request. Then
+# there is nothing to commit and the only job left is to tag what is already on
+# the branch — `git commit` with an empty index would fail and take the release
+# down with it.
+if git diff --cached --quiet; then
+    echo "Cargo.toml is already at $NEW — tagging the existing commit."
+else
+    git commit -m "chore: release $TAG"
+fi
+
 git tag "$TAG"
 
 git push origin HEAD
