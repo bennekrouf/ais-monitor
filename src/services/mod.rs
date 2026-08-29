@@ -3,6 +3,7 @@ pub mod api_test;
 pub mod azure;
 pub mod chain;
 pub mod chain_probe;
+pub mod env;
 pub mod functions_cache;
 pub mod health_cache;
 pub mod history_cache;

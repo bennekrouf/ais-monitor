@@ -57,6 +57,10 @@ pub fn open_in_new_window(config: AzConfig) {
 }
 
 fn main() {
+    // Before anything can shell out: an app launched from Finder or a .dmg
+    // does not inherit the terminal's PATH, so `az` reads as "not found".
+    services::env::adopt_login_path();
+
     // Suppress noisy debug logs from hyper/reqwest unless the user overrides RUST_LOG
     if std::env::var("RUST_LOG").is_err() {
         std::env::set_var("RUST_LOG", "info,hyper_util=warn,hyper=warn,reqwest=warn");
