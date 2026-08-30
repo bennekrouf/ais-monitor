@@ -46,6 +46,10 @@ pub fn Welcome(props: WelcomeProps) -> Element {
     // some panel after connecting.
     let mut open_errors: Signal<std::collections::HashMap<usize, String>> =
         use_signal(std::collections::HashMap::new);
+    // Same idea as `validating_profile`/`open_errors`, but for the manual
+    // new-profile form, where every field (including resource group and app
+    // name) is hand-typed and so is exactly as typo-prone as a stale profile.
+    let mut validating_form: Signal<bool> = use_signal(|| false);
 
     let mut profiles = use_signal(|| load_profiles());
 
@@ -293,6 +297,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                             let on_connect = props.on_connect.clone();
                                             rsx! {
                                                 div { class: "profile-item",
+                                                  div { class: "profile-row",
                                                     div { class: "profile-main",
                                                         div { class: "profile-label", "{display_label}" }
                                                         if !sub_line.is_empty() {
@@ -382,8 +387,9 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                             "×"
                                                         }
                                                     }
+                                                  }
                                                     if let Some(err) = open_errors.read().get(&idx).cloned() {
-                                                        div { class: "profile-open-error",
+                                                        div { class: "az-error", style: "margin-top:6px",
                                                             "⚠ {err}"
                                                             button {
                                                                 class: "btn btn-small",
@@ -874,7 +880,46 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                             {
                                 let err = error_msg.read().clone();
                                 if let Some(msg) = err {
-                                    rsx! { div { class: "az-error", "{msg}" } }
+                                    rsx! {
+                                        div { class: "az-error",
+                                            "⚠ {msg}"
+                                            button {
+                                                class: "btn btn-small",
+                                                style: "margin-left:10px",
+                                                onclick: {
+                                                    let on_connect = props.on_connect.clone();
+                                                    move |_| {
+                                                        let local_dir_val = local_dir_input.read().trim().to_string();
+                                                        let config = AzConfig {
+                                                            subscription: sub_id.read().clone(),
+                                                            resource_group: rg_input.read().trim().to_string(),
+                                                            app_name: app_input.read().trim().to_string(),
+                                                            sb_namespace: sb_input.read().trim().to_string(),
+                                                            tenant: tenant_input.read().trim().to_string(),
+                                                            label: label_input.read().trim().to_string(),
+                                                            local_dir: local_dir_val,
+                                                            app_config_store: app_config_store_input.read().trim().to_string(),
+                                                            devops_org: devops_org_input.read().trim().to_string(),
+                                                            devops_project: devops_project_input.read().trim().to_string(),
+                                                        };
+                                                        let mut saved = profiles.read().clone();
+                                                        if let Some(idx) = *editing_profile.read() {
+                                                            saved[idx] = config.clone();
+                                                        } else {
+                                                            saved.insert(0, config.clone());
+                                                        }
+                                                        save_profiles(&saved);
+                                                        profiles.set(saved);
+                                                        show_form.set(false);
+                                                        editing_profile.set(None);
+                                                        error_msg.set(None);
+                                                        on_connect.call(config);
+                                                    }
+                                                },
+                                                "Connect anyway"
+                                            }
+                                        }
+                                    }
                                 } else {
                                     rsx! {}
                                 }
@@ -882,7 +927,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                             div { class: "az-form-actions",
                                 button {
                                     class: "btn-primary",
-                                    disabled: !can_connect,
+                                    disabled: !can_connect || *validating_form.read(),
                                     onclick: {
                                         let on_connect = props.on_connect.clone();
                                         move |_| {
@@ -905,29 +950,69 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                 devops_org: devops_org_input.read().trim().to_string(),
                                                 devops_project: devops_project_input.read().trim().to_string(),
                                             };
-                                            let mut saved = profiles.read().clone();
-                                            if let Some(idx) = *editing_profile.read() {
-                                                saved[idx] = config.clone();
-                                            } else {
-                                                saved.insert(0, config.clone());
+
+                                            if !is_logged_in {
+                                                // Not logged in: nothing to validate against yet — save for
+                                                // later, matching the pre-existing "Save" (no connect) flow.
+                                                let mut saved = profiles.read().clone();
+                                                if let Some(idx) = *editing_profile.read() {
+                                                    saved[idx] = config.clone();
+                                                } else {
+                                                    saved.insert(0, config.clone());
+                                                }
+                                                save_profiles(&saved);
+                                                profiles.set(saved);
+                                                show_form.set(false);
+                                                editing_profile.set(None);
+                                                error_msg.set(None);
+                                                return;
                                             }
-                                            save_profiles(&saved);
-                                            profiles.set(saved);
-                                            show_form.set(false);
-                                            editing_profile.set(None);
+
                                             error_msg.set(None);
-                                            if is_logged_in {
-                                                on_connect.call(config);
-                                            }
+                                            validating_form.set(true);
+                                            let on_connect = on_connect.clone();
+                                            spawn(async move {
+                                                let sub = config.subscription.clone();
+                                                let rg = config.resource_group.clone();
+                                                let app = config.app_name.clone();
+                                                // Every field here is hand-typed, so validate the same
+                                                // way as opening a saved profile: one `az webapp show`
+                                                // checks subscription, resource group and site name
+                                                // together before we save a profile that can't connect.
+                                                let result = tokio::task::spawn_blocking(move || {
+                                                    azure::get_site_location(&sub, &rg, &app)
+                                                })
+                                                .await
+                                                .unwrap_or_else(|e| Err(e.to_string()));
+                                                validating_form.set(false);
+                                                match result {
+                                                    Ok(_) => {
+                                                        let mut saved = profiles.read().clone();
+                                                        if let Some(idx) = *editing_profile.read() {
+                                                            saved[idx] = config.clone();
+                                                        } else {
+                                                            saved.insert(0, config.clone());
+                                                        }
+                                                        save_profiles(&saved);
+                                                        profiles.set(saved);
+                                                        show_form.set(false);
+                                                        editing_profile.set(None);
+                                                        error_msg.set(None);
+                                                        on_connect.call(config);
+                                                    }
+                                                    Err(e) => error_msg.set(Some(e)),
+                                                }
+                                            });
                                         }
                                     },
-                                    if is_logged_in { "Save & Connect" } else { "Save" }
+                                    if *validating_form.read() { "Checking…" } else if is_logged_in { "Save & Connect" } else { "Save" }
                                 }
                                 button {
                                     class: "btn",
                                     onclick: move |_| {
                                         show_form.set(false);
                                         editing_profile.set(None);
+                                        error_msg.set(None);
                                     },
                                     "Cancel"
                                 }
