@@ -224,14 +224,18 @@ body {
 }
 .profile-item {
     display: flex;
-    align-items: center;
-    gap: 8px;
+    flex-direction: column;
     padding: 8px 10px;
     border-radius: 6px;
     cursor: default;
 }
 .profile-item:hover {
     background: var(--bg2);
+}
+.profile-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
 }
 .profile-main {
     flex: 1;

@@ -37,6 +37,19 @@ pub fn Welcome(props: WelcomeProps) -> Element {
     let mut browse_loading = use_signal(|| String::new());
     // Error feedback when `az login` fails to spawn (Windows: az.cmd not on PATH, etc.)
     let mut login_error: Signal<Option<String>> = use_signal(|| None);
+    // Profile index currently being validated before open — drives the
+    // "Checking…" state and disables its button while the az call is in flight.
+    let mut validating_profile: Signal<Option<usize>> = use_signal(|| None);
+    // Validation failures per profile index, e.g. a resource group that no
+    // longer exists in the profile's subscription. Surfaced inline so a stale
+    // profile fails fast here instead of as a raw `az rest` error deep in
+    // some panel after connecting.
+    let mut open_errors: Signal<std::collections::HashMap<usize, String>> =
+        use_signal(std::collections::HashMap::new);
+    // Same idea as `validating_profile`/`open_errors`, but for the manual
+    // new-profile form, where every field (including resource group and app
+    // name) is hand-typed and so is exactly as typo-prone as a stale profile.
+    let mut validating_form: Signal<bool> = use_signal(|| false);
 
     let mut profiles = use_signal(|| load_profiles());
 
@@ -284,6 +297,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                             let on_connect = props.on_connect.clone();
                                             rsx! {
                                                 div { class: "profile-item",
+                                                  div { class: "profile-row",
                                                     div { class: "profile-main",
                                                         div { class: "profile-label", "{display_label}" }
                                                         if !sub_line.is_empty() {
@@ -297,7 +311,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                         button {
                                                             class: "btn btn-open btn-small",
                                                             title: if is_logged_in { "Open this profile" } else { "Log in first" },
-                                                            disabled: !is_logged_in,
+                                                            disabled: !is_logged_in || validating_profile.read().is_some(),
                                                             onclick: {
                                                                 let p = p.clone();
                                                                 let on_connect = on_connect.clone();
@@ -306,11 +320,41 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                                     if !config.tenant.is_empty() {
                                                                         let _ = azure::open_login(Some(&config.tenant));
                                                                     }
-                                                                    config.subscription = sub_id.read().clone();
-                                                                    on_connect.call(config);
+                                                                    // Use the profile's own subscription — falling back to
+                                                                    // whatever the CLI is currently active on only applies
+                                                                    // to profiles saved before this field existed. Using
+                                                                    // the active CLI subscription unconditionally broke
+                                                                    // profiles when a different profile (or another tool)
+                                                                    // had last switched `az` to another subscription.
+                                                                    if config.subscription.is_empty() {
+                                                                        config.subscription = sub_id.read().clone();
+                                                                    }
+                                                                    open_errors.write().remove(&idx);
+                                                                    validating_profile.set(Some(idx));
+                                                                    let on_connect = on_connect.clone();
+                                                                    spawn(async move {
+                                                                        let sub = config.subscription.clone();
+                                                                        let rg = config.resource_group.clone();
+                                                                        let app = config.app_name.clone();
+                                                                        // One cheap `az webapp show` validates subscription,
+                                                                        // resource group and site name together — the exact
+                                                                        // three fields a stale/mistyped profile gets wrong.
+                                                                        let result = tokio::task::spawn_blocking(move || {
+                                                                            azure::get_site_location(&sub, &rg, &app)
+                                                                        })
+                                                                        .await
+                                                                        .unwrap_or_else(|e| Err(e.to_string()));
+                                                                        validating_profile.set(None);
+                                                                        match result {
+                                                                            Ok(_) => on_connect.call(config),
+                                                                            Err(e) => {
+                                                                                open_errors.write().insert(idx, e);
+                                                                            }
+                                                                        }
+                                                                    });
                                                                 }
                                                             },
-                                                            "Open →"
+                                                            if *validating_profile.read() == Some(idx) { "Checking…" } else { "Open →" }
                                                         }
                                                         button {
                                                             class: "btn btn-small",
@@ -341,6 +385,29 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                                 profiles.set(saved);
                                                             },
                                                             "×"
+                                                        }
+                                                    }
+                                                  }
+                                                    if let Some(err) = open_errors.read().get(&idx).cloned() {
+                                                        div { class: "az-error", style: "margin-top:6px",
+                                                            "⚠ {err}"
+                                                            button {
+                                                                class: "btn btn-small",
+                                                                style: "margin-left:10px",
+                                                                onclick: {
+                                                                    let p = p.clone();
+                                                                    let on_connect = on_connect.clone();
+                                                                    move |_| {
+                                                                        let mut config = p.clone();
+                                                                        if config.subscription.is_empty() {
+                                                                            config.subscription = sub_id.read().clone();
+                                                                        }
+                                                                        open_errors.write().remove(&idx);
+                                                                        on_connect.call(config);
+                                                                    }
+                                                                },
+                                                                "Open anyway"
+                                                            }
                                                         }
                                                     }
                                                 }
@@ -813,7 +880,46 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                             {
                                 let err = error_msg.read().clone();
                                 if let Some(msg) = err {
-                                    rsx! { div { class: "az-error", "{msg}" } }
+                                    rsx! {
+                                        div { class: "az-error",
+                                            "⚠ {msg}"
+                                            button {
+                                                class: "btn btn-small",
+                                                style: "margin-left:10px",
+                                                onclick: {
+                                                    let on_connect = props.on_connect.clone();
+                                                    move |_| {
+                                                        let local_dir_val = local_dir_input.read().trim().to_string();
+                                                        let config = AzConfig {
+                                                            subscription: sub_id.read().clone(),
+                                                            resource_group: rg_input.read().trim().to_string(),
+                                                            app_name: app_input.read().trim().to_string(),
+                                                            sb_namespace: sb_input.read().trim().to_string(),
+                                                            tenant: tenant_input.read().trim().to_string(),
+                                                            label: label_input.read().trim().to_string(),
+                                                            local_dir: local_dir_val,
+                                                            app_config_store: app_config_store_input.read().trim().to_string(),
+                                                            devops_org: devops_org_input.read().trim().to_string(),
+                                                            devops_project: devops_project_input.read().trim().to_string(),
+                                                        };
+                                                        let mut saved = profiles.read().clone();
+                                                        if let Some(idx) = *editing_profile.read() {
+                                                            saved[idx] = config.clone();
+                                                        } else {
+                                                            saved.insert(0, config.clone());
+                                                        }
+                                                        save_profiles(&saved);
+                                                        profiles.set(saved);
+                                                        show_form.set(false);
+                                                        editing_profile.set(None);
+                                                        error_msg.set(None);
+                                                        on_connect.call(config);
+                                                    }
+                                                },
+                                                "Connect anyway"
+                                            }
+                                        }
+                                    }
                                 } else {
                                     rsx! {}
                                 }
@@ -821,7 +927,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                             div { class: "az-form-actions",
                                 button {
                                     class: "btn-primary",
-                                    disabled: !can_connect,
+                                    disabled: !can_connect || *validating_form.read(),
                                     onclick: {
                                         let on_connect = props.on_connect.clone();
                                         move |_| {
@@ -844,29 +950,69 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                 devops_org: devops_org_input.read().trim().to_string(),
                                                 devops_project: devops_project_input.read().trim().to_string(),
                                             };
-                                            let mut saved = profiles.read().clone();
-                                            if let Some(idx) = *editing_profile.read() {
-                                                saved[idx] = config.clone();
-                                            } else {
-                                                saved.insert(0, config.clone());
+
+                                            if !is_logged_in {
+                                                // Not logged in: nothing to validate against yet — save for
+                                                // later, matching the pre-existing "Save" (no connect) flow.
+                                                let mut saved = profiles.read().clone();
+                                                if let Some(idx) = *editing_profile.read() {
+                                                    saved[idx] = config.clone();
+                                                } else {
+                                                    saved.insert(0, config.clone());
+                                                }
+                                                save_profiles(&saved);
+                                                profiles.set(saved);
+                                                show_form.set(false);
+                                                editing_profile.set(None);
+                                                error_msg.set(None);
+                                                return;
                                             }
-                                            save_profiles(&saved);
-                                            profiles.set(saved);
-                                            show_form.set(false);
-                                            editing_profile.set(None);
+
                                             error_msg.set(None);
-                                            if is_logged_in {
-                                                on_connect.call(config);
-                                            }
+                                            validating_form.set(true);
+                                            let on_connect = on_connect.clone();
+                                            spawn(async move {
+                                                let sub = config.subscription.clone();
+                                                let rg = config.resource_group.clone();
+                                                let app = config.app_name.clone();
+                                                // Every field here is hand-typed, so validate the same
+                                                // way as opening a saved profile: one `az webapp show`
+                                                // checks subscription, resource group and site name
+                                                // together before we save a profile that can't connect.
+                                                let result = tokio::task::spawn_blocking(move || {
+                                                    azure::get_site_location(&sub, &rg, &app)
+                                                })
+                                                .await
+                                                .unwrap_or_else(|e| Err(e.to_string()));
+                                                validating_form.set(false);
+                                                match result {
+                                                    Ok(_) => {
+                                                        let mut saved = profiles.read().clone();
+                                                        if let Some(idx) = *editing_profile.read() {
+                                                            saved[idx] = config.clone();
+                                                        } else {
+                                                            saved.insert(0, config.clone());
+                                                        }
+                                                        save_profiles(&saved);
+                                                        profiles.set(saved);
+                                                        show_form.set(false);
+                                                        editing_profile.set(None);
+                                                        error_msg.set(None);
+                                                        on_connect.call(config);
+                                                    }
+                                                    Err(e) => error_msg.set(Some(e)),
+                                                }
+                                            });
                                         }
                                     },
-                                    if is_logged_in { "Save & Connect" } else { "Save" }
+                                    if *validating_form.read() { "Checking…" } else if is_logged_in { "Save & Connect" } else { "Save" }
                                 }
                                 button {
                                     class: "btn",
                                     onclick: move |_| {
                                         show_form.set(false);
                                         editing_profile.set(None);
+                                        error_msg.set(None);
                                     },
                                     "Cancel"
                                 }
