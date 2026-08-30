@@ -37,6 +37,15 @@ pub fn Welcome(props: WelcomeProps) -> Element {
     let mut browse_loading = use_signal(|| String::new());
     // Error feedback when `az login` fails to spawn (Windows: az.cmd not on PATH, etc.)
     let mut login_error: Signal<Option<String>> = use_signal(|| None);
+    // Profile index currently being validated before open — drives the
+    // "Checking…" state and disables its button while the az call is in flight.
+    let mut validating_profile: Signal<Option<usize>> = use_signal(|| None);
+    // Validation failures per profile index, e.g. a resource group that no
+    // longer exists in the profile's subscription. Surfaced inline so a stale
+    // profile fails fast here instead of as a raw `az rest` error deep in
+    // some panel after connecting.
+    let mut open_errors: Signal<std::collections::HashMap<usize, String>> =
+        use_signal(std::collections::HashMap::new);
 
     let mut profiles = use_signal(|| load_profiles());
 
@@ -297,7 +306,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                         button {
                                                             class: "btn btn-open btn-small",
                                                             title: if is_logged_in { "Open this profile" } else { "Log in first" },
-                                                            disabled: !is_logged_in,
+                                                            disabled: !is_logged_in || validating_profile.read().is_some(),
                                                             onclick: {
                                                                 let p = p.clone();
                                                                 let on_connect = on_connect.clone();
@@ -306,11 +315,41 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                                     if !config.tenant.is_empty() {
                                                                         let _ = azure::open_login(Some(&config.tenant));
                                                                     }
-                                                                    config.subscription = sub_id.read().clone();
-                                                                    on_connect.call(config);
+                                                                    // Use the profile's own subscription — falling back to
+                                                                    // whatever the CLI is currently active on only applies
+                                                                    // to profiles saved before this field existed. Using
+                                                                    // the active CLI subscription unconditionally broke
+                                                                    // profiles when a different profile (or another tool)
+                                                                    // had last switched `az` to another subscription.
+                                                                    if config.subscription.is_empty() {
+                                                                        config.subscription = sub_id.read().clone();
+                                                                    }
+                                                                    open_errors.write().remove(&idx);
+                                                                    validating_profile.set(Some(idx));
+                                                                    let on_connect = on_connect.clone();
+                                                                    spawn(async move {
+                                                                        let sub = config.subscription.clone();
+                                                                        let rg = config.resource_group.clone();
+                                                                        let app = config.app_name.clone();
+                                                                        // One cheap `az webapp show` validates subscription,
+                                                                        // resource group and site name together — the exact
+                                                                        // three fields a stale/mistyped profile gets wrong.
+                                                                        let result = tokio::task::spawn_blocking(move || {
+                                                                            azure::get_site_location(&sub, &rg, &app)
+                                                                        })
+                                                                        .await
+                                                                        .unwrap_or_else(|e| Err(e.to_string()));
+                                                                        validating_profile.set(None);
+                                                                        match result {
+                                                                            Ok(_) => on_connect.call(config),
+                                                                            Err(e) => {
+                                                                                open_errors.write().insert(idx, e);
+                                                                            }
+                                                                        }
+                                                                    });
                                                                 }
                                                             },
-                                                            "Open →"
+                                                            if *validating_profile.read() == Some(idx) { "Checking…" } else { "Open →" }
                                                         }
                                                         button {
                                                             class: "btn btn-small",
@@ -341,6 +380,28 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                                 profiles.set(saved);
                                                             },
                                                             "×"
+                                                        }
+                                                    }
+                                                    if let Some(err) = open_errors.read().get(&idx).cloned() {
+                                                        div { class: "profile-open-error",
+                                                            "⚠ {err}"
+                                                            button {
+                                                                class: "btn btn-small",
+                                                                style: "margin-left:10px",
+                                                                onclick: {
+                                                                    let p = p.clone();
+                                                                    let on_connect = on_connect.clone();
+                                                                    move |_| {
+                                                                        let mut config = p.clone();
+                                                                        if config.subscription.is_empty() {
+                                                                            config.subscription = sub_id.read().clone();
+                                                                        }
+                                                                        open_errors.write().remove(&idx);
+                                                                        on_connect.call(config);
+                                                                    }
+                                                                },
+                                                                "Open anyway"
+                                                            }
                                                         }
                                                     }
                                                 }
