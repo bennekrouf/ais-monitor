@@ -337,9 +337,6 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                                 let on_connect = on_connect.clone();
                                                                 move |_| {
                                                                     let mut config = p.clone();
-                                                                    if !config.tenant.is_empty() {
-                                                                        let _ = azure::open_login(Some(&config.tenant));
-                                                                    }
                                                                     // Use the profile's own subscription — falling back to
                                                                     // whatever the CLI is currently active on only applies
                                                                     // to profiles saved before this field existed. Using
@@ -353,6 +350,38 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                                     validating_profile.set(Some(idx));
                                                                     let on_connect = on_connect.clone();
                                                                     spawn(async move {
+                                                                        // Check the tenant rather than switching blindly.
+                                                                        // The old code fired `az login --tenant` and then
+                                                                        // validated immediately, so a profile in another
+                                                                        // tenant raced a browser it had just opened and
+                                                                        // failed with "not found" — blaming the profile for
+                                                                        // what was a timing problem. It also opened that
+                                                                        // browser on every open, even when the session was
+                                                                        // already right.
+                                                                        let wanted = config.tenant.clone();
+                                                                        let session = tokio::task::spawn_blocking(
+                                                                            azure::current_tenant,
+                                                                        )
+                                                                        .await
+                                                                        .unwrap_or(None);
+
+                                                                        if azure::needs_tenant_switch(
+                                                                            &wanted,
+                                                                            session.as_deref(),
+                                                                        ) {
+                                                                            validating_profile.set(None);
+                                                                            open_errors.write().insert(
+                                                                                idx,
+                                                                                format!(
+                                                                                    "This profile is in tenant {wanted}, \
+                                                                                     but you are signed in to {}. Sign in \
+                                                                                     to that tenant above, then open it.",
+                                                                                    session.unwrap_or_else(|| "another one".into())
+                                                                                ),
+                                                                            );
+                                                                            return;
+                                                                        }
+
                                                                         let sub = config.subscription.clone();
                                                                         let rg = config.resource_group.clone();
                                                                         let app = config.app_name.clone();
