@@ -1,4 +1,5 @@
 mod components;
+mod hooks;
 mod screens;
 mod services;
 mod update_check;
