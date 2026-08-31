@@ -7,6 +7,40 @@ pub struct WelcomeProps {
     pub on_connect: EventHandler<AzConfig>,
 }
 
+/// Waits for an `az login` that has already been opened to take effect.
+///
+/// `open_login` spawns the browser flow and returns immediately, so the app
+/// only learns it worked by asking again. A button that opens the flow without
+/// this leaves the screen on "Checking…" for ever, with no way forward after a
+/// perfectly successful sign-in.
+fn await_login(mut az_state: Signal<AzLoginState>, mut sub_id: Signal<String>) {
+    az_state.set(AzLoginState::Checking);
+    spawn(async move {
+        // Two minutes: long enough for a browser sign-in with MFA, short
+        // enough that an abandoned one stops asking.
+        for _ in 0..24 {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            let state = tokio::task::spawn_blocking(azure::check_login)
+                .await
+                .unwrap_or(AzLoginState::NotLoggedIn);
+            if let AzLoginState::LoggedIn {
+                ref subscription_id,
+                ref account,
+                ..
+            } = state
+            {
+                sub_id.set(subscription_id.clone());
+                crate::services::activity::ok("Logged in to Azure", account.clone());
+            }
+            let done = matches!(state, AzLoginState::LoggedIn { .. });
+            az_state.set(state);
+            if done {
+                break;
+            }
+        }
+    });
+}
+
 #[component]
 pub fn Welcome(props: WelcomeProps) -> Element {
     let mut az_state = use_signal(|| AzLoginState::Checking);
@@ -134,22 +168,8 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                             style: "margin-left:10px; font-size:11px; background:none; border:1px solid currentColor; border-radius:4px; padding:1px 8px; cursor:pointer; opacity:0.6;",
                                             title: "Sign in with a different Azure account",
                                             onclick: move |_| {
-                                                az_state.set(AzLoginState::Checking);
                                                 let _ = azure::open_login(None);
-                                                spawn(async move {
-                                                    for _ in 0..24 {
-                                                        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                                                        let state = tokio::task::spawn_blocking(azure::check_login)
-                                                            .await
-                                                            .unwrap_or(AzLoginState::NotLoggedIn);
-                                                        if let AzLoginState::LoggedIn { ref subscription_id, .. } = state {
-                                                            sub_id.set(subscription_id.clone());
-                                                        }
-                                                        let done = matches!(state, AzLoginState::LoggedIn { .. });
-                                                        az_state.set(state);
-                                                        if done { break; }
-                                                    }
-                                                });
+                                                await_login(az_state, sub_id);
                                             },
                                             "Switch account"
                                         }
@@ -614,7 +634,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                             style: "display:inline; padding:2px 10px; font-size:12px;",
                                                             onclick: move |_| {
                                                                 let _ = azure::open_login(None);
-                                                                az_state.set(AzLoginState::Checking);
+                                                                await_login(az_state, sub_id);
                                                             },
                                                             "Log in again"
                                                         }
