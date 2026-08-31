@@ -464,6 +464,36 @@ pub fn list_service_bus_namespaces(sub: &str, rg: &str) -> Result<Vec<String>, S
 }
 
 /// Check current az login status (blocking — call from spawn_blocking)
+/// The tenant the CLI session is currently on, if any.
+///
+/// Cheap: `az account show` reads the local token cache, no network call. Used
+/// to decide whether a profile in another tenant needs a switch at all —
+/// without it the only options are "always open a browser" or "never".
+pub fn current_tenant() -> Option<String> {
+    let out = az_command(&["account", "show", "--query", "tenantId", "--output", "tsv"])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let tenant = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    (!tenant.is_empty()).then_some(tenant)
+}
+
+/// Whether a profile's tenant differs from the one the CLI is signed in to.
+///
+/// A profile with no tenant set, or a session whose tenant cannot be read,
+/// counts as "no switch needed": guessing wrong here would open a browser on
+/// every profile open, which is what this replaced.
+pub fn needs_tenant_switch(profile_tenant: &str, session_tenant: Option<&str>) -> bool {
+    let wanted = profile_tenant.trim();
+    match session_tenant {
+        _ if wanted.is_empty() => false,
+        Some(current) => !current.trim().eq_ignore_ascii_case(wanted),
+        None => false,
+    }
+}
+
 pub fn check_login() -> AzLoginState {
     // Step 1: get account metadata from local cache
     let account_out = az_command(&["account", "show", "--output", "json"]).output();
@@ -2863,5 +2893,37 @@ mod tests {
             "('Connection aborted.', ConnectionResetError(54, 'Connection reset by peer'))"
         ));
         assert!(!is_authorization_error(""));
+    }
+}
+
+#[cfg(test)]
+mod tenant_tests {
+    use super::*;
+
+    #[test]
+    fn a_profile_on_the_current_tenant_needs_no_switch() {
+        assert!(!needs_tenant_switch("abc-123", Some("abc-123")));
+    }
+
+    #[test]
+    fn a_profile_on_another_tenant_does() {
+        assert!(needs_tenant_switch("abc-123", Some("def-456")));
+    }
+
+    #[test]
+    fn tenant_ids_compare_without_regard_to_case() {
+        assert!(!needs_tenant_switch("ABC-123", Some("abc-123")));
+    }
+
+    #[test]
+    fn a_profile_with_no_tenant_never_switches() {
+        // Most profiles. Opening a browser for these was the visible symptom.
+        assert!(!needs_tenant_switch("", Some("abc-123")));
+        assert!(!needs_tenant_switch("   ", Some("abc-123")));
+    }
+
+    #[test]
+    fn an_unreadable_session_is_left_alone_rather_than_guessed_at() {
+        assert!(!needs_tenant_switch("abc-123", None));
     }
 }
