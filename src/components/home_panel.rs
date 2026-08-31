@@ -336,6 +336,9 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
     // Why the last sweep stopped early, if it did — drives the one-line
     // banner instead of dumping raw ARM JSON across the dashboard.
     let mut poll_halt: Signal<Option<chain_probe::ProbeHalt>> = use_signal(|| None);
+    // True for the whole sign-in wait, so a sign-in button cannot look
+    // inert while a browser flow is in progress.
+    let signing_in = use_signal(|| false);
     // Wall-clock duration of the last sweep. Surfaced in the header because
     // it's the honest answer to "am I actually getting the interval I asked
     // for?" — if this exceeds POLL_SECS the sweeps are running back-to-back.
@@ -1033,15 +1036,23 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                                         class: "btn btn-small btn-primary",
                                         onclick: {
                                             let tenant = az.tenant.clone();
-                                            let mut load = load.clone();
-                                            let mut poll_chains = poll_chains.clone();
+                                            let load = load.clone();
+                                            let poll_chains = poll_chains.clone();
                                             move |_| {
-                                                let t = if tenant.is_empty() { None } else { Some(tenant.clone()) };
-                                                let _ = azure::open_login(t.as_deref());
-                                                poll_halt.set(None);
-                                                poll_error_samples.set(Vec::new());
-                                                load();
-                                                poll_chains();
+                                                // Cloned per click: the callback takes ownership,
+                                                // which would otherwise make this fire only once.
+                                                let mut load = load.clone();
+                                                let mut poll_chains = poll_chains.clone();
+                                                crate::hooks::signin::sign_in_and_wait(
+                                                    &tenant,
+                                                    signing_in,
+                                                    move |_| {
+                                                        poll_halt.set(None);
+                                                        poll_error_samples.set(Vec::new());
+                                                        load();
+                                                        poll_chains();
+                                                    },
+                                                );
                                             }
                                         },
                                         "Sign in again"

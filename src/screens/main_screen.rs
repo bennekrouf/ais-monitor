@@ -143,6 +143,9 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     });
     let mut loading_chains = use_signal(|| true);
     let mut load_error = use_signal(|| Option::<String>::None);
+    // True for the whole sign-in wait, so a sign-in button cannot look
+    // inert while a browser flow is in progress.
+    let signing_in = use_signal(|| false);
     // Gates the Refresh-button confirmation modal. Refresh clears the
     // chain-discovery cache and re-fetches everything from Azure, which can
     // take a while on large Logic Apps — better to ask first.
@@ -1029,10 +1032,13 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                                 }
                                                 button {
                                                     style: "padding:8px 14px; font-size:13px; background:transparent; color:inherit; border:1px solid var(--border, #555); border-radius:6px; cursor:pointer;",
+                                                    disabled: *signing_in.read(),
                                                     onclick: move |_| {
-                                                        let t = if tenant.is_empty() { None } else { Some(tenant.clone()) };
-                                                        let _ = azure::open_login(t.as_deref());
-                                                        load_error.set(None);
+                                                        crate::hooks::signin::sign_in_and_wait(
+                                                            &tenant,
+                                                            signing_in,
+                                                            move |_| load_error.set(None),
+                                                        );
                                                     },
                                                     title: "Try a different account that has the role",
                                                     "Switch account"
@@ -1040,10 +1046,13 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                             } else {
                                                 button {
                                                     style: "padding:8px 14px; font-size:13px; font-weight:600; background:#0078D4; color:white; border:none; border-radius:6px; cursor:pointer;",
+                                                    disabled: *signing_in.read(),
                                                     onclick: move |_| {
-                                                        let t = if tenant.is_empty() { None } else { Some(tenant.clone()) };
-                                                        let _ = azure::open_login(t.as_deref());
-                                                        load_error.set(None);
+                                                        crate::hooks::signin::sign_in_and_wait(
+                                                            &tenant,
+                                                            signing_in,
+                                                            move |_| load_error.set(None),
+                                                        );
                                                     },
                                                     "Sign in again"
                                                 }

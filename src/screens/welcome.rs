@@ -1,4 +1,5 @@
 use crate::components::chain_detail::AzConfig;
+use crate::hooks::signin;
 use crate::services::azure::{self, AzLoginState, AzSubscription, LogicAppSite};
 use dioxus::prelude::*;
 
@@ -7,43 +8,35 @@ pub struct WelcomeProps {
     pub on_connect: EventHandler<AzConfig>,
 }
 
-/// Waits for an `az login` that has already been opened to take effect.
+/// Signs in and updates this screen as it lands.
 ///
-/// `open_login` spawns the browser flow and returns immediately, so the app
-/// only learns it worked by asking again. A button that opens the flow without
-/// this leaves the screen on "Checking…" for ever, with no way forward after a
-/// perfectly successful sign-in.
-fn await_login(mut az_state: Signal<AzLoginState>, mut sub_id: Signal<String>) {
+/// `busy` drives the "Checking…" panel for the whole wait, so the screen can
+/// never look idle while a sign-in is in flight.
+fn start_login(
+    mut az_state: Signal<AzLoginState>,
+    mut sub_id: Signal<String>,
+    busy: Signal<bool>,
+    tenant: &str,
+) {
     az_state.set(AzLoginState::Checking);
-    spawn(async move {
-        // Two minutes: long enough for a browser sign-in with MFA, short
-        // enough that an abandoned one stops asking.
-        for _ in 0..24 {
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-            let state = tokio::task::spawn_blocking(azure::check_login)
-                .await
-                .unwrap_or(AzLoginState::NotLoggedIn);
-            if let AzLoginState::LoggedIn {
-                ref subscription_id,
-                ref account,
-                ..
-            } = state
-            {
-                sub_id.set(subscription_id.clone());
-                crate::services::activity::ok("Logged in to Azure", account.clone());
-            }
-            let done = matches!(state, AzLoginState::LoggedIn { .. });
-            az_state.set(state);
-            if done {
-                break;
-            }
+    signin::sign_in_and_wait(tenant, busy, move |state| {
+        if let AzLoginState::LoggedIn {
+            ref subscription_id,
+            ..
+        } = state
+        {
+            sub_id.set(subscription_id.clone());
         }
+        az_state.set(state);
     });
 }
 
 #[component]
 pub fn Welcome(props: WelcomeProps) -> Element {
     let mut az_state = use_signal(|| AzLoginState::Checking);
+    // True for the whole sign-in wait, so no sign-in button can look inert
+    // while a browser flow is in progress.
+    let signing_in = use_signal(|| false);
     let mut sub_id = use_signal(|| String::new());
 
     // Form fields (shared between browse and manual modes)
@@ -168,8 +161,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                             style: "margin-left:10px; font-size:11px; background:none; border:1px solid currentColor; border-radius:4px; padding:1px 8px; cursor:pointer; opacity:0.6;",
                                             title: "Sign in with a different Azure account",
                                             onclick: move |_| {
-                                                let _ = azure::open_login(None);
-                                                await_login(az_state, sub_id);
+                                                start_login(az_state, sub_id, signing_in, "");
                                             },
                                             "Switch account"
                                         }
@@ -238,40 +230,8 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                 class: "btn-primary",
                                                 onclick: move |_| {
                                                     let tenant = tenant_input.read().clone();
-                                                    let t = if tenant.is_empty() { None } else { Some(tenant.clone()) };
                                                     login_error.set(None);
-                                                    match azure::open_login(t.as_deref()) {
-                                                        Ok(()) => {
-                                                            crate::services::activity::info(
-                                                                "Opened az login",
-                                                                if tenant.is_empty() { "default tenant".to_string() } else { tenant.clone() },
-                                                            );
-                                                            az_state.set(AzLoginState::Checking);
-                                                            spawn(async move {
-                                                                for _ in 0..24 {
-                                                                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
-                                                                    let state = tokio::task::spawn_blocking(azure::check_login)
-                                                                        .await
-                                                                        .unwrap_or(AzLoginState::NotLoggedIn);
-                                                                    if let AzLoginState::LoggedIn { ref subscription_id, ref account, .. } = state {
-                                                                        sub_id.set(subscription_id.clone());
-                                                                        crate::services::activity::ok("Logged in to Azure", account.clone());
-                                                                    }
-                                                                    let done = matches!(state, AzLoginState::LoggedIn { .. });
-                                                                    az_state.set(state);
-                                                                    if done { break; }
-                                                                }
-                                                            });
-                                                        }
-                                                        Err(e) => {
-                                                            // Spawn failed — show the user what went wrong instead of
-                                                            // silently leaving them on "Not logged in".
-                                                            crate::services::activity::error(
-                                                                "az login spawn failed", "", e.clone(),
-                                                            );
-                                                            login_error.set(Some(e));
-                                                        }
-                                                    }
+                                                    start_login(az_state, sub_id, signing_in, &tenant);
                                                 },
                                                 "Connect to Azure"
                                             }
@@ -662,8 +622,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                             class: "btn-primary",
                                                             style: "display:inline; padding:2px 10px; font-size:12px;",
                                                             onclick: move |_| {
-                                                                let _ = azure::open_login(None);
-                                                                await_login(az_state, sub_id);
+                                                                start_login(az_state, sub_id, signing_in, "");
                                                             },
                                                             "Log in again"
                                                         }
