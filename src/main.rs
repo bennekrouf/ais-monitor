@@ -234,7 +234,7 @@ fn WindowRoot(initial: Option<AzConfig>) -> Element {
         if let (Some(info), false) = (update_info.read().clone(), *update_dismissed.read()) {
             div { class: "update-banner",
                 span { class: "update-banner-text",
-                    "ais-monitor "
+                    "AIS Monitor "
                     strong { "{info.latest_version}" }
                     " is available (you have {env!(\"CARGO_PKG_VERSION\")})."
                 }
