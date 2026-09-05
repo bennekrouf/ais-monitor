@@ -345,6 +345,23 @@ fn render_sys_topic_block(
     }
 }
 
+/// One-line delivery summary: retries, and — the part that matters — whether
+/// anything catches an event that never gets delivered.
+fn delivery_summary(sub: &EventGridSubscription) -> (String, bool) {
+    let retries = match (sub.max_delivery_attempts, sub.event_ttl_minutes) {
+        (Some(a), Some(t)) => format!("{a}× / {t}m"),
+        (Some(a), None) => format!("{a}×"),
+        _ => "—".to_string(),
+    };
+    match &sub.dead_letter {
+        Some(dl) => {
+            let tail = dl.rsplit('/').next().unwrap_or(dl);
+            (format!("{retries} → …/{tail}"), false)
+        }
+        None => (format!("{retries} → dropped"), true),
+    }
+}
+
 fn render_subs(subs: &[EventGridSubscription]) -> Element {
     rsx! {
         div { class: "eg-subs",
@@ -358,6 +375,7 @@ fn render_subs(subs: &[EventGridSubscription]) -> Element {
                         else if dest_type.contains("WebHook") { "🌐" }
                         else if dest_type.contains("StorageQueue") { "📦" }
                         else { "📌" };
+                    let (delivery_text, delivery_dropped) = delivery_summary(sub);
 
                     rsx! {
                         div { class: "eg-sub",
@@ -366,6 +384,13 @@ fn render_subs(subs: &[EventGridSubscription]) -> Element {
                                 span { class: "eg-sub-name", "{sub_name}" }
                                 span { class: "eg-sub-arrow", "→" }
                                 span { class: "eg-sub-dest", "{dest_queue}" }
+                            }
+                            div {
+                                class: if delivery_dropped { "eg-delivery eg-delivery-warn" } else { "eg-delivery" },
+                                title: if delivery_dropped {
+                                    "No deadLetterDestination — Event Grid discards the event once retries are exhausted"
+                                } else { "Undeliverable events are dead-lettered" },
+                                "{delivery_text}"
                             }
                             if !filters.is_empty() {
                                 div { class: "eg-filters",
