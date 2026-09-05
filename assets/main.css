@@ -2547,6 +2547,14 @@ body {
     font-size: 12px;
 }
 
+.eg-delivery {
+    margin-top: 4px;
+    padding-left: 24px;
+    font-size: 11px;
+    color: var(--text3);
+}
+.eg-delivery-warn { color: var(--yellow); }
+
 .eg-filters {
     margin-top: 6px;
     padding-left: 24px;

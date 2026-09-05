@@ -1897,14 +1897,14 @@ pub fn list_eventgrid_system_topic_subscriptions(
         .iter()
         .filter_map(|v| {
             let name = v["name"].as_str()?.to_string();
-            let dest = &v["destination"];
+            let dest = eg_destination(v);
             let dest_type = dest["endpointType"].as_str().unwrap_or("").to_string();
-            let dest_queue = dest["properties"]["resourceId"]
-                .as_str()
-                .and_then(|rid| rid.rsplit('/').next())
-                .or_else(|| dest["properties"]["endpointUrl"].as_str())
+            let dest_queue = eg_field(dest, "resourceId")
+                .map(eg_leaf)
+                .or_else(|| eg_field(dest, "endpointUrl"))
                 .unwrap_or("")
                 .to_string();
+            let delivery = parse_eg_delivery(v);
 
             let mut filters = Vec::new();
             if let Some(filter) = v["filter"].as_object() {
@@ -1955,6 +1955,10 @@ pub fn list_eventgrid_system_topic_subscriptions(
                 destination_type: dest_type,
                 destination_queue: dest_queue,
                 filters,
+                dead_letter: delivery.dead_letter,
+                max_delivery_attempts: delivery.max_delivery_attempts,
+                event_ttl_minutes: delivery.event_ttl_minutes,
+                advanced_filtering_on_arrays: delivery.advanced_filtering_on_arrays,
             })
         })
         .collect();
@@ -2195,6 +2199,84 @@ pub struct EventGridSubscription {
     pub destination_type: String,
     pub destination_queue: String,
     pub filters: Vec<EventGridFilter>,
+    /// Where undeliverable events go once retries are exhausted. `None` means
+    /// Event Grid *discards* them silently — no queue, no alert, no trace.
+    #[serde(default)]
+    pub dead_letter: Option<String>,
+    #[serde(default)]
+    pub max_delivery_attempts: Option<i64>,
+    #[serde(default)]
+    pub event_ttl_minutes: Option<i64>,
+    #[serde(default)]
+    pub advanced_filtering_on_arrays: bool,
+}
+
+/// Delivery-guarantee fields shared by the custom-topic and system-topic
+/// subscription parsers — factored out so both stay in sync instead of
+/// duplicating the `dest`/`retryPolicy`/`deadLetterDestination` reads a third
+/// time whenever a new field is needed.
+struct EgDelivery {
+    dead_letter: Option<String>,
+    max_delivery_attempts: Option<i64>,
+    event_ttl_minutes: Option<i64>,
+    advanced_filtering_on_arrays: bool,
+}
+
+fn parse_eg_delivery(v: &serde_json::Value) -> EgDelivery {
+    // Same two shapes as the delivery destination. Getting this wrong is worse
+    // than a blank column: the panel reports "dropped", so a subscription that
+    // *is* dead-lettering would still be flagged as silently discarding events.
+    let dead_letter = eg_field(&v["deadLetterDestination"], "resourceId")
+        .or_else(|| {
+            eg_field(
+                &v["deadLetterWithResourceIdentity"]["deadLetterDestination"],
+                "resourceId",
+            )
+        })
+        .map(String::from);
+    let retry = &v["retryPolicy"];
+    EgDelivery {
+        dead_letter,
+        max_delivery_attempts: retry["maxDeliveryAttempts"].as_i64(),
+        event_ttl_minutes: retry["eventTimeToLiveInMinutes"].as_i64(),
+        advanced_filtering_on_arrays: v["filter"]["enableAdvancedFilteringOnArrays"]
+            .as_bool()
+            .unwrap_or(false),
+    }
+}
+
+/// A subscription delivering under a managed identity carries a null
+/// `destination` and puts the real target under
+/// `deliveryWithResourceIdentity.destination` instead — reading only the
+/// former left those rows with an empty destination queue.
+fn eg_destination(v: &serde_json::Value) -> &serde_json::Value {
+    if v["destination"].is_object() {
+        &v["destination"]
+    } else {
+        &v["deliveryWithResourceIdentity"]["destination"]
+    }
+}
+
+/// A field on an Event Grid destination, whichever shape it arrives in.
+///
+/// The ARM REST API wraps these in a `properties` envelope; the `az` CLI
+/// flattens it away and puts them directly on the destination. We read `az`,
+/// so every `["properties"]["resourceId"]` here was reading `null` — which is
+/// why no subscription in any environment showed the queue it delivers to.
+/// Both shapes are accepted rather than just swapping one for the other, so a
+/// switch to the REST API, or an `az` version that stops flattening, does not
+/// silently blank the column again.
+fn eg_field<'a>(dest: &'a serde_json::Value, key: &str) -> Option<&'a str> {
+    dest["properties"][key]
+        .as_str()
+        .or_else(|| dest[key].as_str())
+        .filter(|s| !s.is_empty())
+}
+
+/// The last segment of an ARM resource id — the queue, topic or container
+/// name, which is the part worth showing.
+fn eg_leaf(resource_id: &str) -> &str {
+    resource_id.rsplit('/').next().unwrap_or(resource_id)
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -2292,14 +2374,19 @@ pub fn list_eventgrid_subscriptions(topic_id: &str) -> Result<Vec<EventGridSubsc
         .iter()
         .filter_map(|v| {
             let name = v["name"].as_str()?.to_string();
-            let dest = &v["destination"];
+            let dest = eg_destination(v);
             let dest_type = dest["endpointType"].as_str().unwrap_or("").to_string();
             // Extract queue name from resourceId — last segment
-            let dest_queue = dest["properties"]["resourceId"]
-                .as_str()
-                .and_then(|rid| rid.rsplit('/').next())
+            // The `endpointUrl` fallback is what a WebHook destination has
+            // instead of a resource id; the system-topic parser already had it
+            // and this one did not, so webhook rows here showed nothing even
+            // once the resource-id path was right.
+            let dest_queue = eg_field(dest, "resourceId")
+                .map(eg_leaf)
+                .or_else(|| eg_field(dest, "endpointUrl"))
                 .unwrap_or("")
                 .to_string();
+            let delivery = parse_eg_delivery(v);
 
             // Parse advanced filters
             let mut filters = Vec::new();
@@ -2331,6 +2418,10 @@ pub fn list_eventgrid_subscriptions(topic_id: &str) -> Result<Vec<EventGridSubsc
                 destination_type: dest_type,
                 destination_queue: dest_queue,
                 filters,
+                dead_letter: delivery.dead_letter,
+                max_delivery_attempts: delivery.max_delivery_attempts,
+                event_ttl_minutes: delivery.event_ttl_minutes,
+                advanced_filtering_on_arrays: delivery.advanced_filtering_on_arrays,
             })
         })
         .collect();
@@ -2827,6 +2918,157 @@ pub fn query_function_metrics(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// No `deadLetterDestination` — Event Grid drops the event once retries
+    /// run out. This shape is what every subscription in dev/stg looked like
+    /// before dead-lettering was configured.
+    #[test]
+    fn parse_eg_delivery_flags_missing_dead_letter() {
+        let v: serde_json::Value = serde_json::json!({
+            "retryPolicy": { "maxDeliveryAttempts": 30, "eventTimeToLiveInMinutes": 1440 },
+            "filter": { "enableAdvancedFilteringOnArrays": true }
+        });
+        let d = parse_eg_delivery(&v);
+        assert_eq!(d.dead_letter, None);
+        assert_eq!(d.max_delivery_attempts, Some(30));
+        assert_eq!(d.event_ttl_minutes, Some(1440));
+        assert!(d.advanced_filtering_on_arrays);
+    }
+
+    /// The shape `az eventgrid event-subscription list` actually returns —
+    /// verbatim from `evgt-Tom-dev-chn-001`, trimmed. Note `resourceId` sits
+    /// directly on `destination`: the CLI flattens ARM's `properties` envelope,
+    /// and reading only the nested path is why every row showed a blank queue.
+    #[test]
+    fn eg_field_reads_the_flattened_shape_the_cli_returns() {
+        let dest: serde_json::Value = serde_json::json!({
+            "deliveryAttributeMappings": null,
+            "endpointType": "ServiceBusQueue",
+            "resourceId": "/subscriptions/x/resourceGroups/rg-tom-dev-chn-001/providers/Microsoft.ServiceBus/namespaces/sbns-tom-dev-chn-001/queues/ais.event.ignite"
+        });
+        assert_eq!(
+            eg_field(&dest, "resourceId").map(eg_leaf),
+            Some("ais.event.ignite")
+        );
+    }
+
+    /// And the nested one the REST API returns, so switching transport does
+    /// not blank the column again.
+    #[test]
+    fn eg_field_still_reads_the_nested_arm_shape() {
+        let dest: serde_json::Value = serde_json::json!({
+            "endpointType": "ServiceBusQueue",
+            "properties": { "resourceId": "/subscriptions/x/.../queues/ais.event.ignite" }
+        });
+        assert_eq!(
+            eg_field(&dest, "resourceId").map(eg_leaf),
+            Some("ais.event.ignite")
+        );
+    }
+
+    #[test]
+    fn eg_field_treats_missing_and_empty_alike() {
+        assert_eq!(eg_field(&serde_json::json!({}), "resourceId"), None);
+        assert_eq!(eg_field(&serde_json::json!(null), "resourceId"), None);
+        // An empty string would render as a destination that is simply blank,
+        // which is the bug this whole change is about.
+        assert_eq!(
+            eg_field(&serde_json::json!({"resourceId": ""}), "resourceId"),
+            None
+        );
+    }
+
+    /// ais-event-jde: delivery under a system-assigned identity, so the real
+    /// target hangs off `deliveryWithResourceIdentity` — and is flattened too.
+    #[test]
+    fn an_identity_delivery_still_names_its_queue() {
+        let v: serde_json::Value = serde_json::json!({
+            "destination": null,
+            "deliveryWithResourceIdentity": {
+                "destination": {
+                    "endpointType": "ServiceBusQueue",
+                    "resourceId": "/subscriptions/x/.../queues/ais.event.jde"
+                },
+                "identity": { "type": "SystemAssigned" }
+            }
+        });
+        let dest = eg_destination(&v);
+        assert_eq!(dest["endpointType"].as_str(), Some("ServiceBusQueue"));
+        assert_eq!(
+            eg_field(dest, "resourceId").map(eg_leaf),
+            Some("ais.event.jde")
+        );
+    }
+
+    /// A WebHook has no resource id at all; the url is the destination.
+    #[test]
+    fn a_webhook_destination_falls_back_to_its_url() {
+        let dest: serde_json::Value = serde_json::json!({
+            "endpointType": "WebHook",
+            "endpointUrl": "https://example.invalid/hook"
+        });
+        assert_eq!(eg_field(&dest, "resourceId"), None);
+        assert_eq!(
+            eg_field(&dest, "endpointUrl"),
+            Some("https://example.invalid/hook")
+        );
+    }
+
+    /// The dead-letter path had the same nesting mistake, and there it is
+    /// worse than a blank: the panel would say "dropped" for a subscription
+    /// that is dead-lettering perfectly well.
+    #[test]
+    fn a_flattened_dead_letter_is_not_reported_as_dropped() {
+        let v: serde_json::Value = serde_json::json!({
+            "deadLetterDestination": {
+                "endpointType": "StorageBlob",
+                "resourceId": "/subscriptions/x/.../containers/eg-deadletter"
+            },
+            "retryPolicy": { "maxDeliveryAttempts": 30, "eventTimeToLiveInMinutes": 1440 }
+        });
+        assert_eq!(
+            parse_eg_delivery(&v).dead_letter.as_deref(),
+            Some("/subscriptions/x/.../containers/eg-deadletter")
+        );
+    }
+
+    #[test]
+    fn parse_eg_delivery_reads_configured_dead_letter() {
+        let v: serde_json::Value = serde_json::json!({
+            "deadLetterDestination": {
+                "properties": { "resourceId": "/subscriptions/x/.../containers/eg-deadletter" }
+            },
+            "retryPolicy": { "maxDeliveryAttempts": 30, "eventTimeToLiveInMinutes": 1440 }
+        });
+        let d = parse_eg_delivery(&v);
+        assert_eq!(
+            d.dead_letter.as_deref(),
+            Some("/subscriptions/x/.../containers/eg-deadletter")
+        );
+    }
+
+    /// A subscription delivering under a managed identity (ais-event-jde is
+    /// the one example on this platform) carries a null `destination` and
+    /// puts the real target under `deliveryWithResourceIdentity` instead —
+    /// reading only the former rendered those rows with a blank destination.
+    #[test]
+    fn eg_destination_falls_back_to_managed_identity_delivery() {
+        let v: serde_json::Value = serde_json::json!({
+            "destination": null,
+            "deliveryWithResourceIdentity": {
+                "destination": {
+                    "endpointType": "ServiceBusQueue",
+                    "properties": { "resourceId": "/subscriptions/x/.../queues/ais.event.jde" }
+                }
+            }
+        });
+        let dest = eg_destination(&v);
+        assert_eq!(dest["endpointType"].as_str(), Some("ServiceBusQueue"));
+        assert_eq!(
+            dest["properties"]["resourceId"].as_str(),
+            Some("/subscriptions/x/.../queues/ais.event.jde")
+        );
+    }
 
     #[test]
     fn throttling_matches_explicit_429() {
