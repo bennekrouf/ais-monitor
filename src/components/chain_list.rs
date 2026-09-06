@@ -67,7 +67,7 @@ pub fn ChainList(props: ChainListProps) -> Element {
         // While filtering, sort alphabetically only — freshness-based
         // reordering would otherwise shuffle rows out from under the user
         // every time a background poll lands mid-read.
-        sorted.sort_by(|a, b| a.label.to_lowercase().cmp(&b.label.to_lowercase()));
+        sorted.sort_by_key(|a| a.label.to_lowercase());
     } else {
         sorted.sort_by(|a, b| {
             let a_ts = props.last_checked.get(&a.label).copied().unwrap_or(0);

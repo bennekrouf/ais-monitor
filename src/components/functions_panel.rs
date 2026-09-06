@@ -62,11 +62,18 @@ pub fn FunctionsPanel(props: FunctionsPanelProps) -> Element {
     let mut action_running: Signal<bool> = use_signal(|| false);
     let mut action_error: Signal<Option<String>> = use_signal(|| None);
 
+    // Discovery re-runs whenever the profile changes, and "Fetch Metrics" is
+    // a button the user can press again while the last press is still running.
+    // Both need the newest run to be the one that publishes.
+    let mut discover_guard = crate::hooks::fetch_guard::use_fetch_guard();
+    let mut metrics_guard = crate::hooks::fetch_guard::use_fetch_guard();
+
     // Auto-discover on mount: paint cached snapshot instantly, then refresh.
     use_effect({
         let az = az.clone();
         move || {
             let az = az.clone();
+            let token = discover_guard.begin();
             error_msg.set(None);
 
             // Hydrate from disk first so the user sees something immediately.
@@ -95,6 +102,9 @@ pub fn FunctionsPanel(props: FunctionsPanelProps) -> Element {
                     tokio::task::spawn_blocking(move || azure::list_function_apps(&sub2, &rg2))
                         .await;
 
+                if !discover_guard.is_current(token) {
+                    return;
+                }
                 match apps_result {
                     Ok(Ok(apps)) => {
                         func_apps.set(apps.clone());
@@ -113,6 +123,9 @@ pub fn FunctionsPanel(props: FunctionsPanelProps) -> Element {
                                 all_funcs.push((name2, fns));
                             }
                         }
+                        if !discover_guard.is_current(token) {
+                            return;
+                        }
                         functions.set(all_funcs.clone());
 
                         // 3. Discover App Insights
@@ -123,6 +136,9 @@ pub fn FunctionsPanel(props: FunctionsPanelProps) -> Element {
                                 .ok()
                                 .and_then(|r| r.ok())
                                 .and_then(|list| list.into_iter().next());
+                        if !discover_guard.is_current(token) {
+                            return;
+                        }
                         app_insights_name.set(ai_name.clone());
 
                         // 4. Persist what we just discovered. Metrics are kept
@@ -161,6 +177,7 @@ pub fn FunctionsPanel(props: FunctionsPanelProps) -> Element {
                 return;
             }
             let ai_name = ai.unwrap();
+            let token = metrics_guard.begin();
             metrics_loading.set(true);
             spawn(async move {
                 let mut all_metrics = Vec::new();
@@ -176,6 +193,9 @@ pub fn FunctionsPanel(props: FunctionsPanelProps) -> Element {
                     {
                         all_metrics.push((app_name2, m));
                     }
+                }
+                if !metrics_guard.is_current(token) {
+                    return;
                 }
                 metrics.set(all_metrics.clone());
                 metrics_loading.set(false);

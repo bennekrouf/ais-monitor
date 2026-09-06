@@ -49,7 +49,7 @@ pub fn save(workspace_dir: &str, snapshot: &FunctionsSnapshot) {
         let _ = std::fs::create_dir_all(parent);
     }
     if let Ok(json) = serde_json::to_string_pretty(snapshot) {
-        let _ = std::fs::write(path, json);
+        crate::services::store::write_best_effort(&path, &json);
     }
 }
 

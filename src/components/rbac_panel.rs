@@ -65,10 +65,14 @@ pub fn RbacPanel(props: RbacPanelProps) -> Element {
     let mut assign_running: Signal<bool> = use_signal(|| false);
     let mut assign_error: Signal<Option<String>> = use_signal(|| None);
 
+    // Mount and the Refresh button both call `load`, so two can be in flight.
+    let mut guard = crate::hooks::fetch_guard::use_fetch_guard();
+
     let mut load = {
         let az = az.clone();
         move || {
             let az = az.clone();
+            let token = guard.begin();
             loading.set(true);
             error_msg.set(None);
             spawn(async move {
@@ -83,16 +87,23 @@ pub fn RbacPanel(props: RbacPanelProps) -> Element {
                 {
                     Ok(Ok(apps)) => apps,
                     Ok(Err(e)) => {
-                        error_msg.set(Some(e));
-                        loading.set(false);
+                        if guard.is_current(token) {
+                            error_msg.set(Some(e));
+                            loading.set(false);
+                        }
                         return;
                     }
                     Err(e) => {
-                        error_msg.set(Some(format!("{e}")));
-                        loading.set(false);
+                        if guard.is_current(token) {
+                            error_msg.set(Some(format!("{e}")));
+                            loading.set(false);
+                        }
                         return;
                     }
                 };
+                if !guard.is_current(token) {
+                    return;
+                }
                 func_apps.set(apps.clone());
 
                 let mut all_roles = Vec::new();
@@ -105,6 +116,9 @@ pub fn RbacPanel(props: RbacPanelProps) -> Element {
                             .unwrap_or(Ok(Vec::new()))
                             .unwrap_or_default();
                     all_roles.push((app.name.clone(), assignments));
+                }
+                if !guard.is_current(token) {
+                    return;
                 }
                 roles.set(all_roles);
                 loading.set(false);

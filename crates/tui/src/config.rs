@@ -122,7 +122,7 @@ impl Config {
             let _ = std::fs::create_dir_all(parent);
         }
         if let Ok(s) = serde_json::to_string_pretty(self) {
-            let _ = std::fs::write(p, s);
+            ais_monitor_core::store::write_best_effort(&p, &s);
         }
     }
 }

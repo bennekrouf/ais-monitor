@@ -37,31 +37,31 @@ pub fn Welcome(props: WelcomeProps) -> Element {
     // True for the whole sign-in wait, so no sign-in button can look inert
     // while a browser flow is in progress.
     let signing_in = use_signal(|| false);
-    let mut sub_id = use_signal(|| String::new());
+    let mut sub_id = use_signal(String::new);
 
     // Form fields (shared between browse and manual modes)
-    let mut label_input = use_signal(|| String::new());
-    let mut tenant_input = use_signal(|| String::new());
-    let mut rg_input = use_signal(|| String::new());
-    let mut app_input = use_signal(|| String::new());
-    let mut sb_input = use_signal(|| String::new());
-    let mut local_dir_input = use_signal(|| String::new());
-    let mut app_config_store_input = use_signal(|| String::new());
-    let mut devops_org_input = use_signal(|| String::new());
-    let mut devops_project_input = use_signal(|| String::new());
+    let mut label_input = use_signal(String::new);
+    let mut tenant_input = use_signal(String::new);
+    let mut rg_input = use_signal(String::new);
+    let mut app_input = use_signal(String::new);
+    let mut sb_input = use_signal(String::new);
+    let mut local_dir_input = use_signal(String::new);
+    let mut app_config_store_input = use_signal(String::new);
+    let mut devops_org_input = use_signal(String::new);
+    let mut devops_project_input = use_signal(String::new);
     let mut error_msg = use_signal(|| Option::<String>::None);
     let mut show_form = use_signal(|| false);
     let mut editing_profile = use_signal(|| Option::<usize>::None);
 
     // Browse mode state
-    let mut subscriptions = use_signal(|| Vec::<AzSubscription>::new());
-    let mut selected_sub = use_signal(|| String::new());
+    let mut subscriptions = use_signal(Vec::<AzSubscription>::new);
+    let mut selected_sub = use_signal(String::new);
     // Logic App sites loaded directly (no resource-group step)
-    let mut logic_app_sites = use_signal(|| Vec::<LogicAppSite>::new());
+    let mut logic_app_sites = use_signal(Vec::<LogicAppSite>::new);
     let mut sites_error = use_signal(|| Option::<String>::None);
-    let mut sb_namespaces = use_signal(|| Vec::<String>::new());
+    let mut sb_namespaces = use_signal(Vec::<String>::new);
     // "" | "subs" | "apps"
-    let mut browse_loading = use_signal(|| String::new());
+    let mut browse_loading = use_signal(String::new);
     // Error feedback when `az login` fails to spawn (Windows: az.cmd not on PATH, etc.)
     let mut login_error: Signal<Option<String>> = use_signal(|| None);
     // Profile index currently being validated before open — drives the
@@ -78,7 +78,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
     // name) is hand-typed and so is exactly as typo-prone as a stale profile.
     let mut validating_form: Signal<bool> = use_signal(|| false);
 
-    let mut profiles = use_signal(|| load_profiles());
+    let mut profiles = use_signal(load_profiles);
 
     use_effect(move || {
         spawn(async move {
@@ -274,7 +274,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                             };
                                             let tenant_tag = if profile.tenant.is_empty() { String::new() }
                                                 else { profile.tenant.clone() };
-                                            let on_connect = props.on_connect.clone();
+                                            let on_connect = props.on_connect;
                                             rsx! {
                                                 div { class: "profile-item",
                                                   div { class: "profile-row",
@@ -294,7 +294,6 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                             disabled: !is_logged_in || validating_profile.read().is_some(),
                                                             onclick: {
                                                                 let p = p.clone();
-                                                                let on_connect = on_connect.clone();
                                                                 move |_| {
                                                                     let mut config = p.clone();
                                                                     // Use the profile's own subscription — falling back to
@@ -308,8 +307,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                                     }
                                                                     open_errors.write().remove(&idx);
                                                                     validating_profile.set(Some(idx));
-                                                                    let on_connect = on_connect.clone();
-                                                                    spawn(async move {
+                                                                        spawn(async move {
                                                                         // Check the tenant rather than switching blindly.
                                                                         // The old code fired `az login --tenant` and then
                                                                         // validated immediately, so a profile in another
@@ -388,10 +386,10 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                             class: "btn btn-small",
                                                             title: "Delete",
                                                             onclick: move |_| {
-                                                                let mut saved = profiles.read().clone();
-                                                                saved.remove(idx);
-                                                                save_profiles(&saved);
-                                                                profiles.set(saved);
+                                                                let Some(target) = profiles.read().get(idx).cloned() else {
+                                                                    return;
+                                                                };
+                                                                profiles.set(delete_profile(&target));
                                                             },
                                                             "×"
                                                         }
@@ -405,8 +403,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                                 style: "margin-left:10px",
                                                                 onclick: {
                                                                     let p = p.clone();
-                                                                    let on_connect = on_connect.clone();
-                                                                    move |_| {
+                                                                        move |_| {
                                                                         let mut config = p.clone();
                                                                         if config.subscription.is_empty() {
                                                                             config.subscription = sub_id.read().clone();
@@ -735,7 +732,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                     class: "btn-primary",
                                     disabled: !can_connect,
                                     onclick: {
-                                        let on_connect = props.on_connect.clone();
+                                        let on_connect = props.on_connect;
                                         move |_| {
                                             let config = AzConfig {
                                                 subscription: selected_sub.read().clone(),
@@ -753,10 +750,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                 devops_org: devops_org_input.read().trim().to_string(),
                                                 devops_project: devops_project_input.read().trim().to_string(),
                                             };
-                                            let mut saved = profiles.read().clone();
-                                            saved.insert(0, config.clone());
-                                            save_profiles(&saved);
-                                            profiles.set(saved);
+                                            profiles.set(upsert_profile(&config));
                                             show_form.set(false);
                                             error_msg.set(None);
                                             on_connect.call(config);
@@ -895,7 +889,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                 class: "btn btn-small",
                                                 style: "margin-left:10px",
                                                 onclick: {
-                                                    let on_connect = props.on_connect.clone();
+                                                    let on_connect = props.on_connect;
                                                     move |_| {
                                                         let local_dir_val = local_dir_input.read().trim().to_string();
                                                         let config = AzConfig {
@@ -910,14 +904,16 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                             devops_org: devops_org_input.read().trim().to_string(),
                                                             devops_project: devops_project_input.read().trim().to_string(),
                                                         };
-                                                        let mut saved = profiles.read().clone();
-                                                        if let Some(idx) = *editing_profile.read() {
-                                                            saved[idx] = config.clone();
-                                                        } else {
-                                                            saved.insert(0, config.clone());
-                                                        }
-                                                        save_profiles(&saved);
-                                                        profiles.set(saved);
+                                                        // Address the profile being edited by identity, not by
+                                                        // its index in this window's stale copy of the list.
+                                                        let previous = editing_profile
+                                                            .read()
+                                                            .and_then(|idx| profiles.read().get(idx).cloned());
+                                                        let updated = match previous {
+                                                            Some(prev) => replace_profile(&prev, &config),
+                                                            None => upsert_profile(&config),
+                                                        };
+                                                        profiles.set(updated);
                                                         show_form.set(false);
                                                         editing_profile.set(None);
                                                         error_msg.set(None);
@@ -937,7 +933,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                     class: "btn-primary",
                                     disabled: !can_connect || *validating_form.read(),
                                     onclick: {
-                                        let on_connect = props.on_connect.clone();
+                                        let on_connect = props.on_connect;
                                         move |_| {
                                             // Left blank, this stays empty rather than falling back to the
                                             // home directory — remote_chain then keys manual links by
@@ -962,14 +958,16 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                             if !is_logged_in {
                                                 // Not logged in: nothing to validate against yet — save for
                                                 // later, matching the pre-existing "Save" (no connect) flow.
-                                                let mut saved = profiles.read().clone();
-                                                if let Some(idx) = *editing_profile.read() {
-                                                    saved[idx] = config.clone();
-                                                } else {
-                                                    saved.insert(0, config.clone());
-                                                }
-                                                save_profiles(&saved);
-                                                profiles.set(saved);
+                                                // Address the profile being edited by identity, not by
+                                                // its index in this window's stale copy of the list.
+                                                let previous = editing_profile
+                                                    .read()
+                                                    .and_then(|idx| profiles.read().get(idx).cloned());
+                                                let updated = match previous {
+                                                    Some(prev) => replace_profile(&prev, &config),
+                                                    None => upsert_profile(&config),
+                                                };
+                                                profiles.set(updated);
                                                 show_form.set(false);
                                                 editing_profile.set(None);
                                                 error_msg.set(None);
@@ -978,7 +976,7 @@ pub fn Welcome(props: WelcomeProps) -> Element {
 
                                             error_msg.set(None);
                                             validating_form.set(true);
-                                            let on_connect = on_connect.clone();
+                                            let on_connect = on_connect;
                                             spawn(async move {
                                                 let sub = config.subscription.clone();
                                                 let rg = config.resource_group.clone();
@@ -995,14 +993,16 @@ pub fn Welcome(props: WelcomeProps) -> Element {
                                                 validating_form.set(false);
                                                 match result {
                                                     Ok(_) => {
-                                                        let mut saved = profiles.read().clone();
-                                                        if let Some(idx) = *editing_profile.read() {
-                                                            saved[idx] = config.clone();
-                                                        } else {
-                                                            saved.insert(0, config.clone());
-                                                        }
-                                                        save_profiles(&saved);
-                                                        profiles.set(saved);
+                                                        // Address the profile being edited by identity, not by
+                                                        // its index in this window's stale copy of the list.
+                                                        let previous = editing_profile
+                                                            .read()
+                                                            .and_then(|idx| profiles.read().get(idx).cloned());
+                                                        let updated = match previous {
+                                                            Some(prev) => replace_profile(&prev, &config),
+                                                            None => upsert_profile(&config),
+                                                        };
+                                                        profiles.set(updated);
                                                         show_form.set(false);
                                                         editing_profile.set(None);
                                                         error_msg.set(None);
@@ -1041,17 +1041,81 @@ fn config_file() -> std::path::PathBuf {
 }
 
 fn load_profiles() -> Vec<AzConfig> {
+    crate::services::store::with_lock(load_profiles_unlocked)
+}
+
+/// The read half of a read-modify-write; the caller already holds the lock.
+fn load_profiles_unlocked() -> Vec<AzConfig> {
     let path = config_file();
     let content = std::fs::read_to_string(path).unwrap_or_default();
     serde_json::from_str(&content).unwrap_or_default()
 }
 
-fn save_profiles(profiles: &[AzConfig]) {
-    let path = config_file();
-    if let Some(parent) = path.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    if let Ok(json) = serde_json::to_string_pretty(profiles) {
-        let _ = std::fs::write(path, json);
-    }
+/// Identity of a profile, independent of its position in the list.
+///
+/// Every mutation below used to address a profile by its index into *this*
+/// window's copy of the list. With several windows open — which the app
+/// encourages — that index means nothing once another window has inserted or
+/// removed something, so an edit could land on the wrong profile and a delete
+/// could remove one the user was still looking at.
+fn profile_key(p: &AzConfig) -> (String, String, String, String) {
+    (
+        p.subscription.clone(),
+        p.resource_group.clone(),
+        p.app_name.clone(),
+        p.label.clone(),
+    )
+}
+
+/// Apply `f` to the profile list as it exists *on disk right now*, then write
+/// the result back — all while holding the store lock.
+///
+/// Load-edit-save from a signal is a read-modify-write, and each window holds
+/// its own copy of the list. Without this, two windows both save their own
+/// stale snapshot and whichever writes last silently discards the other's
+/// change. Returns the new list so the caller can update its signal.
+fn mutate_profiles(f: impl FnOnce(&mut Vec<AzConfig>)) -> Vec<AzConfig> {
+    crate::services::store::with_lock(|| {
+        let mut profiles = load_profiles_unlocked();
+        f(&mut profiles);
+        if let Ok(json) = serde_json::to_string_pretty(&profiles) {
+            let _ = crate::services::store::write_locked(&config_file(), &json);
+        }
+        profiles
+    })
+}
+
+/// Insert `config`, or replace the existing profile with the same identity.
+fn upsert_profile(config: &AzConfig) -> Vec<AzConfig> {
+    let key = profile_key(config);
+    mutate_profiles(
+        |profiles| match profiles.iter().position(|p| profile_key(p) == key) {
+            Some(idx) => profiles[idx] = config.clone(),
+            None => profiles.insert(0, config.clone()),
+        },
+    )
+}
+
+/// Replace the profile previously saved as `previous` with `config` — the
+/// edit case, where the identity itself may have changed.
+fn replace_profile(previous: &AzConfig, config: &AzConfig) -> Vec<AzConfig> {
+    let old_key = profile_key(previous);
+    let new_key = profile_key(config);
+    mutate_profiles(|profiles| {
+        match profiles.iter().position(|p| profile_key(p) == old_key) {
+            Some(idx) => profiles[idx] = config.clone(),
+            // Already gone — another window deleted it while this form was
+            // open. Re-adding it is the lesser surprise: the user just
+            // pressed Save.
+            None => match profiles.iter().position(|p| profile_key(p) == new_key) {
+                Some(idx) => profiles[idx] = config.clone(),
+                None => profiles.insert(0, config.clone()),
+            },
+        }
+    })
+}
+
+fn delete_profile(target: &AzConfig) -> Vec<AzConfig> {
+    let key = profile_key(target);
+    mutate_profiles(|profiles| profiles.retain(|p| profile_key(p) != key))
 }

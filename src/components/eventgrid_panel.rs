@@ -12,29 +12,64 @@ pub fn EventGridPanel(props: EventGridPanelProps) -> Element {
     let az = props.az_config.clone();
 
     // Primary env state
-    let mut topics = use_signal(|| Vec::<TopicWithSubs>::new());
-    let mut sys_topics = use_signal(|| Vec::<SysTopicWithSubs>::new());
+    let mut topics = use_signal(Vec::<TopicWithSubs>::new);
+    let mut sys_topics = use_signal(Vec::<SysTopicWithSubs>::new);
     let mut loading = use_signal(|| false);
     let mut error_msg: Signal<Option<String>> = use_signal(|| None);
     let expanded_topic = use_signal(|| None);
 
     // Compare env state
-    let mut cmp_topics = use_signal(|| Vec::<TopicWithSubs>::new());
-    let mut cmp_sys_topics = use_signal(|| Vec::<SysTopicWithSubs>::new());
+    let mut cmp_topics = use_signal(Vec::<TopicWithSubs>::new);
+    let mut cmp_sys_topics = use_signal(Vec::<SysTopicWithSubs>::new);
     let mut cmp_loading = use_signal(|| false);
     let mut cmp_error: Signal<Option<String>> = use_signal(|| None);
     let cmp_expanded = use_signal(|| None);
     let mut cmp_picker_open = use_signal(|| false);
     let mut cmp_profile: Signal<Option<AzConfig>> = use_signal(|| None);
 
-    // Load saved profiles (exclude current env)
-    let all_profiles = load_profiles();
-    let other_profiles: Vec<AzConfig> = all_profiles
-        .into_iter()
-        .filter(|p| p.resource_group != az.resource_group || p.subscription != az.subscription)
-        .collect();
+    // Bumped on every fetch so a slower in-flight one cannot land after it.
+    // Without this, clicking Refresh twice races two `fetch_eg` calls and the
+    // panel shows whichever happens to finish last.
+    let mut fetch_generation: Signal<u64> = use_signal(|| 0);
+
+    // Read once per mount, not once per render. This is a file read plus a
+    // JSON parse; in the render body it ran on every keystroke and every
+    // signal write in the panel.
+    let other_profiles = use_signal({
+        let az = az.clone();
+        move || {
+            load_profiles()
+                .into_iter()
+                .filter(|p| {
+                    p.resource_group != az.resource_group || p.subscription != az.subscription
+                })
+                .collect::<Vec<AzConfig>>()
+        }
+    });
 
     // Load from cache immediately, then fetch fresh in background
+    let mut start_fetch = move |rg: String| {
+        let generation = *fetch_generation.read() + 1;
+        fetch_generation.set(generation);
+        loading.set(true);
+        error_msg.set(None);
+        spawn(async move {
+            let mut fresh_topics = Vec::new();
+            let mut fresh_sys = Vec::new();
+            let mut fresh_err = None;
+            fetch_eg_into(&rg, &mut fresh_topics, &mut fresh_sys, &mut fresh_err).await;
+            // A superseded fetch reports nothing at all — not its data, not
+            // its error, not even that loading finished.
+            if *fetch_generation.read() != generation {
+                return;
+            }
+            topics.set(fresh_topics);
+            sys_topics.set(fresh_sys);
+            error_msg.set(fresh_err);
+            loading.set(false);
+        });
+    };
+
     use_effect({
         let az = az.clone();
         move || {
@@ -43,19 +78,13 @@ pub fn EventGridPanel(props: EventGridPanelProps) -> Element {
             if let Some(cached) = load_eg_cache(&rg) {
                 topics.set(cached.topics);
                 sys_topics.set(cached.sys_topics);
-            } else {
-                loading.set(true);
             }
-            error_msg.set(None);
-            spawn(async move {
-                loading.set(true);
-                fetch_eg(&rg, &mut topics, &mut sys_topics, &mut error_msg).await;
-                loading.set(false);
-            });
+            start_fetch(rg);
         }
     });
 
     // Fetch compare env when profile is picked
+    #[allow(unused_mut)]
     let mut trigger_cmp = move |profile: AzConfig| {
         cmp_profile.set(Some(profile.clone()));
         cmp_loading.set(true);
@@ -88,18 +117,12 @@ pub fn EventGridPanel(props: EventGridPanelProps) -> Element {
                                 clear_eg_cache(&rg);
                                 topics.set(vec![]);
                                 sys_topics.set(vec![]);
-                                loading.set(true);
-                                error_msg.set(None);
-                                let rg = rg.clone();
-                                spawn(async move {
-                                    fetch_eg(&rg, &mut topics, &mut sys_topics, &mut error_msg).await;
-                                    loading.set(false);
-                                });
+                                start_fetch(rg.clone());
                             }
                         },
                         if *loading.read() { "Refreshing…" } else { "Refresh" }
                     }
-                    if !other_profiles.is_empty() {
+                    if !other_profiles.read().is_empty() {
                         button {
                             class: "btn btn-small",
                             onclick: move |_| cmp_picker_open.set(!cmp_picker_open()),
@@ -112,7 +135,7 @@ pub fn EventGridPanel(props: EventGridPanelProps) -> Element {
             // ── Env picker dropdown ─────────────────────────────────
             if *cmp_picker_open.read() {
                 div { class: "ns-dropdown",
-                    for profile in other_profiles.iter() {
+                    for profile in other_profiles.read().iter() {
                         {
                             let p = profile.clone();
                             let label = if p.label.is_empty() {
@@ -175,11 +198,17 @@ pub fn EventGridPanel(props: EventGridPanelProps) -> Element {
 
 // ── Fetch helper ─────────────────────────────────────────────────────────────
 
-async fn fetch_eg(
+/// Fetch into plain values rather than straight into signals.
+///
+/// Writing signals from inside the fetch is what made a superseded fetch
+/// impossible to discard: by the time the caller could check whether its
+/// result was still wanted, half of it was already on screen. Collecting
+/// first lets the caller decide whether to publish the result at all.
+async fn fetch_eg_into(
     rg: &str,
-    topics: &mut Signal<Vec<TopicWithSubs>>,
-    sys_topics: &mut Signal<Vec<SysTopicWithSubs>>,
-    error: &mut Signal<Option<String>>,
+    topics: &mut Vec<TopicWithSubs>,
+    sys_topics: &mut Vec<SysTopicWithSubs>,
+    error: &mut Option<String>,
 ) {
     // Custom topics
     let rg2 = rg.to_string();
@@ -202,10 +231,10 @@ async fn fetch_eg(
                     subscriptions: subs,
                 });
             }
-            topics.set(all);
+            *topics = all;
         }
-        Ok(Err(e)) => error.set(Some(e)),
-        Err(e) => error.set(Some(format!("{e}"))),
+        Ok(Err(e)) => *error = Some(e),
+        Err(e) => *error = Some(format!("{e}")),
     }
 
     // System topics
@@ -230,10 +259,27 @@ async fn fetch_eg(
                 subscriptions: subs,
             });
         }
-        sys_topics.set(all);
+        *sys_topics = all;
     }
 
-    save_eg_cache(rg, &topics.read(), &sys_topics.read());
+    save_eg_cache(rg, topics, sys_topics);
+}
+
+/// Signal-writing wrapper, for the compare-environment pane — it has its own
+/// signals and only ever runs one fetch at a time.
+async fn fetch_eg(
+    rg: &str,
+    topics: &mut Signal<Vec<TopicWithSubs>>,
+    sys_topics: &mut Signal<Vec<SysTopicWithSubs>>,
+    error: &mut Signal<Option<String>>,
+) {
+    let mut fresh_topics = Vec::new();
+    let mut fresh_sys = Vec::new();
+    let mut fresh_err = None;
+    fetch_eg_into(rg, &mut fresh_topics, &mut fresh_sys, &mut fresh_err).await;
+    topics.set(fresh_topics);
+    sys_topics.set(fresh_sys);
+    error.set(fresh_err);
 }
 
 // ── Render helpers ───────────────────────────────────────────────────────────
@@ -371,6 +417,11 @@ fn render_subs(subs: &[EventGridSubscription]) -> Element {
                     let dest_type = sub.destination_type.clone();
                     let dest_queue = sub.destination_queue.clone();
                     let filters = sub.filters.clone();
+                    // Only meaningful alongside filters: it changes whether a
+                    // filter tests an array's elements or the array itself,
+                    // which is the difference between a filter that matches
+                    // and one that silently never does.
+                    let array_filtering = sub.advanced_filtering_on_arrays && !filters.is_empty();
                     let dest_icon = if dest_type.contains("ServiceBus") { "📨" }
                         else if dest_type.contains("WebHook") { "🌐" }
                         else if dest_type.contains("StorageQueue") { "📦" }
@@ -394,6 +445,13 @@ fn render_subs(subs: &[EventGridSubscription]) -> Element {
                             }
                             if !filters.is_empty() {
                                 div { class: "eg-filters",
+                                    if array_filtering {
+                                        div {
+                                            class: "eg-filter-note",
+                                            title: "enableAdvancedFilteringOnArrays is on — a filter matches if any element of an array value matches, rather than testing the array as a whole",
+                                            "matches any array element"
+                                        }
+                                    }
                                     for f in filters.iter() {
                                         {
                                             let key = f.key.clone();
@@ -464,7 +522,7 @@ fn save_eg_cache(rg: &str, topics: &[TopicWithSubs], sys_topics: &[SysTopicWithS
         sys_topics: sys_topics.to_vec(),
     };
     if let Ok(json) = serde_json::to_string(&cache) {
-        let _ = std::fs::write(path, json);
+        crate::services::store::write_best_effort(&path, &json);
     }
 }
 

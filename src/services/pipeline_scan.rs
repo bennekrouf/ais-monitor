@@ -25,7 +25,12 @@ pub fn scan_variable_references(root: &Path) -> HashSet<String> {
     if root.as_os_str().is_empty() || !root.is_dir() {
         return found;
     }
-    let re = regex::Regex::new(r"\$\(([A-Za-z0-9_.\-]+)\)").unwrap();
+    // Compiled once. `Regex::new` is expensive relative to the scan itself,
+    // and this runs per file.
+    static RE: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(r"\$\(([A-Za-z0-9_.\-]+)\)").expect("static regex is valid")
+    });
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&dir) else {

@@ -133,13 +133,13 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
     // for future use (e.g. flagging steps referenced but not deployed).
     let _deployed_unused = &props.deployed_workflows;
 
-    let mut run_statuses = use_signal(|| HashMap::<String, RunStatus>::new());
-    let mut all_runs = use_signal(|| HashMap::<String, Vec<azure::RunInfo>>::new());
-    let mut queue_statuses = use_signal(|| HashMap::<String, QueueStatus>::new());
+    let mut run_statuses = use_signal(HashMap::<String, RunStatus>::new);
+    let mut all_runs = use_signal(HashMap::<String, Vec<azure::RunInfo>>::new);
+    let mut queue_statuses = use_signal(HashMap::<String, QueueStatus>::new);
     // Per-queue error message from the last check_queue() attempt. Lets the UI
     // tell the user *why* the active / dead-letter counts are missing (IP
     // restriction, RBAC, namespace gone, etc.) instead of silently showing "—".
-    let mut queue_errors = use_signal(|| HashMap::<String, String>::new());
+    let mut queue_errors = use_signal(HashMap::<String, String>::new);
     let mut loading = use_signal(|| false);
     // Prefer the parent-provided run_depth signal so "Check all" sees the same
     // value. Fall back to a local signal if no parent passed one (e.g. tests).
@@ -150,7 +150,7 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
     let mut auto_poll = use_signal(|| false);
     let mut poll_interval = use_signal(|| 30u64);
     let mut editing_name = use_signal(|| false);
-    let mut name_input = use_signal(|| String::new());
+    let mut name_input = use_signal(String::new);
 
     // Send message to queue
     let mut send_queue: Signal<Option<String>> = use_signal(|| None);
@@ -178,7 +178,15 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
     };
     let mut sending: Signal<bool> = use_signal(|| false);
     // Cache the connection string so we only fetch it once per session
-    let mut sb_conn_str: Signal<Option<String>> = use_signal(|| None);
+    // Keyed by queue, not one string for the whole namespace.
+    //
+    // `sb_get_connection_string_for` hands back a queue-scoped SAS rule when
+    // the platform defines one, so caching a single string and reusing it for
+    // every queue would either reuse credentials scoped to the wrong queue or
+    // force every caller back onto the namespace-wide root key. The key is
+    // the queue name; the value is whatever scope was actually available.
+    let mut sb_conn_str: Signal<std::collections::HashMap<String, String>> =
+        use_signal(std::collections::HashMap::new);
     // Destructive queue actions (purge / requeue) — confirmed via modal.
     let mut pending_sb_action: Signal<Option<PendingSbAction>> = use_signal(|| None);
     let mut sb_action_running: Signal<bool> = use_signal(|| false);
@@ -187,9 +195,9 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
     // Phase D: expanded step + actions
     let mut expanded_step = use_signal(|| Option::<String>::None);
     // Actions cache keyed by (workflow, run_id) so we can browse any past run.
-    let mut step_actions = use_signal(|| HashMap::<(String, String), Vec<ActionDetail>>::new());
+    let mut step_actions = use_signal(HashMap::<(String, String), Vec<ActionDetail>>::new);
     // Which run the user is currently viewing for each expanded workflow.
-    let mut selected_run = use_signal(|| HashMap::<String, String>::new());
+    let mut selected_run = use_signal(HashMap::<String, String>::new);
     // Run-list filter inside the expanded step. Defaults to every sampled run
     // (parity with the TUI's Runs pane); the Failed chip narrows it to the
     // failures, which is what the old pill bar showed exclusively.
@@ -281,7 +289,7 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
         let az = az.clone();
         move |pending: PendingSbAction| {
             let az = az.clone();
-            let cached_conn = sb_conn_str.read().clone();
+            let cached_conn = sb_conn_str.read().get(&pending.queue).cloned();
             sb_action_running.set(true);
             sb_action_result.set(None);
             spawn(async move {
@@ -317,13 +325,18 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                 } else {
                     let rg2 = rg.clone();
                     let ns2 = ns.clone();
-                    tokio::task::spawn_blocking(move || azure::sb_get_connection_string(&rg2, &ns2))
-                        .await
-                        .unwrap_or_else(|e| Err(format!("{e}")))
+                    let q2 = pending.queue.clone();
+                    tokio::task::spawn_blocking(move || {
+                        azure::sb_get_connection_string_for(&rg2, &ns2, Some(&q2))
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("{e}")))
                 };
                 let cs = match conn {
                     Ok(cs) => {
-                        sb_conn_str.set(Some(cs.clone()));
+                        sb_conn_str
+                            .write()
+                            .insert(pending.queue.clone(), cs.clone());
                         cs
                     }
                     Err(e) => {
@@ -1206,7 +1219,7 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                         None => "○",
                         _ => "⚠",
                     };
-                    let has_run = run.as_ref().map_or(false, |r| !r.run_id.is_empty());
+                    let has_run = run.as_ref().is_some_and(|r| !r.run_id.is_empty());
                     let link_display = if step.link_type.is_empty() {
                         if i == 0 { "trigger".to_string() } else { String::new() }
                     } else {
@@ -1680,7 +1693,7 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                                                         return;
                                                     }
                                                     let q_name = q_peek.clone();
-                                                    let cached_conn = sb_conn_str.read().clone();
+                                                    let cached_conn = sb_conn_str.read().get(&q_name).cloned();
                                                     let az_ref = az_peek.clone();
                                                     peek_queue.set(Some(q_name.clone()));
                                                     peek_messages.set(Vec::new());
@@ -1706,12 +1719,13 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                                                             let conn = if let Some(c) = cached_conn { Ok(c) } else {
                                                                 let rg2 = rg.clone();
                                                                 let ns2 = ns.clone();
-                                                                tokio::task::spawn_blocking(move || azure::sb_get_connection_string(&rg2, &ns2))
+                                                                let q2 = q_name.clone();
+                                                                tokio::task::spawn_blocking(move || azure::sb_get_connection_string_for(&rg2, &ns2, Some(&q2)))
                                                                     .await.unwrap_or_else(|e| Err(format!("{e}")))
                                                             };
                                                             match conn {
                                                                 Ok(cs) => {
-                                                                    sb_conn_str.set(Some(cs.clone()));
+                                                                    sb_conn_str.write().insert(q_name.clone(), cs.clone());
                                                                     match azure::sb_peek_dead_letters(&cs, &q_name, 10).await {
                                                                         Ok(msgs) => {
                                                                             crate::services::activity::info(
@@ -1953,7 +1967,7 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                                                 let q = q.clone();
                                                 let body = send_body.read().clone();
                                                 let az_ref = az_ref.clone();
-                                                let cached_conn = sb_conn_str.read().clone();
+                                                let cached_conn = sb_conn_str.read().get(&q).cloned();
                                                 if let Some(ref a) = az_ref {
                                                     let rg = a.resource_group.clone();
                                                     let sub = a.subscription.clone();
@@ -1993,14 +2007,15 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                                                         } else {
                                                             let rg2 = rg.clone();
                                                             let ns2 = ns_name.clone();
+                                                            let q2 = q.clone();
                                                             tokio::task::spawn_blocking(move || {
-                                                                azure::sb_get_connection_string(&rg2, &ns2)
+                                                                azure::sb_get_connection_string_for(&rg2, &ns2, Some(&q2))
                                                             }).await.unwrap_or_else(|e| Err(format!("{e}")))
                                                         };
 
                                                         match conn {
                                                             Ok(cs) => {
-                                                                sb_conn_str.set(Some(cs.clone()));
+                                                                sb_conn_str.write().insert(q.clone(), cs.clone());
                                                                 match azure::sb_send_message(&cs, &q, &body).await {
                                                                     Ok(()) => {
                                                                         send_status.set(Some("✅ Message sent".into()));

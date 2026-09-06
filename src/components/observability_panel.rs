@@ -74,6 +74,11 @@ pub fn ObservabilityPanel(props: ObservabilityPanelProps) -> Element {
                 ]);
                 cmd.stdout(std::process::Stdio::piped());
                 cmd.stderr(std::process::Stdio::null());
+                // Navigating away drops this task without ever reaching the
+                // `child.kill()` below, and a `tokio::process::Child` does not
+                // kill itself on drop — so without this, leaving the panel
+                // leaves an `az webapp log tail` running until the app exits.
+                cmd.kill_on_drop(true);
                 let mut child = match cmd.spawn() {
                     Ok(c) => c,
                     Err(e) => {
@@ -89,22 +94,32 @@ pub fn ObservabilityPanel(props: ObservabilityPanelProps) -> Element {
                 };
                 let mut reader = tokio::io::BufReader::new(stdout).lines();
                 loop {
-                    if *tail_generation.read() != my_generation {
-                        break;
-                    }
-                    match reader.next_line().await {
-                        Ok(Some(line)) => {
+                    // The stop check has to race the read, not follow it.
+                    // Checking only between lines meant a quiet app — no log
+                    // output, which is the normal case — parked this task
+                    // inside `next_line()` forever: Stop flipped the UI to
+                    // "stopped" while `az webapp log tail` kept running, and
+                    // only a log line arriving would let it notice.
+                    tokio::select! {
+                        line = reader.next_line() => match line {
+                            Ok(Some(line)) => {
+                                if *tail_generation.read() != my_generation {
+                                    break;
+                                }
+                                let mut lines = log_lines.write();
+                                lines.push_back(line);
+                                if lines.len() > MAX_LOG_LINES {
+                                    lines.pop_front();
+                                }
+                            }
+                            Ok(None) => break,
+                            Err(_) => break,
+                        },
+                        _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => {
                             if *tail_generation.read() != my_generation {
                                 break;
                             }
-                            let mut lines = log_lines.write();
-                            lines.push_back(line);
-                            if lines.len() > MAX_LOG_LINES {
-                                lines.pop_front();
-                            }
                         }
-                        Ok(None) => break,
-                        Err(_) => break,
                     }
                 }
                 let _ = child.kill().await;

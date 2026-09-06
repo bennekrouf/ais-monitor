@@ -148,7 +148,7 @@ fn persist(dir: &str, event: &ActivityEvent) {
                 let lines: Vec<&str> = content.lines().collect();
                 let keep_from = lines.len() / 2;
                 let trimmed = lines[keep_from..].join("\n");
-                let _ = std::fs::write(&path, trimmed + "\n");
+                crate::services::store::write_best_effort(&path, &(trimmed + "\n"));
             }
         }
     }

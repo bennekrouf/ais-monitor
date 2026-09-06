@@ -71,7 +71,7 @@ pub fn save(workspace_dir: &str, snapshot: &HistorySnapshot) {
         let _ = std::fs::create_dir_all(parent);
     }
     if let Ok(json) = serde_json::to_string_pretty(snapshot) {
-        let _ = std::fs::write(path, json);
+        crate::services::store::write_best_effort(&path, &json);
     }
     if let Ok(mut guard) = CACHE.lock() {
         *guard = Some((workspace_dir.to_string(), snapshot.clone()));

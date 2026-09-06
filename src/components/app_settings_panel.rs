@@ -19,10 +19,14 @@ pub fn AppSettingsPanel(props: AppSettingsPanelProps) -> Element {
     let mut error_msg: Signal<Option<String>> = use_signal(|| None);
     let mut resetting: Signal<Option<(String, String)>> = use_signal(|| None);
 
+    // Mount and Refresh both call `load`, so two can be in flight at once.
+    let mut guard = crate::hooks::fetch_guard::use_fetch_guard();
+
     let mut load = {
         let az = az.clone();
         move || {
             let az = az.clone();
+            let token = guard.begin();
             loading.set(true);
             error_msg.set(None);
             spawn(async move {
@@ -39,16 +43,23 @@ pub fn AppSettingsPanel(props: AppSettingsPanelProps) -> Element {
                 let apps = match apps_result {
                     Ok(Ok(apps)) => apps,
                     Ok(Err(e)) => {
-                        error_msg.set(Some(e));
-                        loading.set(false);
+                        if guard.is_current(token) {
+                            error_msg.set(Some(e));
+                            loading.set(false);
+                        }
                         return;
                     }
                     Err(e) => {
-                        error_msg.set(Some(format!("{e}")));
-                        loading.set(false);
+                        if guard.is_current(token) {
+                            error_msg.set(Some(format!("{e}")));
+                            loading.set(false);
+                        }
                         return;
                     }
                 };
+                if !guard.is_current(token) {
+                    return;
+                }
                 func_apps.set(apps.clone());
 
                 let expected: Option<HashMap<String, String>> = if store.is_empty() {
@@ -63,11 +74,16 @@ pub fn AppSettingsPanel(props: AppSettingsPanelProps) -> Element {
                     {
                         Ok(Ok(kv)) => Some(kv),
                         Ok(Err(e)) => {
-                            error_msg.set(Some(format!("App Configuration store '{store}': {e}")));
+                            if guard.is_current(token) {
+                                error_msg
+                                    .set(Some(format!("App Configuration store '{store}': {e}")));
+                            }
                             None
                         }
                         Err(e) => {
-                            error_msg.set(Some(format!("{e}")));
+                            if guard.is_current(token) {
+                                error_msg.set(Some(format!("{e}")));
+                            }
                             None
                         }
                     }
@@ -87,6 +103,9 @@ pub fn AppSettingsPanel(props: AppSettingsPanelProps) -> Element {
                     .await
                     .unwrap_or_default();
                     all_drift.push((name2, rows));
+                }
+                if !guard.is_current(token) {
+                    return;
                 }
                 drift.set(all_drift);
                 loading.set(false);

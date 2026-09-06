@@ -34,7 +34,7 @@ pub fn load(sub: &str, app: &str, workflow: &str) -> Option<Vec<RunInfo>> {
 pub fn save(sub: &str, app: &str, workflow: &str, runs: &[RunInfo]) {
     let path = base(sub, app).join(format!("{workflow}.json"));
     if let Ok(json) = serde_json::to_string(runs) {
-        let _ = std::fs::write(path, json);
+        ais_monitor_core::store::write_best_effort(&path, &json);
     }
 }
 

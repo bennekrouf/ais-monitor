@@ -28,10 +28,17 @@ pub fn ResourceHealthPanel(props: ResourceHealthPanelProps) -> Element {
     // each throttled refresh, capped, resets to zero on a clean fetch.
     let mut backoff_secs: Signal<u64> = use_signal(|| 0);
 
+    // A poll loop refreshes on a timer while the mount effect refreshes too,
+    // so overlapping fetches are the normal case here rather than the
+    // exception — and a slow one landing after a fast one would resurrect
+    // health rows the newer fetch had already superseded.
+    let mut guard = crate::hooks::fetch_guard::use_fetch_guard();
+
     let mut refresh = {
         let az = az.clone();
         move || {
             let az = az.clone();
+            let token = guard.begin();
             error_msg.set(None);
             spawn(async move {
                 let sub = az.subscription.clone();
@@ -42,6 +49,9 @@ pub fn ResourceHealthPanel(props: ResourceHealthPanelProps) -> Element {
                 let result =
                     tokio::task::spawn_blocking(move || azure::list_resource_health(&sub2, &rg2))
                         .await;
+                if !guard.is_current(token) {
+                    return;
+                }
                 match result {
                     Ok(Ok(new_rows)) => {
                         rows.set(new_rows.clone());

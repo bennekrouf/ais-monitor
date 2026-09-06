@@ -28,10 +28,16 @@ pub fn HealthCheckPanel(props: HealthCheckPanelProps) -> Element {
     let mut auth_results: Signal<Option<Vec<AuthCheckRow>>> = use_signal(|| None);
     let mut auth_error: Signal<Option<String>> = use_signal(|| None);
 
+    // Both checks run on mount and again on an explicit re-run click, so
+    // each needs the newest run to be the one that publishes.
+    let mut settings_guard = crate::hooks::fetch_guard::use_fetch_guard();
+    let mut auth_guard = crate::hooks::fetch_guard::use_fetch_guard();
+
     let mut run_settings_check = {
         let az = az.clone();
         move || {
             let az = az.clone();
+            let token = settings_guard.begin();
             settings_running.set(true);
             settings_error.set(None);
             spawn(async move {
@@ -48,13 +54,17 @@ pub fn HealthCheckPanel(props: HealthCheckPanelProps) -> Element {
                 {
                     Ok(Ok(apps)) => apps,
                     Ok(Err(e)) => {
-                        settings_error.set(Some(e));
-                        settings_running.set(false);
+                        if settings_guard.is_current(token) {
+                            settings_error.set(Some(e));
+                            settings_running.set(false);
+                        }
                         return;
                     }
                     Err(e) => {
-                        settings_error.set(Some(format!("{e}")));
-                        settings_running.set(false);
+                        if settings_guard.is_current(token) {
+                            settings_error.set(Some(format!("{e}")));
+                            settings_running.set(false);
+                        }
                         return;
                     }
                 };
@@ -85,6 +95,9 @@ pub fn HealthCheckPanel(props: HealthCheckPanelProps) -> Element {
                     .unwrap_or_default();
                     results.push((name2, rows));
                 }
+                if !settings_guard.is_current(token) {
+                    return;
+                }
                 settings_results.set(Some(results));
                 settings_running.set(false);
             });
@@ -95,6 +108,7 @@ pub fn HealthCheckPanel(props: HealthCheckPanelProps) -> Element {
         let az = az.clone();
         move || {
             let az = az.clone();
+            let token = auth_guard.begin();
             auth_running.set(true);
             auth_error.set(None);
             spawn(async move {
@@ -110,13 +124,17 @@ pub fn HealthCheckPanel(props: HealthCheckPanelProps) -> Element {
                 {
                     Ok(Ok(apps)) => apps,
                     Ok(Err(e)) => {
-                        auth_error.set(Some(e));
-                        auth_running.set(false);
+                        if auth_guard.is_current(token) {
+                            auth_error.set(Some(e));
+                            auth_running.set(false);
+                        }
                         return;
                     }
                     Err(e) => {
-                        auth_error.set(Some(format!("{e}")));
-                        auth_running.set(false);
+                        if auth_guard.is_current(token) {
+                            auth_error.set(Some(format!("{e}")));
+                            auth_running.set(false);
+                        }
                         return;
                     }
                 };
@@ -135,6 +153,9 @@ pub fn HealthCheckPanel(props: HealthCheckPanelProps) -> Element {
                         principal_id: pid,
                         roles,
                     });
+                }
+                if !auth_guard.is_current(token) {
+                    return;
                 }
                 auth_results.set(Some(results));
                 auth_running.set(false);
