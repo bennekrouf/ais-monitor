@@ -1,7 +1,7 @@
 use crate::services::azure;
 use crate::services::chain::{ChainDetail, StepDetail};
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// A workflow with no detected edge (queue producer/consumer, EventGrid, or
 /// manual link) to any other workflow — invisible in the Chains view since a
@@ -402,7 +402,7 @@ fn load_chains_result(sub: &str, app: &str) -> Option<Vec<ChainDetail>> {
 fn save_chains_result(sub: &str, app: &str, chains: &[ChainDetail]) {
     let path = chains_result_path(sub, app);
     if let Ok(json) = serde_json::to_string(chains) {
-        let _ = std::fs::write(path, json);
+        crate::services::store::write_best_effort(&path, &json);
     }
 }
 
@@ -419,7 +419,7 @@ fn load_unlinked_result(sub: &str, app: &str) -> Option<Vec<UnlinkedWorkflow>> {
 fn save_unlinked_result(sub: &str, app: &str, unlinked: &[UnlinkedWorkflow]) {
     let path = unlinked_result_path(sub, app);
     if let Ok(json) = serde_json::to_string(unlinked) {
-        let _ = std::fs::write(path, json);
+        crate::services::store::write_best_effort(&path, &json);
     }
 }
 
@@ -458,7 +458,7 @@ fn cache_path(sub: &str, app: &str) -> PathBuf {
     base
 }
 
-fn load_cached_definition(cache_dir: &PathBuf, workflow: &str) -> Option<serde_json::Value> {
+fn load_cached_definition(cache_dir: &Path, workflow: &str) -> Option<serde_json::Value> {
     let path = cache_dir.join(format!("{workflow}.json"));
     if !path.exists() {
         return None;
@@ -475,10 +475,10 @@ fn load_cached_definition(cache_dir: &PathBuf, workflow: &str) -> Option<serde_j
     serde_json::from_str(&content).ok()
 }
 
-fn save_cached_definition(cache_dir: &PathBuf, workflow: &str, def: &serde_json::Value) {
+fn save_cached_definition(cache_dir: &Path, workflow: &str, def: &serde_json::Value) {
     let path = cache_dir.join(format!("{workflow}.json"));
     if let Ok(json) = serde_json::to_string(def) {
-        let _ = std::fs::write(path, json);
+        crate::services::store::write_best_effort(&path, &json);
     }
 }
 

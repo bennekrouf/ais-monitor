@@ -1007,7 +1007,6 @@ impl App {
             if let Err(e) = azure::open_login(None) {
                 let _ = tx.send(Msg::LoginChecked(AzLoginState::NotLoggedIn));
                 eprintln!("az login spawn error: {e}");
-                return;
             }
         });
 
@@ -1355,7 +1354,7 @@ impl App {
                 Span::styled("login: …", Style::default().fg(Color::Yellow))
             }
             Slot::Loaded(AzLoginState::LoggedIn { account, .. }) => {
-                Span::styled(format!("{account}"), Style::default().fg(Color::Green))
+                Span::styled(account.to_string(), Style::default().fg(Color::Green))
             }
             Slot::Loaded(AzLoginState::Expired) => {
                 Span::styled("token expired", Style::default().fg(Color::Red))
@@ -1623,7 +1622,7 @@ impl App {
             .direction(Direction::Vertical)
             .constraints([
                 // 1 border top + 1 border bottom + 2 lines per step = 2 + 2n
-                Constraint::Length((2 + step_count * 2).max(5).min(14)),
+                Constraint::Length((2 + step_count * 2).clamp(5, 14)),
                 Constraint::Length(3), // KPI strip
                 Constraint::Min(0),    // Runs table
             ])

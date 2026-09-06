@@ -22,15 +22,15 @@ reqwest = { version = "0.12", features = ["json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 chrono = { version = "0.4", features = ["serde"] }
-ais-chain = { git = "https://github.com/Bennekrouf/ais-chain" }
+# The shared services live here now, so the crypto, HTTP and chain-parsing
+# dependencies they need belong to this crate rather than being listed —
+# and compiled — twice.
+ais-monitor-core = { path = "crates/core" }
 dirs = "5"
 rfd = "0.15"
 dark-light = "1"
 arboard = "3"
 regex = "1"
-hmac = "0.12"
-sha2 = "0.10"
-base64 = "0.22"
 urlencoding = "2"
 
 # Embed the app icon (assets/icon.ico) into the Windows .exe resource so the

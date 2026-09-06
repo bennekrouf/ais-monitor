@@ -102,43 +102,17 @@ pub struct ApimSubscription {
     pub display: String,
 }
 
-/// Run a blocking closure with a hard deadline. `az rest` invoked from a
-/// GUI-launched process (no attached terminal) can hang indefinitely if it
-/// hits a token refresh / device-code prompt with nowhere to render — which
-/// otherwise looks identical to "nothing happens" in the UI. The worker
-/// thread is left to finish on its own; we just stop waiting on it.
-fn run_with_timeout<T, F>(f: F, timeout: std::time::Duration) -> Result<T, String>
-where
-    T: Send + 'static,
-    F: FnOnce() -> Result<T, String> + Send + 'static,
-{
-    let (tx, rx) = std::sync::mpsc::channel();
-    std::thread::spawn(move || {
-        let _ = tx.send(f());
-    });
-    rx.recv_timeout(timeout).unwrap_or_else(|_| {
-        Err(format!(
-            "az CLI call did not return within {}s — it may be stuck on an interactive prompt \
-             (device-code login, MFA) with no terminal to show it. Try running the equivalent \
-             `az rest` command directly in a terminal to confirm it completes.",
-            timeout.as_secs()
-        ))
-    })
-}
+/// These two calls sit in front of a user waiting on a form, so they get a
+/// tighter deadline than the app-wide default.
+///
+/// This used to be a `run_with_timeout` helper that ran the work on its own
+/// thread and stopped *waiting* after 20s — which left the thread and the
+/// wedged `az` process running forever, one more of each per attempt. The
+/// deadline now lives in `AzCommand`, which kills and reaps the child, so
+/// every `az` call in the app is covered rather than these two.
+const APIM_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
 
 pub fn list_apim_subscriptions(
-    sub: &str,
-    rg: &str,
-    service: &str,
-) -> Result<Vec<ApimSubscription>, String> {
-    let (sub, rg, service) = (sub.to_string(), rg.to_string(), service.to_string());
-    run_with_timeout(
-        move || list_apim_subscriptions_inner(&sub, &rg, &service),
-        std::time::Duration::from_secs(20),
-    )
-}
-
-fn list_apim_subscriptions_inner(
     sub: &str,
     rg: &str,
     service: &str,
@@ -147,6 +121,7 @@ fn list_apim_subscriptions_inner(
         "https://management.azure.com/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.ApiManagement/service/{service}/subscriptions?api-version=2022-08-01"
     );
     let output = azure::az_command(&["rest", "--method", "GET", "--url", &url, "--output", "json"])
+        .timeout(APIM_TIMEOUT)
         .output()
         .map_err(|e| format!("az rest failed: {e}"))?;
 
@@ -190,30 +165,13 @@ pub fn get_apim_subscription_key(
     service: &str,
     subscription_id: &str,
 ) -> Result<String, String> {
-    let (sub, rg, service, subscription_id) = (
-        sub.to_string(),
-        rg.to_string(),
-        service.to_string(),
-        subscription_id.to_string(),
-    );
-    run_with_timeout(
-        move || get_apim_subscription_key_inner(&sub, &rg, &service, &subscription_id),
-        std::time::Duration::from_secs(20),
-    )
-}
-
-fn get_apim_subscription_key_inner(
-    sub: &str,
-    rg: &str,
-    service: &str,
-    subscription_id: &str,
-) -> Result<String, String> {
     let url = format!(
         "https://management.azure.com/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.ApiManagement/service/{service}/subscriptions/{subscription_id}/listSecrets?api-version=2022-08-01"
     );
     let output = azure::az_command(&[
         "rest", "--method", "POST", "--url", &url, "--output", "json",
     ])
+    .timeout(APIM_TIMEOUT)
     .output()
     .map_err(|e| format!("az rest failed: {e}"))?;
 

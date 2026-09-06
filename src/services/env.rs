@@ -10,8 +10,12 @@
 //! adopt it, falling back to the usual locations when that fails.
 //!
 //! A *non-interactive* login shell is used deliberately: it reads the profile
-//! where `brew shellenv` lives, without the risk that an interactive shell
-//! blocks on something and hangs startup before a window ever appears.
+//! where `brew shellenv` lives, without an interactive shell's prompts. That
+//! is not the same as "cannot block", though — `-l` still sources the whole
+//! profile, and `nvm`, `conda`, and corporate MDM hooks all routinely do slow
+//! or networked work there. Since this runs as the first statement of `main`,
+//! a profile that hangs means no window ever appears and the app looks dead.
+//! So the probe runs under a deadline and falls back to [`FALLBACKS`].
 
 /// Directories worth having even if the shell tells us nothing.
 const FALLBACKS: &[&str] = &[
@@ -68,23 +72,57 @@ pub fn merge_paths(current: &str, login: Option<&str>, extras: &[String]) -> Str
 }
 
 #[cfg(unix)]
+/// How long the profile gets to answer before we give up and use
+/// [`FALLBACKS`]. Long enough for a slow-but-working profile, short enough
+/// that a hung one is a brief pause rather than an app that never opens.
+const PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+#[cfg(unix)]
 fn login_shell_path() -> Option<String> {
+    use std::io::Read;
     use std::process::{Command, Stdio};
 
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
-    let output = Command::new(&shell)
+    let mut child = Command::new(&shell)
         // -l reads the profile (where `brew shellenv` normally is); no -i, so
-        // an interactive prompt can never block startup.
+        // there is no prompt to answer.
         .args(["-lc", "printf '%s' \"$PATH\""])
         .stdin(Stdio::null())
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
         .ok()?;
 
-    if !output.status.success() {
+    let mut stdout = child.stdout.take();
+    let reader = std::thread::spawn(move || {
+        let mut buf = String::new();
+        if let Some(p) = stdout.as_mut() {
+            let _ = p.read_to_string(&mut buf);
+        }
+        buf
+    });
+
+    let deadline = std::time::Instant::now() + PROBE_TIMEOUT;
+    let finished = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status.success(),
+            Err(_) => break false,
+            Ok(None) if std::time::Instant::now() >= deadline => {
+                // Kill and reap — a dropped `Child` is never waited on, and
+                // the hung shell would linger as a zombie for the session.
+                let _ = child.kill();
+                let _ = child.wait();
+                break false;
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
+        }
+    };
+
+    let text = reader.join().unwrap_or_default().trim().to_string();
+    if !finished || text.is_empty() {
         return None;
     }
-    let text = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    (!text.is_empty()).then_some(text)
+    Some(text)
 }
 
 #[cfg(not(unix))]

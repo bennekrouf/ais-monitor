@@ -157,9 +157,32 @@ pub fn function(
 
 /// Open the URL in the user's default browser. Falls back to logging an
 /// activity error if the OS open fails (rare but worth surfacing).
+/// True for the only two schemes this app ever has cause to open.
+///
+/// Not every URL reaching here is one we built: the update banner opens a URL
+/// that came from a remote `latest.json`, and EventGrid webhook destinations
+/// are whatever Azure returns. A scheme check is what stops those from
+/// reaching the OS handler for `file:`, `ms-msdt:`, or anything else
+/// registered on the machine.
+fn is_safe_web_url(url: &str) -> bool {
+    let lower = url.trim().to_ascii_lowercase();
+    (lower.starts_with("https://") || lower.starts_with("http://"))
+        // A control character in a URL has no legitimate meaning and is how
+        // an argument gets split into two.
+        && !url.chars().any(|c| c.is_control())
+}
+
 pub fn open_in_browser(url: &str) {
     // Spawn so a slow open(1) doesn't block the UI thread.
     let url = url.to_string();
+    if !is_safe_web_url(&url) {
+        crate::services::activity::error(
+            "Refused to open link",
+            url.clone(),
+            "not an http(s) URL".to_string(),
+        );
+        return;
+    }
     std::thread::spawn(move || {
         if let Err(e) = open_url(&url) {
             crate::services::activity::error("Failed to open Portal link", url.clone(), e);
@@ -184,15 +207,25 @@ fn open_url(url: &str) -> Result<(), String> {
 
 #[cfg(target_os = "windows")]
 fn open_url(url: &str) -> Result<(), String> {
-    // `start` is a cmd builtin, not an exe, so route via cmd /c.
-    let status = std::process::Command::new("cmd")
-        .args(["/c", "start", "", url])
+    // Deliberately *not* `cmd /c start "" <url>`.
+    //
+    // `Command::args` quotes for the MSVCRT argv parser. cmd.exe does not use
+    // that parser — it re-scans its own command line for `&`, `|`, `^`, `>`
+    // and `%`, so a URL containing `&calc` runs calc. (Rust 1.77.2's
+    // BatBadBut fix hardens `.bat`/`.cmd` *targets*; it does nothing when the
+    // target is cmd.exe itself with an explicit `/c`.) Since not every URL
+    // here is one we built, that is a live injection sink.
+    //
+    // rundll32 is an ordinary executable, so std's escaping is the escaping
+    // that actually applies, and no shell ever sees the URL.
+    let status = std::process::Command::new("rundll32.exe")
+        .args(["url.dll,FileProtocolHandler", url])
         .status()
         .map_err(|e| format!("{e}"))?;
     if status.success() {
         Ok(())
     } else {
-        Err(format!("`start` exited {}", status))
+        Err(format!("`rundll32 url.dll` exited {}", status))
     }
 }
 
@@ -206,5 +239,44 @@ fn open_url(url: &str) -> Result<(), String> {
         Ok(())
     } else {
         Err(format!("`xdg-open` exited {}", status))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ordinary_portal_links_are_opened() {
+        assert!(is_safe_web_url(
+            "https://portal.azure.com/#@/resource/subscriptions/x/overview"
+        ));
+        assert!(is_safe_web_url("http://localhost:7071/api/health"));
+    }
+
+    /// The update banner opens a URL that came from a remote `latest.json`,
+    /// so "we built this string" is not an assumption available here.
+    #[test]
+    fn a_non_web_scheme_never_reaches_the_os_handler() {
+        assert!(!is_safe_web_url("file:///etc/passwd"));
+        assert!(!is_safe_web_url("ms-msdt:/id PCWDiagnostic"));
+        assert!(!is_safe_web_url("javascript:alert(1)"));
+        assert!(!is_safe_web_url(""));
+    }
+
+    /// A newline is how one argument becomes two.
+    #[test]
+    fn control_characters_are_rejected() {
+        assert!(!is_safe_web_url("https://example.com\n& calc"));
+        assert!(!is_safe_web_url("https://example.com\r\nHost: evil"));
+    }
+
+    /// `&` is legitimate in a query string and must keep working — it is the
+    /// *opener* that was fixed, not the URL that needs sanitising.
+    #[test]
+    fn a_query_string_with_ampersands_is_still_a_valid_link() {
+        assert!(is_safe_web_url(
+            "https://portal.azure.com/?api-version=2024-04-01&$top=20"
+        ));
     }
 }

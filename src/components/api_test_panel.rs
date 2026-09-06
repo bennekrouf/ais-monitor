@@ -20,7 +20,14 @@ pub fn ApiTestPanel(props: ApiTestPanelProps) -> Element {
     // Seed fields from whatever was last typed for this profile (including
     // the subscription-key header), so it survives tab switches and app
     // restarts without an explicit Save.
-    let last_state = load_last_state(&props.save_dir);
+    // `use_hook` so the file read and JSON parse happen once per mount. In
+    // the bare render body they ran on every re-render — every keystroke in
+    // the URL or body field — and the value was then thrown away, because
+    // the only thing it feeds is `use_signal` initialisers that run once.
+    let last_state = use_hook({
+        let dir = props.save_dir.clone();
+        move || load_last_state(&dir)
+    });
     let mut method = use_signal({
         let last = last_state.clone();
         move || {
@@ -55,7 +62,7 @@ pub fn ApiTestPanel(props: ApiTestPanelProps) -> Element {
         let dir = props.save_dir.clone();
         move || list_saved(&dir)
     });
-    let mut save_name = use_signal(|| String::new());
+    let mut save_name = use_signal(String::new);
 
     let save_dir = props.save_dir.clone();
     let azure_subscription = props.azure_subscription.clone();
@@ -79,7 +86,10 @@ pub fn ApiTestPanel(props: ApiTestPanelProps) -> Element {
     // The APIM instance (e.g. apim-ipaas-dev-chn-001) usually lives in a
     // different resource group than the Logic App, so its RG/service name
     // are entered once here and persisted per profile.
-    let apim_cfg = load_apim_config(&save_dir);
+    let apim_cfg = use_hook({
+        let dir = save_dir.clone();
+        move || load_apim_config(&dir)
+    });
     let mut apim_rg = use_signal({
         let cfg = apim_cfg.clone();
         move || cfg.resource_group.clone()
@@ -88,7 +98,7 @@ pub fn ApiTestPanel(props: ApiTestPanelProps) -> Element {
         let cfg = apim_cfg.clone();
         move || cfg.service_name.clone()
     });
-    let mut apim_subs = use_signal(|| Vec::<api_test::ApimSubscription>::new());
+    let mut apim_subs = use_signal(Vec::<api_test::ApimSubscription>::new);
     let mut apim_loading = use_signal(|| false);
     let mut apim_error = use_signal(|| Option::<String>::None);
     // Which subscription's key is currently being fetched (for the per-pill
@@ -680,7 +690,7 @@ fn save_apim_config(base_dir: &str, cfg: &ApimConfig) {
         let _ = std::fs::create_dir_all(parent);
     }
     if let Ok(json) = serde_json::to_string_pretty(cfg) {
-        let _ = std::fs::write(apim_config_path(base_dir), json);
+        crate::services::store::write_best_effort(&apim_config_path(base_dir), &json);
     }
 }
 
@@ -704,7 +714,7 @@ fn save_last_state(base_dir: &str, req: &SavedRequest) {
         let _ = std::fs::create_dir_all(parent);
     }
     if let Ok(json) = serde_json::to_string_pretty(req) {
-        let _ = std::fs::write(last_state_path(base_dir), json);
+        crate::services::store::write_best_effort(&last_state_path(base_dir), &json);
     }
 }
 
@@ -730,18 +740,55 @@ fn list_saved(base_dir: &str) -> Vec<String> {
     names
 }
 
+/// A saved-request name reduced to something safe to put in a path.
+///
+/// The name is free text from an input box and was being joined straight into
+/// a filename, so `../../..` escaped the directory — and a `SavedRequest`
+/// carries request headers, which is exactly where an
+/// `Ocp-Apim-Subscription-Key` lives. Allowlist rather than blocklist: it also
+/// takes care of `.`/`..`, path separators on both platforms, and the Windows
+/// reserved device names.
+fn safe_file_stem(name: &str) -> Option<String> {
+    let cleaned: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == ' ' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let cleaned = cleaned.trim().to_string();
+    if cleaned.is_empty() || cleaned.len() > 100 {
+        return None;
+    }
+    const RESERVED: &[&str] = &[
+        "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
+        "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+    ];
+    if RESERVED.contains(&cleaned.to_ascii_lowercase().as_str()) {
+        return None;
+    }
+    Some(cleaned)
+}
+
 fn save_request(base_dir: &str, name: &str, req: &SavedRequest) {
     if base_dir.is_empty() {
         return;
     }
+    let Some(name) = safe_file_stem(name) else {
+        return;
+    };
     let dir = requests_path(base_dir);
     let _ = std::fs::create_dir_all(&dir);
     if let Ok(json) = serde_json::to_string_pretty(req) {
-        let _ = std::fs::write(dir.join(format!("{name}.json")), json);
+        let _ = crate::services::store::write_private(&dir.join(format!("{name}.json")), &json);
     }
 }
 
 fn load_saved(base_dir: &str, name: &str) -> Option<SavedRequest> {
+    let name = safe_file_stem(name)?;
     let path = requests_path(base_dir).join(format!("{name}.json"));
     let content = std::fs::read_to_string(path).ok()?;
     serde_json::from_str(&content).ok()

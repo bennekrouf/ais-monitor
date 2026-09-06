@@ -205,8 +205,15 @@ fn sample_object_by_name(name: &str) -> Value {
 }
 
 fn scan_trigger_body_refs(content: &str) -> Option<Value> {
-    let chain_re = Regex::new(r"triggerBody\(\)\??(?:\[?'([^']+)'\]?\??)+").ok()?;
-    let seg_re = Regex::new(r"\[?'([^']+)'\]?").ok()?;
+    // Compiled once — these are literals, and this runs once per workflow
+    // action while scanning a definition.
+    static CHAIN_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    static SEG_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
+    let chain_re = CHAIN_RE.get_or_init(|| {
+        Regex::new(r"triggerBody\(\)\??(?:\[?'([^']+)'\]?\??)+").expect("static regex is valid")
+    });
+    let seg_re =
+        SEG_RE.get_or_init(|| Regex::new(r"\[?'([^']+)'\]?").expect("static regex is valid"));
 
     let mut paths: Vec<Vec<String>> = Vec::new();
     for cap in chain_re.find_iter(content) {
@@ -253,9 +260,7 @@ fn leaf_value(name: &str) -> Value {
     let n = name.to_lowercase();
     let s = if n.contains("error") || n.contains("message") {
         "Something went wrong"
-    } else if n.contains("code") {
-        "TEST-001"
-    } else if n.contains("id") || n.contains("key") {
+    } else if n.contains("code") || n.contains("id") || n.contains("key") {
         "TEST-001"
     } else if n.contains("date") || n.contains("time") {
         "2026-04-29T10:00:00Z"

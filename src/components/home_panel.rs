@@ -162,10 +162,21 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
     let mut log_loading: Signal<bool> = use_signal(|| false);
     let mut log_error: Signal<Option<String>> = use_signal(|| None);
 
+    // The rollup load runs on mount and again on Refresh, and it publishes
+    // in four stages as each section resolves — so a superseded run has four
+    // separate chances to overwrite the newer one's numbers. Each stage
+    // checks first. (`poll_chains` below needs no guard: it already refuses
+    // to start while `chain_polling` is set.)
+    let mut guard = crate::hooks::fetch_guard::use_fetch_guard();
+    // Expanding an action log is keyed to the row that was clicked; a slow
+    // fetch for a row the user has since collapsed must not repopulate it.
+    let mut log_guard = crate::hooks::fetch_guard::use_fetch_guard();
+
     let mut load = {
         let az = az.clone();
         move || {
             let az = az.clone();
+            let token = guard.begin();
             loading.set(true);
             error_msg.set(None);
             spawn(async move {
@@ -191,6 +202,9 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                                 || r.health == "Unavailable"
                         })
                         .count();
+                    if !guard.is_current(token) {
+                        return;
+                    }
                     res_unhealthy.set(Some((bad, total)));
                     res_fetched_at.set(epoch_secs());
                 }
@@ -241,6 +255,9 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                         })
                         .count();
                 }
+                if !guard.is_current(token) {
+                    return;
+                }
                 drift_count.set(Some(drift));
 
                 // RBAC gaps — identities with no role assignments at all.
@@ -259,6 +276,9 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                         gaps += 1;
                     }
                 }
+                if !guard.is_current(token) {
+                    return;
+                }
                 rbac_gaps.set(Some(gaps));
 
                 // Cost MTD
@@ -267,9 +287,15 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                 if let Ok(Ok(c)) =
                     tokio::task::spawn_blocking(move || azure::get_cost_mtd(&sub_x, &rg_x)).await
                 {
+                    if !guard.is_current(token) {
+                        return;
+                    }
                     cost.set(Some(c));
                 }
 
+                if !guard.is_current(token) {
+                    return;
+                }
                 loading.set(false);
             });
         }
@@ -296,6 +322,7 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
             open_log.set(Some(key));
             log_actions.set(Vec::new());
             log_error.set(None);
+            let token = log_guard.begin();
             log_loading.set(true);
             spawn(async move {
                 let sub = az.subscription.clone();
@@ -306,6 +333,9 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                 })
                 .await
                 .unwrap_or_else(|e| Err(format!("{e}")));
+                if !log_guard.is_current(token) {
+                    return;
+                }
                 match result {
                     Ok(actions) => log_actions.set(actions),
                     Err(e) => log_error.set(Some(e)),
@@ -819,7 +849,7 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                 oldest,
             })
             .collect();
-        v.sort_by(|a, b| a.oldest.cmp(&b.oldest));
+        v.sort_by_key(|a| a.oldest);
         v
     };
     // Dead letters belong to queues, not chains — listing them per queue is

@@ -35,11 +35,11 @@ pub fn ActivityPanel() -> Element {
     let is_open = *open.read();
     let unread_n = *unread.read();
     let all = events.read().clone();
-    let level_filter = filter_level.read().clone();
+    let level_filter = *filter_level.read();
     let filtered: Vec<ActivityEvent> = all
         .iter()
         .rev() // newest first
-        .filter(|e| level_filter.as_ref().map_or(true, |l| &e.level == l))
+        .filter(|e| level_filter.as_ref().is_none_or(|l| &e.level == l))
         .cloned()
         .collect();
 

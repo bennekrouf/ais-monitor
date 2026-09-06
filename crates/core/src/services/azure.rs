@@ -29,10 +29,27 @@ fn resolve_az_windows() -> String {
 
 /// On macOS, apps launched from Finder/Dock inherit a minimal PATH
 /// (`/usr/bin:/bin:/usr/sbin:/sbin`) and miss Homebrew's bin dirs. On Linux,
-/// pip-user / snap installs also live outside the GUI PATH. Probe known
-/// install locations and return the first hit so `Command::new` works.
+/// pip-user / snap installs also live outside the GUI PATH.
+///
+/// PATH comes first, because by the time this runs `env::adopt_login_path`
+/// has already merged in the login shell's own PATH — the informed answer
+/// about which `az` this user means. Searching a hardcoded list first
+/// contradicted that: a user whose PATH deliberately puts `~/.local/bin`
+/// ahead of `/usr/bin` still got `/usr/bin/az`, and no amount of editing
+/// their profile could change it. The hardcoded list stays as the fallback
+/// for the case it was written for — a bundle whose PATH probe failed
+/// entirely.
 #[cfg(not(target_os = "windows"))]
 fn resolve_az_unix() -> String {
+    if let Ok(path) = std::env::var("PATH") {
+        for dir in path.split(':').filter(|d| !d.is_empty()) {
+            let candidate = std::path::Path::new(dir).join("az");
+            if is_executable_file(&candidate) {
+                return candidate.to_string_lossy().to_string();
+            }
+        }
+    }
+
     let mut candidates: Vec<std::path::PathBuf> = vec![
         "/opt/homebrew/bin/az".into(), // brew on Apple Silicon
         "/usr/local/bin/az".into(),    // brew on Intel / manual
@@ -43,11 +60,22 @@ fn resolve_az_unix() -> String {
         candidates.push(std::path::Path::new(&home).join(".local/bin/az"));
     }
     for c in &candidates {
-        if c.is_file() {
+        if is_executable_file(c) {
             return c.to_string_lossy().to_string();
         }
     }
     "az".to_string()
+}
+
+/// `is_file` alone would happily return a non-executable `az` — a stray data
+/// file or a half-finished install — and shadow the real one further down
+/// PATH with a permission error.
+#[cfg(not(target_os = "windows"))]
+fn is_executable_file(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
 }
 
 fn az_not_found_message() -> String {
@@ -82,7 +110,12 @@ pub fn is_throttling_error(s: &str) -> bool {
         || lower.contains("throttl")
         || lower.contains("connection aborted")
         || lower.contains("connection reset")
-        || lower.contains("invalid argument")
+        // The full Python shape, not a bare "invalid argument". ARM's own
+        // `InvalidArgument` validation errors — a malformed resource name, a
+        // bad api-version — contain that phrase too, and matching them here
+        // told the user to wait and retry for a request that will never
+        // succeed no matter how long they wait.
+        || lower.contains("oserror(22")
 }
 
 /// True when an `az` failure means "this identity is not allowed to read
@@ -126,7 +159,121 @@ pub fn is_service_unavailable_error(s: &str) -> bool {
 /// file; Rust's std library (1.77.2+) detects that and applies its own
 /// correct, security-hardened escaping, so no manual `cmd /c` wrapping is
 /// needed or safe to hand-roll (see the comment in the Windows branch).
-pub fn az_command(args: &[&str]) -> Command {
+pub fn az_command(args: &[&str]) -> AzCommand {
+    AzCommand {
+        inner: az_command_raw(args),
+        timeout: AZ_DEFAULT_TIMEOUT,
+    }
+}
+
+/// How long any single `az` invocation may run before it is killed.
+///
+/// `az` launched from a GUI process has no terminal: if it decides the token
+/// needs refreshing and falls back to a device-code or MFA prompt, it blocks
+/// forever writing to a tty nobody is reading. Every call goes through
+/// `spawn_blocking`, and Tokio's blocking pool is bounded, so a handful of
+/// wedged calls is enough to take the whole UI down with no error anywhere.
+/// A deadline turns that into a message.
+const AZ_DEFAULT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// A prepared `az` invocation that always runs under a deadline.
+///
+/// This is deliberately not a `Command`: exposing one would let a call site
+/// reach `.output()` on the inner command and silently opt out of the
+/// timeout. The two methods here are the whole surface.
+pub struct AzCommand {
+    inner: Command,
+    timeout: std::time::Duration,
+}
+
+impl AzCommand {
+    /// Override the default deadline for one call — for an operation that
+    /// legitimately runs longer, or one sitting in front of a waiting user
+    /// that should give up sooner.
+    pub fn timeout(mut self, timeout: std::time::Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    /// Run to completion, or kill the child and fail with `TimedOut`.
+    ///
+    /// stdout and stderr are drained by reader threads rather than by
+    /// `Child::wait_with_output`, because that call blocks until both pipes
+    /// hit EOF — which never happens for a child that is hung rather than
+    /// slow. Draining separately is also what keeps a child that outruns the
+    /// 64 KB pipe buffer from deadlocking against us.
+    pub fn output(&mut self) -> std::io::Result<std::process::Output> {
+        use std::io::Read;
+        self.inner
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped());
+        let mut child = self.inner.spawn()?;
+
+        let mut stdout_pipe = child.stdout.take();
+        let mut stderr_pipe = child.stderr.take();
+        let out_reader = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(p) = stdout_pipe.as_mut() {
+                let _ = p.read_to_end(&mut buf);
+            }
+            buf
+        });
+        let err_reader = std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(p) = stderr_pipe.as_mut() {
+                let _ = p.read_to_end(&mut buf);
+            }
+            buf
+        });
+
+        let deadline = std::time::Instant::now() + self.timeout;
+        let status = loop {
+            match child.try_wait()? {
+                Some(status) => break Some(status),
+                None if std::time::Instant::now() >= deadline => {
+                    // Kill *and* reap: dropping a `Child` does not wait, and
+                    // an unreaped child stays a zombie for the app's lifetime.
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    break None;
+                }
+                None => std::thread::sleep(std::time::Duration::from_millis(25)),
+            }
+        };
+
+        // Killing the child closes the pipes, so both readers finish either
+        // way and neither join can outlive the deadline.
+        let stdout = out_reader.join().unwrap_or_default();
+        let stderr = err_reader.join().unwrap_or_default();
+
+        match status {
+            Some(status) => Ok(std::process::Output {
+                status,
+                stdout,
+                stderr,
+            }),
+            None => Err(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!(
+                    "az did not return within {}s and was killed — it may have been stuck on an \
+                     interactive prompt (device-code login, MFA) with no terminal to show it. Try \
+                     the equivalent command in a terminal to confirm it completes.",
+                    self.timeout.as_secs()
+                ),
+            )),
+        }
+    }
+
+    /// Start `az` and hand back the child. Only for the interactive
+    /// `az login`, which owns its own window and outlives this call — the
+    /// caller is responsible for reaping it.
+    pub fn spawn(&mut self) -> std::io::Result<std::process::Child> {
+        self.inner.spawn()
+    }
+}
+
+fn az_command_raw(args: &[&str]) -> Command {
     #[cfg(target_os = "windows")]
     {
         let az_path = resolve_az_windows();
@@ -145,6 +292,14 @@ pub fn az_command(args: &[&str]) -> Command {
         // it the path and args directly — no manual `cmd /c` needed.
         let mut cmd = Command::new(&az_path);
         cmd.args(args);
+        // `az` is a .cmd batch file, so every invocation would otherwise flash
+        // a console window in front of the GUI — dozens of them during a
+        // refresh. CREATE_NO_WINDOW keeps the child console-less.
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
         if az_path != "az" {
             if let Some(dir) = std::path::Path::new(&az_path).parent() {
                 let current = std::env::var("PATH").unwrap_or_default();
@@ -177,6 +332,12 @@ pub fn az_command_tokio(args: &[&str]) -> tokio::process::Command {
         let az_path = resolve_az_windows();
         let mut cmd = tokio::process::Command::new(&az_path);
         cmd.args(args);
+        // Same reason as the blocking variant: no console window in front of
+        // the GUI.
+        {
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
         if az_path != "az" {
             if let Some(dir) = std::path::Path::new(&az_path).parent() {
                 let current = std::env::var("PATH").unwrap_or_default();
@@ -561,13 +722,25 @@ pub fn open_login(tenant: Option<&str>) -> Result<(), String> {
         args.extend_from_slice(&["--tenant", &tenant_owned]);
         args.extend_from_slice(&["--scope", "https://management.core.windows.net//.default"]);
     }
-    az_command(&args).spawn().map(|_| ()).map_err(|e| {
-        if e.kind() == std::io::ErrorKind::NotFound {
-            az_not_found_message()
-        } else {
-            format!("Failed to start 'az login': {e}")
-        }
-    })
+    az_command(&args)
+        .spawn()
+        .map(|mut child| {
+            // Dropping a `Child` does not reap it, so without this the
+            // finished `az login` lingers as a zombie for the lifetime of the
+            // app. Waiting on a background thread keeps this call non-blocking
+            // — `az login` runs a browser OAuth flow and takes as long as the
+            // user takes.
+            std::thread::spawn(move || {
+                let _ = child.wait();
+            });
+        })
+        .map_err(|e| {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                az_not_found_message()
+            } else {
+                format!("Failed to start 'az login': {e}")
+            }
+        })
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -588,6 +761,10 @@ pub fn list_deployed_workflows(
     rg: &str,
     app: &str,
 ) -> Result<Vec<WorkflowInfo>, String> {
+    // Encoded so a hand-typed name cannot redirect the request.
+    let sub = &arm_seg(sub);
+    let rg = &arm_seg(rg);
+    let app = &arm_seg(app);
     let url = format!(
         "https://management.azure.com/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.Web/sites/{app}/hostruntime/runtime/webhooks/workflow/api/management/workflows?api-version=2024-04-01"
     );
@@ -663,6 +840,11 @@ pub fn list_runs(
     workflow: &str,
     top: u32,
 ) -> Result<Vec<RunInfo>, String> {
+    // Encoded so a hand-typed name cannot redirect the request.
+    let sub = &arm_seg(sub);
+    let rg = &arm_seg(rg);
+    let app = &arm_seg(app);
+    let workflow = &arm_seg(workflow);
     let url = format!(
         "https://management.azure.com/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.Web/sites/{app}/hostruntime/runtime/webhooks/workflow/api/management/workflows/{workflow}/runs?api-version=2024-04-01&$top={top}"
     );
@@ -711,6 +893,12 @@ pub fn list_actions(
     workflow: &str,
     run_id: &str,
 ) -> Result<Vec<ActionInfo>, String> {
+    // Encoded so a hand-typed name cannot redirect the request.
+    let sub = &arm_seg(sub);
+    let rg = &arm_seg(rg);
+    let app = &arm_seg(app);
+    let workflow = &arm_seg(workflow);
+    let run_id = &arm_seg(run_id);
     let url = format!(
         "https://management.azure.com/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.Web/sites/{app}/hostruntime/runtime/webhooks/workflow/api/management/workflows/{workflow}/runs/{run_id}/actions?api-version=2024-04-01"
     );
@@ -759,6 +947,11 @@ pub fn list_triggers(
     app: &str,
     workflow: &str,
 ) -> Result<Vec<String>, String> {
+    // Encoded so a hand-typed name cannot redirect the request.
+    let sub = &arm_seg(sub);
+    let rg = &arm_seg(rg);
+    let app = &arm_seg(app);
+    let workflow = &arm_seg(workflow);
     let url = format!(
         "https://management.azure.com/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.Web/sites/{app}/hostruntime/runtime/webhooks/workflow/api/management/workflows/{workflow}/triggers?api-version=2024-04-01"
     );
@@ -799,6 +992,12 @@ pub fn get_trigger_url(sub: &str, rg: &str, app: &str, workflow: &str) -> Result
     };
 
     for trigger_name in &trigger_names {
+        // Encoded so a hand-typed name cannot redirect the request.
+        let sub = &arm_seg(sub);
+        let rg = &arm_seg(rg);
+        let app = &arm_seg(app);
+        let workflow = &arm_seg(workflow);
+        let trigger_name = &arm_seg(trigger_name);
         let url = format!(
             "https://management.azure.com/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.Web/sites/{app}/hostruntime/runtime/webhooks/workflow/api/management/workflows/{workflow}/triggers/{trigger_name}/listCallbackUrl?api-version=2024-04-01"
         );
@@ -1224,6 +1423,11 @@ pub fn get_workflow_definition(
     workflow: &str,
 ) -> Result<serde_json::Value, String> {
     // ARM resource endpoint — returns the files including workflow.json content
+    // Encoded so a hand-typed name cannot redirect the request.
+    let sub = &arm_seg(sub);
+    let rg = &arm_seg(rg);
+    let app = &arm_seg(app);
+    let workflow = &arm_seg(workflow);
     let uri = format!(
         "https://management.azure.com/subscriptions/{sub}/resourceGroups/{rg}\
          /providers/Microsoft.Web/sites/{app}/workflows/{workflow}?api-version=2023-12-01"
@@ -1289,7 +1493,30 @@ pub fn check_queue(sb_namespace: &str, rg: &str, queue_name: &str) -> Result<Que
 }
 
 /// Fetch the primary connection string for a Service Bus namespace via az CLI.
-pub fn sb_get_connection_string(rg: &str, namespace: &str) -> Result<String, String> {
+/// A connection string for `namespace`, preferring the narrowest
+/// authorization rule that will do the job.
+///
+/// `RootManageSharedAccessKey` is Manage+Send+Listen over the *entire*
+/// namespace — every queue, every topic, including the right to create and
+/// delete them. Reaching for it to peek at one queue's dead letters is a long
+/// way past least privilege, and the key ends up in this process's memory and
+/// in the `az` process's stdout on the way there.
+///
+/// So when a queue is named, try that queue's own authorization rules first.
+/// A platform that has defined one gets it used automatically, with no
+/// configuration here; a platform that has not falls back to the namespace
+/// rule and behaves exactly as before. `queue` is `None` for callers that
+/// genuinely operate at namespace scope.
+pub fn sb_get_connection_string_for(
+    rg: &str,
+    namespace: &str,
+    queue: Option<&str>,
+) -> Result<String, String> {
+    if let Some(queue) = queue.filter(|q| !q.is_empty()) {
+        if let Some(cs) = sb_queue_scoped_connection_string(rg, namespace, queue) {
+            return Ok(cs);
+        }
+    }
     let output = az_command(&[
         "servicebus",
         "namespace",
@@ -1315,6 +1542,88 @@ pub fn sb_get_connection_string(rg: &str, namespace: &str) -> Result<String, Str
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// The first authorization rule defined on `queue` itself, if any.
+///
+/// Returns `None` — not an error — for every failure mode, because "this
+/// queue has no rule of its own" is the common case and must fall through to
+/// the namespace key rather than surfacing as a broken feature.
+fn sb_queue_scoped_connection_string(rg: &str, namespace: &str, queue: &str) -> Option<String> {
+    let list = az_command(&[
+        "servicebus",
+        "queue",
+        "authorization-rule",
+        "list",
+        "--resource-group",
+        rg,
+        "--namespace-name",
+        namespace,
+        "--queue-name",
+        queue,
+        "--query",
+        "[0].name",
+        "-o",
+        "tsv",
+    ])
+    .output()
+    .ok()?;
+    if !list.status.success() {
+        return None;
+    }
+    let rule = String::from_utf8_lossy(&list.stdout).trim().to_string();
+    if rule.is_empty() {
+        return None;
+    }
+
+    let keys = az_command(&[
+        "servicebus",
+        "queue",
+        "authorization-rule",
+        "keys",
+        "list",
+        "--resource-group",
+        rg,
+        "--namespace-name",
+        namespace,
+        "--queue-name",
+        queue,
+        "--name",
+        &rule,
+        "--query",
+        "primaryConnectionString",
+        "-o",
+        "tsv",
+    ])
+    .output()
+    .ok()?;
+    if !keys.status.success() {
+        return None;
+    }
+    let cs = String::from_utf8_lossy(&keys.stdout).trim().to_string();
+    (!cs.is_empty()).then_some(cs)
+}
+
+/// Percent-encode one path segment of an ARM URL.
+///
+/// Subscription ids, resource groups, app names and workflow names are typed
+/// by hand into the profile form and then interpolated straight into a URL
+/// that `az rest` fetches. A value containing `?`, `#` or `../` silently
+/// changes which endpoint is called — the request still succeeds, against
+/// something other than the resource the user named. Azure's own naming rules
+/// permit none of these characters, so encoding them costs nothing for valid
+/// input and removes the class entirely for invalid input.
+fn arm_seg(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for byte in s.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char)
+            }
+            _ => out.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    out
+}
+
 /// URL-encode with lowercase hex digits to match C#'s HttpUtility.UrlEncode,
 /// which Azure SAS validation uses server-side.
 fn lowercase_url_encode(s: &str) -> String {
@@ -1336,75 +1645,9 @@ fn lowercase_url_encode(s: &str) -> String {
 /// Send a message to a Service Bus queue using the REST API with SAS auth.
 /// `conn_str` is the full connection string from `sb_get_connection_string`.
 pub async fn sb_send_message(conn_str: &str, queue: &str, body: &str) -> Result<(), String> {
-    // Parse connection string
-    let mut endpoint = "";
-    let mut key_name = "";
-    let mut key = "";
-    for part in conn_str.split(';') {
-        let part = part.trim();
-        if let Some(v) = part.strip_prefix("Endpoint=sb://") {
-            endpoint = v.trim_end_matches('/');
-        } else if let Some(v) = part.strip_prefix("SharedAccessKeyName=") {
-            key_name = v;
-        } else if let Some(v) = part.strip_prefix("SharedAccessKey=") {
-            key = v;
-        }
-    }
-    if endpoint.is_empty() || key.is_empty() {
-        return Err(format!(
-            "Invalid connection string (endpoint={}, key_name={}, key_len={})",
-            endpoint.is_empty(),
-            key_name,
-            key.len()
-        ));
-    }
-
-    eprintln!(
-        "[SB Send] endpoint='{}' key_name='{}' key_len={}",
-        endpoint,
-        key_name,
-        key.len()
-    );
-
+    let (endpoint, key_name, key) = sb_parse_conn_str(conn_str)?;
+    let token = sb_sas_token(&endpoint, &key_name, &key, queue)?;
     let url = format!("https://{}/{}/messages", endpoint, queue);
-
-    // Generate SAS token (valid 5 minutes)
-    // Azure SB SAS spec:
-    //   StringToSign = URL_ENCODE(lowercase(resource_uri)) + "\n" + expiry
-    //   resource_uri = "https://<fqdn>/<queue>"
-    let expiry = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-        + 300;
-
-    // The resource URI for signing — use https:// scheme per Azure REST API.
-    // URL-encode must use lowercase hex (%3a not %3A) to match Azure's server-side
-    // validation (C# HttpUtility.UrlEncode uses lowercase).
-    let resource_uri = format!("https://{}/{}", endpoint, queue).to_lowercase();
-    let encoded_resource = lowercase_url_encode(&resource_uri);
-    let to_sign = format!("{}\n{}", encoded_resource, expiry);
-
-    eprintln!("[SB Send] url: {}", url);
-    eprintln!("[SB Send] resource_uri: {}", resource_uri);
-    eprintln!("[SB Send] to_sign: {:?}", to_sign);
-
-    use hmac::{Hmac, Mac};
-    use sha2::Sha256;
-    type HmacSha256 = Hmac<Sha256>;
-
-    let decoded_key = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, key)
-        .map_err(|e| format!("base64 decode: {e}"))?;
-    let mut mac = HmacSha256::new_from_slice(&decoded_key).map_err(|e| format!("hmac: {e}"))?;
-    mac.update(to_sign.as_bytes());
-    let sig_bytes = mac.finalize().into_bytes();
-    let signature = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, sig_bytes);
-    let encoded_sig = lowercase_url_encode(&signature);
-
-    let token = format!(
-        "SharedAccessSignature sr={}&sig={}&se={}&skn={}",
-        encoded_resource, encoded_sig, expiry, key_name
-    );
 
     let client = reqwest::Client::new();
     let resp = client
@@ -1421,11 +1664,6 @@ pub async fn sb_send_message(conn_str: &str, queue: &str, body: &str) -> Result<
 
     let status = resp.status();
     let text = resp.text().await.unwrap_or_default();
-    eprintln!(
-        "[SB Send] response: {} {}",
-        status,
-        &text[..200.min(text.len())]
-    );
     if status.is_success() || status.as_u16() == 201 {
         Ok(())
     } else if status.as_u16() == 401 && text.is_empty() {
@@ -1464,53 +1702,12 @@ pub async fn sb_peek_dead_letters(
     queue: &str,
     max: usize,
 ) -> Result<Vec<DeadLetterMessage>, String> {
-    // Parse connection string (same logic as sb_send_message)
-    let mut endpoint = "";
-    let mut key_name = "";
-    let mut key = "";
-    for part in conn_str.split(';') {
-        let part = part.trim();
-        if let Some(v) = part.strip_prefix("Endpoint=sb://") {
-            endpoint = v.trim_end_matches('/');
-        } else if let Some(v) = part.strip_prefix("SharedAccessKeyName=") {
-            key_name = v;
-        } else if let Some(v) = part.strip_prefix("SharedAccessKey=") {
-            key = v;
-        }
-    }
-    if endpoint.is_empty() || key.is_empty() {
-        return Err("Invalid Service Bus connection string".into());
-    }
-
+    let (endpoint, key_name, key) = sb_parse_conn_str(conn_str)?;
     let resource_path = format!("{}/$DeadLetterQueue", queue);
+    let token = sb_sas_token(&endpoint, &key_name, &key, &resource_path)?;
     let url = format!(
         "https://{}/{}/messages/head?timeout=5",
         endpoint, resource_path
-    );
-
-    // SAS token covering the whole DLQ path (same shape as the send path).
-    let expiry = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-        + 300;
-    let resource_uri = format!("https://{}/{}", endpoint, resource_path).to_lowercase();
-    let encoded_resource = lowercase_url_encode(&resource_uri);
-    let to_sign = format!("{}\n{}", encoded_resource, expiry);
-
-    use hmac::{Hmac, Mac};
-    use sha2::Sha256;
-    type HmacSha256 = Hmac<Sha256>;
-    let decoded_key = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, key)
-        .map_err(|e| format!("base64 decode: {e}"))?;
-    let mut mac = HmacSha256::new_from_slice(&decoded_key).map_err(|e| format!("hmac: {e}"))?;
-    mac.update(to_sign.as_bytes());
-    let sig_bytes = mac.finalize().into_bytes();
-    let signature = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, sig_bytes);
-    let encoded_sig = lowercase_url_encode(&signature);
-    let token = format!(
-        "SharedAccessSignature sr={}&sig={}&se={}&skn={}",
-        encoded_resource, encoded_sig, expiry, key_name
     );
 
     let client = reqwest::Client::new();
@@ -1622,23 +1819,31 @@ fn sb_parse_conn_str(conn_str: &str) -> Result<(String, String, String), String>
     Ok((endpoint, key_name, key))
 }
 
-/// Build a 5-minute SAS token authorizing `resource_path` under `endpoint`.
-/// Same signing scheme used by `sb_send_message` / `sb_peek_dead_letters`.
-fn sb_sas_token(
+/// Build a SAS token authorizing `resource_path` under `endpoint`, valid for
+/// `ttl_secs`. Every Service Bus REST call in this file signs through here.
+///
+/// Azure's SAS spec:
+///   StringToSign = URL_ENCODE(lowercase(resource_uri)) + "\n" + expiry
+/// with lowercase percent-encoding (`%3a`, not `%3A`) — Azure validates
+/// server-side with C#'s `HttpUtility.UrlEncode`, which emits lowercase hex.
+fn sb_sas_token_with_ttl(
     endpoint: &str,
     key_name: &str,
     key: &str,
     resource_path: &str,
+    ttl_secs: u64,
 ) -> Result<String, String> {
     use hmac::{Hmac, Mac};
     use sha2::Sha256;
     type HmacSha256 = Hmac<Sha256>;
 
+    // A clock behind the epoch is not worth panicking the app over; the token
+    // will simply be rejected and the caller reports an ordinary auth error.
     let expiry = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .unwrap()
-        .as_secs()
-        + 300;
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+        + ttl_secs;
     let resource_uri = format!("https://{}/{}", endpoint, resource_path).to_lowercase();
     let encoded_resource = lowercase_url_encode(&resource_uri);
     let to_sign = format!("{}\n{}", encoded_resource, expiry);
@@ -1657,6 +1862,27 @@ fn sb_sas_token(
     ))
 }
 
+/// The SAS lifetime a batch of `max` messages needs.
+///
+/// One token authorises the whole loop, so it has to outlive the whole loop:
+/// a fixed 5 minutes against a 5000-message drain started returning 401s
+/// partway through, on a queue already half-emptied. Budget a second per
+/// message on top of that floor, capped at the 7 days Azure accepts as a
+/// maximum expiry.
+fn sb_batch_ttl(max: usize) -> u64 {
+    (300 + max as u64).min(7 * 24 * 3600)
+}
+
+/// A 5-minute token — the right lifetime for a single request.
+fn sb_sas_token(
+    endpoint: &str,
+    key_name: &str,
+    key: &str,
+    resource_path: &str,
+) -> Result<String, String> {
+    sb_sas_token_with_ttl(endpoint, key_name, key, resource_path, 300)
+}
+
 /// Destructively drain up to `max` messages from a queue (or, via
 /// `resource_path` pointing at `{queue}/$DeadLetterQueue`, from its
 /// dead-letter sub-queue). Uses the SB REST API's "receive and delete" mode
@@ -1668,7 +1894,8 @@ async fn sb_receive_and_delete(
     max: usize,
 ) -> Result<usize, String> {
     let (endpoint, key_name, key) = sb_parse_conn_str(conn_str)?;
-    let token = sb_sas_token(&endpoint, &key_name, &key, resource_path)?;
+    let token =
+        sb_sas_token_with_ttl(&endpoint, &key_name, &key, resource_path, sb_batch_ttl(max))?;
     let url = format!(
         "https://{}/{}/messages/head?timeout=5",
         endpoint, resource_path
@@ -1737,11 +1964,26 @@ pub async fn sb_purge_dead_letters(
     sb_receive_and_delete(conn_str, &dlq_path, max).await
 }
 
-/// Move up to `max` dead-lettered messages back onto the main queue:
-/// receive-and-delete each one from `$DeadLetterQueue`, then resubmit its
-/// body to the main queue. If resubmission fails partway through, the
-/// already-removed message is dropped — the failure is surfaced immediately
-/// so remaining messages are left untouched rather than also drained.
+/// Move up to `max` dead-lettered messages back onto the main queue.
+///
+/// Peek-lock, *not* receive-and-delete. The order is: lock the message
+/// (`POST .../messages/head`, which returns a `Location` pointing at the
+/// locked message), send its body to the main queue, and only then complete
+/// the lock (`DELETE` that `Location`) to remove it from the dead-letter
+/// queue.
+///
+/// That ordering is the whole point. Receive-and-delete removes the message
+/// first and holds the only copy in this process's memory, so *any* failure
+/// in between — the send is rejected, the token expires, the machine sleeps,
+/// the app is killed — destroys it permanently. With peek-lock the message
+/// stays in the dead-letter queue until it is provably somewhere else; a
+/// crash mid-move just lets the lock lapse and the message reappears. The
+/// worst case flips from silently losing a message to delivering one twice,
+/// which is the only acceptable direction for a recovery tool.
+///
+/// Tokens are minted per batch with a lifetime derived from `max`: a 5-minute
+/// token and a 5000-message batch would start failing with 401s partway
+/// through, on a queue that is already half-moved.
 pub async fn sb_requeue_dead_letters(
     conn_str: &str,
     queue: &str,
@@ -1749,17 +1991,21 @@ pub async fn sb_requeue_dead_letters(
 ) -> Result<usize, String> {
     let (endpoint, key_name, key) = sb_parse_conn_str(conn_str)?;
     let dlq_path = format!("{}/$DeadLetterQueue", queue);
-    let dlq_token = sb_sas_token(&endpoint, &key_name, &key, &dlq_path)?;
-    let dlq_url = format!("https://{}/{}/messages/head?timeout=5", endpoint, dlq_path);
-    let send_token = sb_sas_token(&endpoint, &key_name, &key, queue)?;
+    let ttl = sb_batch_ttl(max);
+    let dlq_token = sb_sas_token_with_ttl(&endpoint, &key_name, &key, &dlq_path, ttl)?;
+    let send_token = sb_sas_token_with_ttl(&endpoint, &key_name, &key, queue, ttl)?;
+    let peek_url = format!("https://{}/{}/messages/head?timeout=5", endpoint, dlq_path);
     let send_url = format!("https://{}/{}/messages", endpoint, queue);
 
     let client = reqwest::Client::new();
     let mut requeued = 0usize;
     for _ in 0..max {
+        // 1. Lock the next dead-lettered message without removing it.
         let resp = client
-            .delete(&dlq_url)
+            .post(&peek_url)
             .header("Authorization", &dlq_token)
+            .header("Content-Length", "0")
+            .body(Vec::<u8>::new())
             .send()
             .await
             .map_err(|e| format!("HTTP error: {e}"))?;
@@ -1771,8 +2017,23 @@ pub async fn sb_requeue_dead_letters(
             let text = resp.text().await.unwrap_or_default();
             return Err(format!("SB returned {}: {}", status, text));
         }
+        // The lock URI. Without it the message can only be released by
+        // waiting out the lock, so treat its absence as fatal rather than
+        // pressing on and duplicating messages we can never complete.
+        let lock_url = resp
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|h| h.to_str().ok())
+            .map(|s| s.to_string());
         let body = resp.bytes().await.unwrap_or_default();
+        let Some(lock_url) = lock_url else {
+            return Err(format!(
+                "Service Bus locked a message but returned no Location header, so it cannot be \
+                 completed. Requeued {requeued} message(s); the rest are untouched."
+            ));
+        };
 
+        // 2. Put it back on the main queue.
         let send_resp = client
             .post(&send_url)
             .header("Authorization", &send_token)
@@ -1782,17 +2043,57 @@ pub async fn sb_requeue_dead_letters(
             )
             .body(body.to_vec())
             .send()
-            .await
-            .map_err(|e| format!("HTTP error resubmitting message {}: {e}", requeued + 1))?;
-        let send_status = send_resp.status();
-        if !send_status.is_success() {
-            let text = send_resp.text().await.unwrap_or_default();
+            .await;
+        let send_failure = match send_resp {
+            Err(e) => Some(format!("HTTP error: {e}")),
+            Ok(r) if !r.status().is_success() => {
+                let status = r.status();
+                let text = r.text().await.unwrap_or_default();
+                Some(format!("{status} {text}"))
+            }
+            Ok(_) => None,
+        };
+        if let Some(reason) = send_failure {
+            // Unlock immediately (PUT on the lock URI abandons it) so the
+            // message is visible again now rather than after the lock
+            // duration. The message was never removed either way — this only
+            // shortens the window.
+            let _ = client
+                .put(&lock_url)
+                .header("Authorization", &dlq_token)
+                .header("Content-Length", "0")
+                .body(Vec::<u8>::new())
+                .send()
+                .await;
             return Err(format!(
-                "Message removed from dead-letter queue but resubmission failed ({} {}) after requeuing {} message(s) — it is now lost. Fix the underlying issue before retrying.",
-                send_status, text, requeued
+                "Resubmission failed ({reason}) after requeuing {requeued} message(s). The \
+                 message was returned to the dead-letter queue, not lost. Fix the underlying \
+                 issue and retry."
             ));
         }
-        requeued += 1;
+
+        // 3. Only now remove it from the dead-letter queue. A failure here
+        //    means the message is on both queues — reported, not hidden,
+        //    because the duplicate needs a human decision.
+        let complete = client
+            .delete(&lock_url)
+            .header("Authorization", &dlq_token)
+            .send()
+            .await;
+        match complete {
+            Ok(r) if r.status().is_success() => requeued += 1,
+            other => {
+                let detail = match other {
+                    Ok(r) => format!("{}", r.status()),
+                    Err(e) => format!("{e}"),
+                };
+                return Err(format!(
+                    "Message was resubmitted to '{queue}' but could not be removed from the \
+                     dead-letter queue ({detail}), so it now exists on both. Requeued \
+                     {requeued} message(s) cleanly before this one."
+                ));
+            }
+        }
     }
     Ok(requeued)
 }
@@ -3071,6 +3372,120 @@ mod tests {
     }
 
     #[test]
+    fn a_connection_string_yields_its_endpoint_key_name_and_key() {
+        let (endpoint, key_name, key) = sb_parse_conn_str(
+            "Endpoint=sb://sbns-tom-dev-chn-001.servicebus.windows.net/;\
+             SharedAccessKeyName=RootManageSharedAccessKey;SharedAccessKey=c2VjcmV0",
+        )
+        .unwrap();
+        assert_eq!(endpoint, "sbns-tom-dev-chn-001.servicebus.windows.net");
+        assert_eq!(key_name, "RootManageSharedAccessKey");
+        assert_eq!(key, "c2VjcmV0");
+    }
+
+    #[test]
+    fn an_unusable_connection_string_is_an_error_not_a_bad_request() {
+        assert!(sb_parse_conn_str("").is_err());
+        assert!(sb_parse_conn_str("Endpoint=sb://x/;SharedAccessKeyName=n").is_err());
+    }
+
+    /// The token must outlive the batch it authorises. A fixed 5 minutes
+    /// against a 5000-message purge meant 401s partway through, on a queue
+    /// already half-drained.
+    #[test]
+    fn a_large_batch_gets_a_token_that_outlives_it() {
+        let key = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, b"secret");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        let token =
+            sb_sas_token_with_ttl("ns.test", "rule", &key, "q", sb_batch_ttl(5000)).unwrap();
+        let expiry: u64 = token
+            .split("&se=")
+            .nth(1)
+            .and_then(|s| s.split('&').next())
+            .and_then(|s| s.parse().ok())
+            .expect("token carries an expiry");
+        assert!(
+            expiry >= now + 5000,
+            "token expires after {}s, before a 5000-message batch could finish",
+            expiry - now
+        );
+    }
+
+    /// Azure rejects a SAS expiry more than 7 days out, so the budget is
+    /// capped rather than scaled without limit.
+    #[test]
+    fn the_token_lifetime_is_capped_at_azures_maximum() {
+        let key = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, b"secret");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        // Through the same helper the real batch paths use, fed an absurd
+        // batch size.
+        let token =
+            sb_sas_token_with_ttl("ns.test", "rule", &key, "q", sb_batch_ttl(100_000_000)).unwrap();
+        let expiry: u64 = token
+            .split("&se=")
+            .nth(1)
+            .and_then(|s| s.split('&').next())
+            .and_then(|s| s.parse().ok())
+            .unwrap();
+        assert!(expiry <= now + 7 * 24 * 3600 + 5);
+    }
+
+    /// Signing covers the specific queue, not the namespace — so the token
+    /// that goes over the wire is narrower than the key it was derived from.
+    #[test]
+    fn the_signed_resource_is_the_queue_not_the_namespace() {
+        let key = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, b"secret");
+        let token =
+            sb_sas_token("sbns.servicebus.windows.net", "rule", &key, "ais.event.jde").unwrap();
+        assert!(
+            token.contains(&lowercase_url_encode(
+                "https://sbns.servicebus.windows.net/ais.event.jde"
+            )),
+            "got {token}"
+        );
+    }
+
+    /// Azure validates the signature against lowercase percent-encoding
+    /// (C#'s `HttpUtility.UrlEncode`); uppercase hex fails server-side.
+    #[test]
+    fn percent_encoding_in_the_signature_is_lowercase() {
+        let encoded = lowercase_url_encode("https://ns.test/q");
+        assert!(encoded.contains("%3a"), "got {encoded}");
+        assert!(!encoded.contains("%3A"), "got {encoded}");
+    }
+
+    /// Azure's own naming rules allow none of these, so a valid resource
+    /// name passes through byte for byte.
+    #[test]
+    fn a_valid_resource_name_is_unchanged_by_encoding() {
+        assert_eq!(arm_seg("rg-tom-dev-chn-001"), "rg-tom-dev-chn-001");
+        assert_eq!(
+            arm_seg("00000000-1111-2222-3333-444444444444"),
+            "00000000-1111-2222-3333-444444444444"
+        );
+        assert_eq!(arm_seg("ais.event.ignite"), "ais.event.ignite");
+    }
+
+    /// The point of encoding: a hand-typed value cannot end the path early,
+    /// start a query string, or climb out of it.
+    #[test]
+    fn a_name_cannot_redirect_the_request() {
+        assert_eq!(arm_seg("rg/../../evil"), "rg%2F..%2F..%2Fevil");
+        assert_eq!(
+            arm_seg("rg?api-version=2015-01-01"),
+            "rg%3Fapi-version%3D2015-01-01"
+        );
+        assert_eq!(arm_seg("rg#frag"), "rg%23frag");
+        assert_eq!(arm_seg("rg name"), "rg%20name");
+    }
+
+    #[test]
     fn throttling_matches_explicit_429() {
         assert!(is_throttling_error(
             r#"Too Many Requests({"Code":"429","Message":"...Endpoint is currently throttled..."})"#
@@ -3088,6 +3503,20 @@ mod tests {
             "('Connection aborted.', OSError(22, 'Invalid argument'))"
         ));
         assert!(is_throttling_error("ERROR: Too Many Requests"));
+    }
+
+    /// The transport failure is `OSError(22, 'Invalid argument')`. Matching
+    /// the bare phrase also swallowed ARM's own validation errors, which are
+    /// permanent — the app would sit in a back-off loop advising the user to
+    /// wait for a request that can never succeed.
+    #[test]
+    fn throttling_does_not_swallow_arm_validation_errors() {
+        assert!(!is_throttling_error(
+            r#"BadRequest({"error":{"code":"InvalidArgument","message":"The argument 'name' is invalid argument."}})"#
+        ));
+        assert!(is_throttling_error(
+            "('Connection aborted.', OSError(22, 'Invalid argument'))"
+        ));
     }
 
     #[test]

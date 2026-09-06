@@ -38,14 +38,14 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     // The ☀️/🌙 button writes back into this same signal.
     let mut is_light = props.is_light;
     let mut theme_overridden = props.theme_overridden;
-    let mut chains = use_signal(|| Vec::<chain::ChainDetail>::new());
+    let mut chains = use_signal(Vec::<chain::ChainDetail>::new);
     let mut selected_chain = use_signal(|| Option::<String>::None);
-    let mut deployed_workflows = use_signal(|| Vec::<String>::new());
+    let mut deployed_workflows = use_signal(Vec::<String>::new);
     // Workflows deployed to Azure but with no detected chain link (queue,
     // EventGrid, direct call, or manual link) — surfaced instead of silently
     // dropped, since that usually means a missing manual link rather than a
     // genuinely standalone workflow.
-    let mut unlinked_workflows = use_signal(|| Vec::<remote_chain::UnlinkedWorkflow>::new());
+    let mut unlinked_workflows = use_signal(Vec::<remote_chain::UnlinkedWorkflow>::new);
     let mut show_unlinked = use_signal(|| false);
     // Custom chain display names (Chains tab rename), persisted per-profile
     // so a rename survives across app restarts — same directory chain_detail
@@ -62,7 +62,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
             .to_string();
         use_signal(move || crate::services::names::load(&dir))
     };
-    let mut chain_health = use_signal(|| HashMap::<String, ChainHealth>::new());
+    let mut chain_health = use_signal(HashMap::<String, ChainHealth>::new);
     // Per-chain, per-workflow raw run lists shared with ChainDetailView so
     // that "Check all" populates the per-workflow KPI columns (Success / Runs /
     // Avg / Streak) the same way an individual "Check" does. Without this the
@@ -332,11 +332,17 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
         );
     });
 
+    // Chain discovery runs on mount, on profile change, and from the
+    // "Rebuild chains" button — three ways to have two in flight, publishing
+    // into the same `chains`/`deployed_workflows`/`unlinked_workflows`.
+    let mut discovery_guard = crate::hooks::fetch_guard::use_fetch_guard();
+
     // ── Discover chains from Azure on mount ─────────────────────────────
     use_effect({
         let az = az.clone();
         move || {
             let az = az.clone();
+            let token = discovery_guard.begin();
             loading_chains.set(true);
             load_error.set(None);
             spawn(async move {
@@ -349,6 +355,9 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                 })
                 .await;
 
+                if !discovery_guard.is_current(token) {
+                    return;
+                }
                 match result {
                     Ok(Ok(discovery)) => {
                         let discovered = discovery.chains;
@@ -524,7 +533,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                     let pid = principal_id.read().clone();
                     if let Some(p) = pid {
                         let p_full   = p.clone();
-                        let p_short  = if p.len() > 8 { format!("{}…", &p[..8]) } else { p.clone() };
+                        let p_short  = crate::services::text::head(&p, 8);
                         let tooltip  = format!("Logic App managed identity\nPrincipal ID: {}\nClick to copy", p_full);
                         rsx! {
                             button {
@@ -702,6 +711,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                         let az = az.clone();
                         move |_| {
                             let az = az.clone();
+                            let token = discovery_guard.begin();
                             loading_chains.set(true);
                             load_error.set(None);
                             spawn(async move {
@@ -717,6 +727,9 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                 let result = tokio::task::spawn_blocking(move || {
                                     remote_chain::discover_chains_remote(&sub2, &rg, &app2, &local_dir)
                                 }).await;
+                                if !discovery_guard.is_current(token) {
+                                    return;
+                                }
                                 match result {
                                     Ok(Ok(discovery)) => {
                                         let discovered = discovery.chains;

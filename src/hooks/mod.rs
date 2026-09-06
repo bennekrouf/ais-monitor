@@ -6,4 +6,5 @@
 //! renderer. A helper that holds a `Signal<bool>` true while it waits is a
 //! different kind of thing, and mixing the two made `services` quietly depend
 //! on Dioxus.
+pub mod fetch_guard;
 pub mod signin;

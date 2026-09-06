@@ -177,9 +177,11 @@ fn WindowRoot(initial: Option<AzConfig>) -> Element {
     let mut az_config = use_signal(|| initial);
 
     // ── System theme — applies to both Welcome and MainScreen ────────────
-    // Start with the OS preference; stop syncing once the user toggles manually.
-    let system_light = dark_light::detect() != dark_light::Mode::Dark;
-    let mut is_light = use_signal(|| system_light);
+    // Start with the OS preference; stop syncing once the user toggles
+    // manually. Inside the initialiser so the platform call happens once per
+    // window rather than on every render — the polling coroutine below is
+    // what keeps it current.
+    let mut is_light = use_signal(|| dark_light::detect() != dark_light::Mode::Dark);
     let theme_overridden = use_signal(|| false);
 
     // Inject CSS once at startup
@@ -238,11 +240,28 @@ fn WindowRoot(initial: Option<AzConfig>) -> Element {
                     strong { "{info.latest_version}" }
                     " is available (you have {env!(\"CARGO_PKG_VERSION\")})."
                 }
-                a {
-                    class: "update-banner-link",
-                    href: "{info.release_url}",
-                    target: "_blank",
-                    "Download"
+                {
+                    // Deliberately a button, not an `<a href>`. This URL
+                    // comes from a remote `latest.json`, and a bare anchor in
+                    // a desktop webview is one interception rule away from
+                    // navigating the *app's own* webview to it — putting a
+                    // remote page inside the IPC bridge. Routing through
+                    // `open_in_browser` also runs its scheme check.
+                    let url = info.release_url.clone();
+                    rsx! {
+                        button {
+                            class: "update-banner-link",
+                            onclick: move |_| services::portal_links::open_in_browser(&url),
+                            "Download"
+                        }
+                    }
+                }
+                if !info.sha256.is_empty() {
+                    span {
+                        class: "update-banner-sha",
+                        title: "SHA-256 of the published build — compare it against the file you downloaded",
+                        "sha256 {services::text::head(&info.sha256, 12)}"
+                    }
                 }
                 button {
                     class: "update-banner-dismiss",

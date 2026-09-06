@@ -36,12 +36,12 @@ pub fn TriggerPanel(props: TriggerPanelProps) -> Element {
     let mut triggering = use_signal(|| false);
     let mut saved_payloads =
         use_signal(|| list_saved_payloads(&props.payloads_dir, &props.workflow));
-    let mut save_name = use_signal(|| String::new());
+    let mut save_name = use_signal(String::new);
 
     let az = props.az_config.clone();
     let workflow = props.workflow.clone();
     let payloads_dir = props.payloads_dir.clone();
-    let on_triggered = props.on_triggered.clone();
+    let on_triggered = props.on_triggered;
 
     // Fetch trigger URL on mount
     use_effect({
@@ -69,7 +69,7 @@ pub fn TriggerPanel(props: TriggerPanelProps) -> Element {
     let has_url = trigger_url
         .read()
         .as_ref()
-        .map_or(false, |u| !u.starts_with("ERROR"));
+        .is_some_and(|u| !u.starts_with("ERROR"));
 
     rsx! {
         div { class: "trigger-panel",
@@ -327,11 +327,7 @@ fn default_payload() -> String {
 }
 
 fn truncate_url(url: &str) -> String {
-    if url.len() > 80 {
-        format!("{}...{}", &url[..40], &url[url.len() - 30..])
-    } else {
-        url.to_string()
-    }
+    crate::services::text::middle_elide(url, 70, 30)
 }
 
 fn format_response(body: &str) -> String {
@@ -377,7 +373,7 @@ fn save_payload(base_dir: &str, workflow: &str, name: &str, content: &str) {
     let dir = payloads_path(base_dir, workflow);
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join(format!("{name}.json"));
-    let _ = std::fs::write(path, content);
+    crate::services::store::write_best_effort(&path, content);
 }
 
 fn load_payload(base_dir: &str, workflow: &str, name: &str) -> Option<String> {

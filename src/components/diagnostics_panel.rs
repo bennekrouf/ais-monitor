@@ -22,9 +22,14 @@ pub fn DiagnosticsPanel(props: DiagnosticsPanelProps) -> Element {
     let mut kv_running: Signal<bool> = use_signal(|| false);
     let mut kv_result: Signal<Option<ProbeResult>> = use_signal(|| None);
 
-    let mut sb_queue: Signal<String> = use_signal(|| String::new());
+    let mut sb_queue: Signal<String> = use_signal(String::new);
     let mut sb_running: Signal<bool> = use_signal(|| false);
     let mut sb_result: Signal<Option<ProbeResult>> = use_signal(|| None);
+    // The probe receive-and-deletes, so on a queue that is not idle it
+    // permanently destroys a real message. Every other destructive queue
+    // action in this app is behind a modal; a note above the button was not
+    // the same promise.
+    let mut sb_confirm: Signal<bool> = use_signal(|| false);
 
     let run_kv_probe = move |_| {
         let vault = kv_vault.read().trim().to_string();
@@ -56,6 +61,7 @@ pub fn DiagnosticsPanel(props: DiagnosticsPanelProps) -> Element {
     let run_sb_probe = {
         let az = az.clone();
         move |_| {
+            sb_confirm.set(false);
             let az = az.clone();
             let queue = sb_queue.read().trim().to_string();
             if queue.is_empty() {
@@ -75,8 +81,9 @@ pub fn DiagnosticsPanel(props: DiagnosticsPanelProps) -> Element {
                 }
                 let rg2 = rg.clone();
                 let ns2 = ns.clone();
+                let queue_for_conn = queue.clone();
                 let conn = tokio::task::spawn_blocking(move || {
-                    azure::sb_get_connection_string(&rg2, &ns2)
+                    azure::sb_get_connection_string_for(&rg2, &ns2, Some(&queue_for_conn))
                 })
                 .await
                 .unwrap_or_else(|e| Err(format!("{e}")));
@@ -163,8 +170,8 @@ pub fn DiagnosticsPanel(props: DiagnosticsPanelProps) -> Element {
                 }
                 button {
                     class: "btn btn-small btn-primary",
-                    disabled: *sb_running.read(),
-                    onclick: run_sb_probe,
+                    disabled: *sb_running.read() || sb_queue.read().trim().is_empty(),
+                    onclick: move |_| sb_confirm.set(true),
                     if *sb_running.read() { "Probing…" } else { "Run probe" }
                 }
                 {
@@ -177,6 +184,43 @@ pub fn DiagnosticsPanel(props: DiagnosticsPanelProps) -> Element {
                             }
                         },
                         Some(ProbeResult::Err(e)) => rsx! { div { class: "az-error", "❌ {e}" } },
+                    }
+                }
+            }
+
+            if *sb_confirm.read() {
+                {
+                    let queue = sb_queue.read().trim().to_string();
+                    rsx! {
+                        div { class: "modal-backdrop",
+                            onclick: move |_| sb_confirm.set(false),
+                            div { class: "modal-card",
+                                onclick: move |e: Event<MouseData>| e.stop_propagation(),
+                                h3 { class: "modal-title", "Run the round-trip probe on '{queue}'?" }
+                                p { class: "modal-body",
+                                    "This sends a test message, then receives and "
+                                    strong { "permanently deletes" }
+                                    " one message from the queue. If anything else is already \
+                                     sitting in '"
+                                    strong { "{queue}" }
+                                    "', the message destroyed may be that one rather than the \
+                                     probe's. Only run this against an empty or dedicated probe \
+                                     queue."
+                                }
+                                div { class: "modal-actions",
+                                    button {
+                                        class: "btn btn-small",
+                                        onclick: move |_| sb_confirm.set(false),
+                                        "Cancel"
+                                    }
+                                    button {
+                                        class: "btn btn-small btn-primary",
+                                        onclick: run_sb_probe,
+                                        "Run probe"
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }

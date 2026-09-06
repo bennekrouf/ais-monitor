@@ -41,6 +41,9 @@ pub fn VariableGroupPanel(props: VariableGroupPanelProps) -> Element {
     let mut delete_error: Signal<Option<String>> = use_signal(|| None);
     let mut confirm_delete: Signal<bool> = use_signal(|| false);
 
+    // Mount and Refresh both call `load`, so two can be in flight at once.
+    let mut guard = crate::hooks::fetch_guard::use_fetch_guard();
+
     let mut load = {
         let az = az.clone();
         move || {
@@ -49,6 +52,7 @@ pub fn VariableGroupPanel(props: VariableGroupPanelProps) -> Element {
                 loading.set(false);
                 return;
             }
+            let token = guard.begin();
             loading.set(true);
             error_msg.set(None);
             spawn(async move {
@@ -67,13 +71,17 @@ pub fn VariableGroupPanel(props: VariableGroupPanelProps) -> Element {
                 {
                     Ok(Ok(g)) => g,
                     Ok(Err(e)) => {
-                        error_msg.set(Some(e));
-                        loading.set(false);
+                        if guard.is_current(token) {
+                            error_msg.set(Some(e));
+                            loading.set(false);
+                        }
                         return;
                     }
                     Err(e) => {
-                        error_msg.set(Some(format!("{e}")));
-                        loading.set(false);
+                        if guard.is_current(token) {
+                            error_msg.set(Some(format!("{e}")));
+                            loading.set(false);
+                        }
                         return;
                     }
                 };
@@ -123,6 +131,9 @@ pub fn VariableGroupPanel(props: VariableGroupPanelProps) -> Element {
                     (a.group_name.clone(), a.name.clone())
                         .cmp(&(b.group_name.clone(), b.name.clone()))
                 });
+                if !guard.is_current(token) {
+                    return;
+                }
                 rows.set(out);
                 loading.set(false);
             });

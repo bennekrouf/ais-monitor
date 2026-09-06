@@ -12,7 +12,7 @@ pub fn save(dir: &str, names: &HashMap<String, String>) {
         .collect();
     lines.sort();
     let content = lines.join("\n") + "\n";
-    let _ = std::fs::write(path, content);
+    crate::services::store::write_best_effort(&path, &content);
 }
 
 /// Load custom chain names. Returns empty map if file is absent or malformed.

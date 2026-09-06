@@ -2554,6 +2554,12 @@ body {
     color: var(--text3);
 }
 .eg-delivery-warn { color: var(--yellow); }
+.eg-filter-note {
+    font-size: 10px;
+    font-style: italic;
+    color: var(--text3);
+    margin-bottom: 2px;
+}
 
 .eg-filters {
     margin-top: 6px;
@@ -2789,13 +2795,24 @@ body {
 }
 .update-banner-text { flex: 1; }
 .update-banner-text strong { font-weight: 700; }
+/* A <button>, not an <a> — see the comment at its use site in main.rs.
+   These declarations reset the button back to the anchor's appearance. */
 .update-banner-link {
     color: #fff;
+    background: transparent;
+    font: inherit;
+    cursor: pointer;
     text-decoration: underline;
     font-weight: 600;
     padding: 4px 10px;
     border: 1px solid rgba(255,255,255,0.4);
     border-radius: 4px;
+}
+.update-banner-sha {
+    margin-left: 10px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 11px;
+    opacity: 0.75;
 }
 .update-banner-link:hover { background: rgba(255,255,255,0.15); }
 .update-banner-dismiss {
