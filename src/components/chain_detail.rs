@@ -158,8 +158,13 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
     // and a loading/error flag.
     let mut peek_queue: Signal<Option<String>> = use_signal(|| None);
     let mut peek_messages: Signal<Vec<azure::DeadLetterMessage>> = use_signal(Vec::new);
-    let mut peek_loading: Signal<bool> = use_signal(|| false);
+    let peek_loading: Signal<bool> = use_signal(|| false);
     let mut peek_error: Signal<Option<String>> = use_signal(|| None);
+    // Whether the SB namespace was last found reachable through peek — None
+    // until a peek has been attempted this session, then true/false based on
+    // whether the attempt hit the VPN/firewall 401. Drives the 👁 vs 🔍/🚫
+    // icon on every DL cell in this chain, since they all share one namespace.
+    let sb_reachable: Signal<Option<bool>> = use_signal(|| None);
     let mut send_body: Signal<String> = use_signal(|| "{}".to_string());
     let mut send_status: Signal<Option<String>> = use_signal(|| None);
     // Filename-driven body composition: most event-driven queues take a message
@@ -1675,87 +1680,134 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                                     }
                                 }
                                 span { class: "{active_cls}", "{active_text}" }
-                                span { class: "{dl_cls}", "{dl_text}" }
-                                span { class: "qcol qcol-actions",
-                                // Peek dead-letter button — only shown when DL count > 0
-                                if az.is_some() && dl > 0 {
-                                    {
-                                        let az_peek = az.clone();
-                                        rsx! {
-                                            button {
-                                                class: if is_peek_open { "btn-icon sb-peek-btn active" } else { "btn-icon sb-peek-btn" },
-                                                title: "Peek dead-letter messages (non-destructive)",
-                                                onclick: move |_| {
-                                                    if is_peek_open {
-                                                        peek_queue.set(None);
-                                                        peek_messages.set(Vec::new());
-                                                        peek_error.set(None);
-                                                        return;
+                                {
+                                    // Shared peek trigger so both the DL cell itself and the
+                                    // icon button open the same console panel, and so the
+                                    // reachability icon can be probed from either. Signals are
+                                    // `Copy`, so `trigger_peek` below just takes owned copies —
+                                    // no closure-capture/Fn-trait juggling needed to share it
+                                    // between two `onclick` handlers.
+                                    fn trigger_peek(
+                                        mut peek_queue: Signal<Option<String>>,
+                                        mut peek_messages: Signal<Vec<azure::DeadLetterMessage>>,
+                                        mut peek_error: Signal<Option<String>>,
+                                        mut peek_loading: Signal<bool>,
+                                        mut sb_conn_str: Signal<std::collections::HashMap<String, String>>,
+                                        mut sb_reachable: Signal<Option<bool>>,
+                                        is_peek_open: bool,
+                                        q_name0: String,
+                                        az_ref: Option<AzConfig>,
+                                    ) {
+                                        if is_peek_open {
+                                            peek_queue.set(None);
+                                            peek_messages.set(Vec::new());
+                                            peek_error.set(None);
+                                            return;
+                                        }
+                                        let q_name = q_name0;
+                                        let cached_conn = sb_conn_str.read().get(&q_name).cloned();
+                                        peek_queue.set(Some(q_name.clone()));
+                                        peek_messages.set(Vec::new());
+                                        peek_error.set(None);
+                                        peek_loading.set(true);
+                                        spawn(async move {
+                                            if let Some(ref a) = az_ref {
+                                                let rg = a.resource_group.clone();
+                                                // Resolve namespace from config or discover.
+                                                let ns = if !a.sb_namespace.is_empty() { a.sb_namespace.clone() } else {
+                                                    let sub2 = a.subscription.clone();
+                                                    let rg2 = rg.clone();
+                                                    match tokio::task::spawn_blocking(move || azure::list_service_bus_namespaces(&sub2, &rg2)).await {
+                                                        Ok(Ok(mut list)) => list.drain(..).next().unwrap_or_default(),
+                                                        _ => String::new(),
                                                     }
-                                                    let q_name = q_peek.clone();
-                                                    let cached_conn = sb_conn_str.read().get(&q_name).cloned();
-                                                    let az_ref = az_peek.clone();
-                                                    peek_queue.set(Some(q_name.clone()));
-                                                    peek_messages.set(Vec::new());
-                                                    peek_error.set(None);
-                                                    peek_loading.set(true);
-                                                    spawn(async move {
-                                                        if let Some(ref a) = az_ref {
-                                                            let rg = a.resource_group.clone();
-                                                            // Resolve namespace from config or discover.
-                                                            let ns = if !a.sb_namespace.is_empty() { a.sb_namespace.clone() } else {
-                                                                let sub2 = a.subscription.clone();
-                                                                let rg2 = rg.clone();
-                                                                match tokio::task::spawn_blocking(move || azure::list_service_bus_namespaces(&sub2, &rg2)).await {
-                                                                    Ok(Ok(mut list)) => list.drain(..).next().unwrap_or_default(),
-                                                                    _ => String::new(),
-                                                                }
-                                                            };
-                                                            if ns.is_empty() {
-                                                                peek_error.set(Some("No Service Bus namespace configured for this profile".into()));
-                                                                peek_loading.set(false);
-                                                                return;
+                                                };
+                                                if ns.is_empty() {
+                                                    peek_error.set(Some("No Service Bus namespace configured for this profile".into()));
+                                                    peek_loading.set(false);
+                                                    return;
+                                                }
+                                                let conn = if let Some(c) = cached_conn { Ok(c) } else {
+                                                    let rg2 = rg.clone();
+                                                    let ns2 = ns.clone();
+                                                    let q2 = q_name.clone();
+                                                    tokio::task::spawn_blocking(move || azure::sb_get_connection_string_for(&rg2, &ns2, Some(&q2)))
+                                                        .await.unwrap_or_else(|e| Err(format!("{e}")))
+                                                };
+                                                match conn {
+                                                    Ok(cs) => {
+                                                        sb_conn_str.write().insert(q_name.clone(), cs.clone());
+                                                        match azure::sb_peek_dead_letters(&cs, &q_name, 10).await {
+                                                            Ok(msgs) => {
+                                                                crate::services::activity::info(
+                                                                    "Peeked dead-letter messages",
+                                                                    format!("queue:{} ({} msg)", q_name, msgs.len()),
+                                                                );
+                                                                sb_reachable.set(Some(true));
+                                                                peek_messages.set(msgs);
                                                             }
-                                                            let conn = if let Some(c) = cached_conn { Ok(c) } else {
-                                                                let rg2 = rg.clone();
-                                                                let ns2 = ns.clone();
-                                                                let q2 = q_name.clone();
-                                                                tokio::task::spawn_blocking(move || azure::sb_get_connection_string_for(&rg2, &ns2, Some(&q2)))
-                                                                    .await.unwrap_or_else(|e| Err(format!("{e}")))
-                                                            };
-                                                            match conn {
-                                                                Ok(cs) => {
-                                                                    sb_conn_str.write().insert(q_name.clone(), cs.clone());
-                                                                    match azure::sb_peek_dead_letters(&cs, &q_name, 10).await {
-                                                                        Ok(msgs) => {
-                                                                            crate::services::activity::info(
-                                                                                "Peeked dead-letter messages",
-                                                                                format!("queue:{} ({} msg)", q_name, msgs.len()),
-                                                                            );
-                                                                            peek_messages.set(msgs);
-                                                                        }
-                                                                        Err(e) => {
-                                                                            crate::services::activity::error(
-                                                                                "Peek DL failed",
-                                                                                format!("queue:{}", q_name),
-                                                                                e.clone(),
-                                                                            );
-                                                                            peek_error.set(Some(e));
-                                                                        }
-                                                                    }
-                                                                }
-                                                                Err(e) => peek_error.set(Some(format!("Auth: {e}"))),
+                                                            Err(e) => {
+                                                                crate::services::activity::error(
+                                                                    "Peek DL failed",
+                                                                    format!("queue:{}", q_name),
+                                                                    e.clone(),
+                                                                );
+                                                                // A VPN/firewall rejection is a reachability fact,
+                                                                // not a per-attempt error — cache it so other DLQ
+                                                                // rows in this namespace show the blocked icon
+                                                                // without probing again.
+                                                                sb_reachable.set(Some(!e.contains("VPN")));
+                                                                peek_error.set(Some(e));
                                                             }
                                                         }
-                                                        peek_loading.set(false);
-                                                    });
+                                                    }
+                                                    Err(e) => peek_error.set(Some(format!("Auth: {e}"))),
+                                                }
+                                            }
+                                            peek_loading.set(false);
+                                        });
+                                    }
+                                    let reach = *sb_reachable.read();
+                                    let dl_icon = if !is_peek_open {
+                                        match reach {
+                                            Some(true) => "👁",
+                                            Some(false) => "🚫",
+                                            None => "🔍",
+                                        }
+                                    } else { "🔍" };
+                                    let dl_title = match reach {
+                                        Some(true) => "Peek dead-letter messages (reachable — non-destructive)",
+                                        Some(false) => "Peek dead-letter messages (blocked last time — likely needs VPN; click to retry)",
+                                        None => "Peek dead-letter messages (non-destructive)",
+                                    };
+                                    let q_name_cell = q_peek.clone();
+                                    let az_cell = az.clone();
+                                    let q_name_btn = q_peek.clone();
+                                    let az_btn = az.clone();
+                                    rsx! {
+                                        span {
+                                            class: if dl > 0 { "{dl_cls} clickable" } else { "{dl_cls}" },
+                                            title: if dl > 0 { "{dl_title}" } else { "Dead-letter messages" },
+                                            onclick: move |_| if dl > 0 {
+                                                trigger_peek(peek_queue, peek_messages, peek_error, peek_loading,
+                                                    sb_conn_str, sb_reachable, is_peek_open, q_name_cell.clone(), az_cell.clone());
+                                            },
+                                            "{dl_text}"
+                                        }
+                                        span { class: "qcol qcol-actions",
+                                        // Peek dead-letter button — only shown when DL count > 0
+                                        if az.is_some() && dl > 0 {
+                                            button {
+                                                class: if is_peek_open { "btn-icon sb-peek-btn active" } else { "btn-icon sb-peek-btn" },
+                                                title: "{dl_title}",
+                                                onclick: move |_| {
+                                                    trigger_peek(peek_queue, peek_messages, peek_error, peek_loading,
+                                                        sb_conn_str, sb_reachable, is_peek_open, q_name_btn.clone(), az_btn.clone());
                                                 },
-                                                "🔍"
+                                                "{dl_icon}"
                                             }
                                         }
-                                    }
-                                }
-                                if az.is_some() {
+                                        if az.is_some() {
                                     button {
                                         class: if is_open { "btn-icon sb-send-btn active" } else { "btn-icon sb-send-btn" },
                                         title: "Send a message to this queue",
@@ -1771,67 +1823,6 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                                     }
                                 }
                                 } // close qcol-actions
-                            }
-                            // ── Dead-letter peek panel ─────────────────
-                            if is_peek_open {
-                                {
-                                    let loading = *peek_loading.read();
-                                    let err = peek_error.read().clone();
-                                    let msgs = peek_messages.read().clone();
-                                    rsx! {
-                                        div { class: "sb-peek-panel",
-                                            div { class: "sb-peek-header",
-                                                span { "🔍 Dead-letter messages — " }
-                                                strong { "{q}" }
-                                                span { class: "sb-peek-meta", " (peek-lock, non-destructive)" }
-                                            }
-                                            div { class: "sb-queue-actions",
-                                                {
-                                                    let q1 = q.clone();
-                                                    let q2 = q.clone();
-                                                    let q3 = q.clone();
-                                                    rsx! {
-                                                        button {
-                                                            class: "btn btn-small",
-                                                            title: "Permanently delete all active messages on this queue",
-                                                            onclick: move |_| pending_sb_action.set(Some(PendingSbAction { queue: q1.clone(), action: SbQueueAction::PurgeActive })),
-                                                            "Purge active"
-                                                        }
-                                                        button {
-                                                            class: "btn btn-small",
-                                                            title: "Permanently delete all dead-lettered messages on this queue",
-                                                            onclick: move |_| pending_sb_action.set(Some(PendingSbAction { queue: q2.clone(), action: SbQueueAction::PurgeDeadLetters })),
-                                                            "Clear DLQ"
-                                                        }
-                                                        button {
-                                                            class: "btn btn-small",
-                                                            title: "Move dead-lettered messages back onto the main queue",
-                                                            onclick: move |_| pending_sb_action.set(Some(PendingSbAction { queue: q3.clone(), action: SbQueueAction::RequeueDeadLetters })),
-                                                            "Requeue DLQ → main"
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            if loading {
-                                                div { class: "sb-peek-loading", "Peeking…" }
-                                            } else if let Some(e) = err {
-                                                div { class: "sb-peek-error", "❌ {e}" }
-                                            } else if msgs.is_empty() {
-                                                div { class: "sb-peek-loading",
-                                                    "No messages visible right now. Some may be locked by other consumers."
-                                                }
-                                            } else {
-                                                for (i, m) in msgs.iter().enumerate() {
-                                                    DeadLetterRow { idx: i, msg: m.clone() }
-                                                }
-                                            }
-                                            if let Some(ref result) = *sb_action_result.read() {
-                                                match result {
-                                                    Ok(msg) => rsx! { div { class: "sb-peek-loading", "✅ {msg}" } },
-                                                    Err(e) => rsx! { div { class: "sb-peek-error", "❌ {e}" } },
-                                                }
-                                            }
-                                        }
                                     }
                                 }
                             }
@@ -2059,6 +2050,77 @@ pub fn ChainDetailView(props: ChainDetailProps) -> Element {
                             }
                         }
                     }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            // ── Dead-letter console — docked below the queue table so opening
+            // a peek doesn't reflow the rows above it, and only one is open
+            // at a time (whichever queue's DL cell/icon was last clicked).
+            if let Some(q) = peek_queue.read().clone() {
+                {
+                    let loading = *peek_loading.read();
+                    let err = peek_error.read().clone();
+                    let msgs = peek_messages.read().clone();
+                    let q1 = q.clone();
+                    let q2 = q.clone();
+                    let q3 = q.clone();
+                    rsx! {
+                        div { class: "sb-peek-panel sb-console",
+                            div { class: "sb-peek-header",
+                                span { "🔍 Dead-letter messages — " }
+                                strong { "{q}" }
+                                span { class: "sb-peek-meta", " (peek-lock, non-destructive)" }
+                                button {
+                                    class: "btn-icon sb-console-close",
+                                    title: "Close",
+                                    onclick: move |_| {
+                                        peek_queue.set(None);
+                                        peek_messages.set(Vec::new());
+                                        peek_error.set(None);
+                                    },
+                                    "✕"
+                                }
+                            }
+                            div { class: "sb-queue-actions",
+                                button {
+                                    class: "btn btn-small",
+                                    title: "Permanently delete all active messages on this queue",
+                                    onclick: move |_| pending_sb_action.set(Some(PendingSbAction { queue: q1.clone(), action: SbQueueAction::PurgeActive })),
+                                    "Purge active"
+                                }
+                                button {
+                                    class: "btn btn-small",
+                                    title: "Permanently delete all dead-lettered messages on this queue",
+                                    onclick: move |_| pending_sb_action.set(Some(PendingSbAction { queue: q2.clone(), action: SbQueueAction::PurgeDeadLetters })),
+                                    "Clear DLQ"
+                                }
+                                button {
+                                    class: "btn btn-small",
+                                    title: "Move dead-lettered messages back onto the main queue",
+                                    onclick: move |_| pending_sb_action.set(Some(PendingSbAction { queue: q3.clone(), action: SbQueueAction::RequeueDeadLetters })),
+                                    "Requeue DLQ → main"
+                                }
+                            }
+                            if loading {
+                                div { class: "sb-peek-loading", "Peeking…" }
+                            } else if let Some(e) = err {
+                                div { class: "sb-peek-error", "❌ {e}" }
+                            } else if msgs.is_empty() {
+                                div { class: "sb-peek-loading",
+                                    "No messages visible right now. Some may be locked by other consumers."
+                                }
+                            } else {
+                                for (i, m) in msgs.iter().enumerate() {
+                                    DeadLetterRow { idx: i, msg: m.clone() }
+                                }
+                            }
+                            if let Some(ref result) = *sb_action_result.read() {
+                                match result {
+                                    Ok(msg) => rsx! { div { class: "sb-peek-loading", "✅ {msg}" } },
+                                    Err(e) => rsx! { div { class: "sb-peek-error", "❌ {e}" } },
                                 }
                             }
                         }

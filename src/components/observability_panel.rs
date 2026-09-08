@@ -55,7 +55,10 @@ pub fn ObservabilityPanel(props: ObservabilityPanelProps) -> Element {
         let az = az.clone();
         move |app_name: String| {
             let az = az.clone();
-            let my_generation = *tail_generation.read() + 1;
+            // `peek` throughout for this counter: nothing renders it, and a
+            // `read` inside the spawned loop below would subscribe this
+            // component to a signal the loop's own start/stop writes.
+            let my_generation = *tail_generation.peek() + 1;
             tail_generation.set(my_generation);
             tailing_app.set(Some(app_name.clone()));
             log_lines.write().clear();
@@ -103,7 +106,7 @@ pub fn ObservabilityPanel(props: ObservabilityPanelProps) -> Element {
                     tokio::select! {
                         line = reader.next_line() => match line {
                             Ok(Some(line)) => {
-                                if *tail_generation.read() != my_generation {
+                                if *tail_generation.peek() != my_generation {
                                     break;
                                 }
                                 let mut lines = log_lines.write();
@@ -116,14 +119,14 @@ pub fn ObservabilityPanel(props: ObservabilityPanelProps) -> Element {
                             Err(_) => break,
                         },
                         _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => {
-                            if *tail_generation.read() != my_generation {
+                            if *tail_generation.peek() != my_generation {
                                 break;
                             }
                         }
                     }
                 }
                 let _ = child.kill().await;
-                if *tail_generation.read() == my_generation {
+                if *tail_generation.peek() == my_generation {
                     tailing_app.set(None);
                 }
             });
@@ -133,7 +136,7 @@ pub fn ObservabilityPanel(props: ObservabilityPanelProps) -> Element {
     let stop_tail = move |_| {
         // Bumping the generation makes the running loop above exit on its
         // next iteration and kill the child process itself.
-        let next = *tail_generation.read() + 1;
+        let next = *tail_generation.peek() + 1;
         tail_generation.set(next);
         tailing_app.set(None);
     };
