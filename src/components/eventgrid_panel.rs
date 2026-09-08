@@ -49,7 +49,9 @@ pub fn EventGridPanel(props: EventGridPanelProps) -> Element {
 
     // Load from cache immediately, then fetch fresh in background
     let mut start_fetch = move |rg: String| {
-        let generation = *fetch_generation.read() + 1;
+        // `peek`, not `read`: this runs inside `use_effect`, and subscribing
+        // the effect to a signal written on the next line reruns it forever.
+        let generation = *fetch_generation.peek() + 1;
         fetch_generation.set(generation);
         loading.set(true);
         error_msg.set(None);
@@ -60,7 +62,7 @@ pub fn EventGridPanel(props: EventGridPanelProps) -> Element {
             fetch_eg_into(&rg, &mut fresh_topics, &mut fresh_sys, &mut fresh_err).await;
             // A superseded fetch reports nothing at all — not its data, not
             // its error, not even that loading finished.
-            if *fetch_generation.read() != generation {
+            if *fetch_generation.peek() != generation {
                 return;
             }
             topics.set(fresh_topics);

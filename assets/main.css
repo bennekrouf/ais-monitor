@@ -717,6 +717,22 @@ body {
 .sb-peek-meta { color: var(--text3); font-size: 10px; }
 .sb-queue-actions { display: flex; gap: 6px; margin-bottom: 8px; }
 
+/* Docked below the whole queue table, instead of inline under one row, so
+   opening a peek doesn't reflow the rows above it. */
+.sb-console {
+    margin-top: 10px;
+}
+.sb-peek-header { display: flex; align-items: center; }
+.sb-console-close {
+    margin-left: auto;
+}
+.qcol-dl.clickable {
+    cursor: pointer;
+}
+.qcol-dl.clickable:hover {
+    text-decoration: underline;
+}
+
 /* ── Home dashboard ───────────────────────────────────────────────────
    Home is deliberately denser than the rest of the app — the point of the
    page is fitting the day's signals into one glance.
