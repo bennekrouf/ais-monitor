@@ -21,6 +21,12 @@ Both: macOS · Windows · Linux. Both read live data from Azure via the `az` CLI
 
 ---
 
+## What's new
+
+Every version and what changed in it: [Release notes](https://mayorana.ch/en/apps/ais-monitor/releases).
+The notes are written in [`CHANGELOG.md`](CHANGELOG.md) and published from there — to that page, to
+`releases.json` beside the builds, and to the GitHub Release body.
+
 ## Install
 
 ### Desktop (GUI)
