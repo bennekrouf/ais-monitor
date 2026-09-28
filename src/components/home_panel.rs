@@ -1149,7 +1149,15 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                                 button {
                                     key: "{days}",
                                     class: if *window_days.read() == days { "btn btn-small btn-primary" } else { "btn btn-small" },
-                                    onclick: move |_| window_days.set(days),
+                                    // A new window is a new list: drop the
+                                    // selection so its log can't resurface
+                                    // on switching back.
+                                    onclick: move |_| {
+                                        window_days.set(days);
+                                        open_log.set(None);
+                                        log_actions.set(Vec::new());
+                                        log_error.set(None);
+                                    },
                                     "{label}"
                                 }
                             }
