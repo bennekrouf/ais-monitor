@@ -765,6 +765,13 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
         v.sort_by(|a, b| b.failed_at.cmp(&a.failed_at));
         v
     };
+    // The run log belongs to a row in the list above. Once that row drops out
+    // — a narrower window, or the workflow recovered on the next poll — there
+    // is no selection on screen, so the log must not linger below either.
+    let shown_log: Option<(String, String)> = open_log
+        .read()
+        .clone()
+        .filter(|(w, r)| failing.iter().any(|f| &f.workflow == w && &f.run_id == r));
     // Count actual runs, not chain keys: a sweep whose `list_runs` calls all
     // failed still inserts an (empty) entry per chain, so testing the outer
     // map would report "have data" and make the card claim nothing is
@@ -1415,7 +1422,7 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
             // Anchored at the bottom of the page rather than expanding
             // inline, so opening it never pushes the tables and tiles
             // around — important on an unattended display.
-            if let Some((wf, run_id)) = open_log.read().clone() {
+            if let Some((wf, run_id)) = shown_log {
                 {
                     let actions = log_actions.read().clone();
                     let failed: Vec<&azure::ActionInfo> = actions.iter()

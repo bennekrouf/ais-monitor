@@ -16,6 +16,15 @@ Each heading is dated on the day its tag was pushed. Releases that carried only
 build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for.
 
+## [Unreleased]
+
+### Fixed
+
+- On Home, the run log under "Still failing" now disappears when its workflow
+  is no longer in the list — after switching to a shorter window such as Today,
+  or once the workflow recovers — instead of staying open with nothing
+  selected.
+
 ## [0.3.37] - 2026-09-28
 
 ### Changed
