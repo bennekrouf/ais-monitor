@@ -3216,9 +3216,177 @@ pub fn query_function_metrics(
         .collect())
 }
 
+/// Run a KQL query against an Application Insights component and return the
+/// first table's rows.
+fn app_insights_rows(
+    rg: &str,
+    app_insights: &str,
+    query: &str,
+) -> Result<Vec<serde_json::Value>, String> {
+    let output = az_command(&[
+        "monitor",
+        "app-insights",
+        "query",
+        "--app",
+        app_insights,
+        "--resource-group",
+        rg,
+        "--analytics-query",
+        query,
+        "-o",
+        "json",
+    ])
+    .output()
+    .map_err(|e| format!("az app-insights query: {e}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_string());
+    }
+    let body = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
+    json["tables"][0]["rows"]
+        .as_array()
+        .cloned()
+        .ok_or_else(|| "No rows in response".to_string())
+}
+
+/// Escape a value for use inside a single-quoted KQL string literal.
+fn kql_str(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('\'', "\\'")
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct FunctionInvocation {
+    pub timestamp: String,
+    pub success: bool,
+    pub result_code: String,
+    pub duration_ms: f64,
+    /// Correlates the invocation with its traces and exceptions.
+    pub operation_id: String,
+}
+
+/// Most recent invocations of one function, successful or not, newest first.
+pub fn query_function_invocations(
+    rg: &str,
+    app_insights: &str,
+    function_app: &str,
+    function_name: &str,
+    days: u32,
+) -> Result<Vec<FunctionInvocation>, String> {
+    let query = format!(
+        "requests \
+         | where timestamp > ago({days}d) \
+         | where cloud_RoleName == '{app}' \
+         | where operation_Name == '{func}' \
+         | project timestamp, success, resultCode, duration, operation_Id \
+         | order by timestamp desc \
+         | take 50",
+        app = kql_str(function_app),
+        func = kql_str(function_name),
+    );
+    let rows = app_insights_rows(rg, app_insights, &query)?;
+    Ok(rows
+        .iter()
+        .filter_map(|r| {
+            let arr = r.as_array()?;
+            Some(FunctionInvocation {
+                timestamp: arr.first()?.as_str().unwrap_or("").to_string(),
+                success: parse_kql_bool(arr.get(1)?),
+                result_code: arr.get(2)?.as_str().unwrap_or("").to_string(),
+                duration_ms: arr.get(3)?.as_f64().unwrap_or(0.0),
+                operation_id: arr.get(4)?.as_str().unwrap_or("").to_string(),
+            })
+        })
+        .collect())
+}
+
+/// `success` comes back as a JSON bool from the query API, but some CLI
+/// versions render it as the string "True"/"False".
+fn parse_kql_bool(v: &serde_json::Value) -> bool {
+    v.as_bool()
+        .or_else(|| v.as_str().map(|s| s.eq_ignore_ascii_case("true")))
+        .unwrap_or(false)
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct InvocationLogLine {
+    pub timestamp: String,
+    /// "Verbose", "Information", "Warning", "Error" or "Critical".
+    pub level: String,
+    pub message: String,
+}
+
+/// The log lines (traces and exceptions) one invocation wrote, oldest first.
+/// `days` bounds the scan to the same window the invocation was listed from.
+pub fn query_invocation_logs(
+    rg: &str,
+    app_insights: &str,
+    operation_id: &str,
+    days: u32,
+) -> Result<Vec<InvocationLogLine>, String> {
+    let query = format!(
+        "union traces, exceptions \
+         | where timestamp > ago({days}d) \
+         | where operation_Id == '{op}' \
+         | extend text = iff(itemType == 'exception', \
+             strcat(type, ': ', coalesce(outerMessage, innermostMessage)), message) \
+         | project timestamp, severityLevel, text \
+         | order by timestamp asc \
+         | take 500",
+        op = kql_str(operation_id),
+    );
+    let rows = app_insights_rows(rg, app_insights, &query)?;
+    Ok(rows
+        .iter()
+        .filter_map(|r| {
+            let arr = r.as_array()?;
+            Some(InvocationLogLine {
+                timestamp: arr.first()?.as_str().unwrap_or("").to_string(),
+                level: severity_label(arr.get(1)?.as_i64()).to_string(),
+                message: arr.get(2)?.as_str().unwrap_or("").to_string(),
+            })
+        })
+        .collect())
+}
+
+fn severity_label(level: Option<i64>) -> &'static str {
+    match level {
+        Some(0) => "Verbose",
+        Some(1) => "Information",
+        Some(2) => "Warning",
+        Some(3) => "Error",
+        Some(4) => "Critical",
+        _ => "",
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A quote in a function or app name must not end the KQL literal.
+    #[test]
+    fn kql_str_escapes_quotes_and_backslashes() {
+        assert_eq!(kql_str("plain-name"), "plain-name");
+        assert_eq!(kql_str("it's"), "it\\'s");
+        assert_eq!(kql_str("a\\b"), "a\\\\b");
+    }
+
+    #[test]
+    fn parse_kql_bool_accepts_bool_and_string() {
+        assert!(parse_kql_bool(&serde_json::json!(true)));
+        assert!(parse_kql_bool(&serde_json::json!("True")));
+        assert!(!parse_kql_bool(&serde_json::json!(false)));
+        assert!(!parse_kql_bool(&serde_json::json!("False")));
+        assert!(!parse_kql_bool(&serde_json::Value::Null));
+    }
+
+    #[test]
+    fn severity_label_maps_app_insights_levels() {
+        assert_eq!(severity_label(Some(1)), "Information");
+        assert_eq!(severity_label(Some(3)), "Error");
+        // Exceptions carry a level too, but a missing one must not panic.
+        assert_eq!(severity_label(None), "");
+    }
 
     /// No `deadLetterDestination` — Event Grid drops the event once retries
     /// run out. This shape is what every subscription in dev/stg looked like

@@ -1,5 +1,8 @@
 use crate::components::chain_detail::AzConfig;
-use crate::services::azure::{self, FunctionApp, FunctionDetail, FunctionError, FunctionMetrics};
+use crate::services::azure::{
+    self, FunctionApp, FunctionDetail, FunctionError, FunctionInvocation, FunctionMetrics,
+    InvocationLogLine,
+};
 use crate::services::functions_cache;
 use dioxus::prelude::*;
 
@@ -58,6 +61,16 @@ pub fn FunctionsPanel(props: FunctionsPanelProps) -> Element {
     let mut error_key: Signal<Option<(String, String)>> = use_signal(|| None);
     let mut error_details: Signal<Vec<FunctionError>> = use_signal(Vec::new);
     let mut error_details_loading: Signal<bool> = use_signal(|| false);
+    // Invocations drill-down: (app_name, function_name) → recent runs, and
+    // within it one run's log lines keyed by its operation id.
+    let mut inv_key: Signal<Option<(String, String)>> = use_signal(|| None);
+    let mut invocations: Signal<Vec<FunctionInvocation>> = use_signal(Vec::new);
+    let mut inv_loading: Signal<bool> = use_signal(|| false);
+    let mut inv_error: Signal<Option<String>> = use_signal(|| None);
+    let mut log_op: Signal<Option<String>> = use_signal(|| None);
+    let mut log_lines: Signal<Vec<InvocationLogLine>> = use_signal(Vec::new);
+    let mut log_loading: Signal<bool> = use_signal(|| false);
+    let mut log_error: Signal<Option<String>> = use_signal(|| None);
     let mut pending_action: Signal<Option<PendingLifecycleAction>> = use_signal(|| None);
     let mut action_running: Signal<bool> = use_signal(|| false);
     let mut action_error: Signal<Option<String>> = use_signal(|| None);
@@ -67,6 +80,10 @@ pub fn FunctionsPanel(props: FunctionsPanelProps) -> Element {
     // Both need the newest run to be the one that publishes.
     let mut discover_guard = crate::hooks::fetch_guard::use_fetch_guard();
     let mut metrics_guard = crate::hooks::fetch_guard::use_fetch_guard();
+    // Clicking one function's Runs, then another's before the first answers,
+    // must not leave the second row showing the first function's runs.
+    let mut inv_guard = crate::hooks::fetch_guard::use_fetch_guard();
+    let mut log_guard = crate::hooks::fetch_guard::use_fetch_guard();
 
     // Auto-discover on mount: paint cached snapshot instantly, then refresh.
     use_effect({
@@ -252,6 +269,85 @@ pub fn FunctionsPanel(props: FunctionsPanelProps) -> Element {
         }
     };
 
+    // Fetch recent invocations for a specific function (toggle).
+    let fetch_invocations = {
+        let az = az.clone();
+        move |app_name: String, fn_name: String| {
+            let az = az.clone();
+            let key = (app_name.clone(), fn_name.clone());
+            if inv_key.read().as_ref() == Some(&key) {
+                inv_guard.begin();
+                inv_key.set(None);
+                return;
+            }
+            let Some(ai_name) = app_insights_name.read().clone() else {
+                return;
+            };
+            let days = *days_range.read();
+            let token = inv_guard.begin();
+            log_guard.begin();
+            inv_key.set(Some(key));
+            invocations.set(Vec::new());
+            inv_error.set(None);
+            inv_loading.set(true);
+            log_op.set(None);
+            spawn(async move {
+                let rg = az.resource_group.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    azure::query_function_invocations(&rg, &ai_name, &app_name, &fn_name, days)
+                })
+                .await
+                .unwrap_or_else(|e| Err(format!("{e}")));
+                if !inv_guard.is_current(token) {
+                    return;
+                }
+                match result {
+                    Ok(rows) => invocations.set(rows),
+                    Err(e) => inv_error.set(Some(e)),
+                }
+                inv_loading.set(false);
+            });
+        }
+    };
+
+    // Fetch the log lines one invocation wrote (toggle).
+    let fetch_logs = {
+        let az = az.clone();
+        move |operation_id: String| {
+            let az = az.clone();
+            if log_op.read().as_deref() == Some(operation_id.as_str()) {
+                log_guard.begin();
+                log_op.set(None);
+                return;
+            }
+            let Some(ai_name) = app_insights_name.read().clone() else {
+                return;
+            };
+            let days = *days_range.read();
+            let token = log_guard.begin();
+            log_op.set(Some(operation_id.clone()));
+            log_lines.set(Vec::new());
+            log_error.set(None);
+            log_loading.set(true);
+            spawn(async move {
+                let rg = az.resource_group.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    azure::query_invocation_logs(&rg, &ai_name, &operation_id, days)
+                })
+                .await
+                .unwrap_or_else(|e| Err(format!("{e}")));
+                if !log_guard.is_current(token) {
+                    return;
+                }
+                match result {
+                    Ok(rows) => log_lines.set(rows),
+                    Err(e) => log_error.set(Some(e)),
+                }
+                log_loading.set(false);
+            });
+        }
+    };
+
     // Run a confirmed lifecycle action, then re-list function apps so the
     // state dot / running badge reflects the new state.
     let run_action = {
@@ -322,6 +418,14 @@ pub fn FunctionsPanel(props: FunctionsPanelProps) -> Element {
     let active_error_key = error_key.read().clone();
     let err_details = error_details.read().clone();
     let err_loading = *error_details_loading.read();
+    let active_inv_key = inv_key.read().clone();
+    let invs = invocations.read().clone();
+    let invs_loading = *inv_loading.read();
+    let invs_error = inv_error.read().clone();
+    let active_log_op = log_op.read().clone();
+    let logs = log_lines.read().clone();
+    let logs_loading = *log_loading.read();
+    let logs_error = log_error.read().clone();
 
     rsx! {
         div { class: "func-panel",
@@ -459,6 +563,12 @@ pub fn FunctionsPanel(props: FunctionsPanelProps) -> Element {
                                                     let mut fetch_errors = fetch_errors.clone();
                                                     let an = app_name.clone();
                                                     let fn2 = fn_name.clone();
+                                                    let is_inv_open = active_inv_key.as_ref()
+                                                        .map(|(a, f)| a == &app_name && f == &fn_name)
+                                                        .unwrap_or(false);
+                                                    let mut fetch_invocations = fetch_invocations.clone();
+                                                    let an_inv = app_name.clone();
+                                                    let fn_inv = fn_name.clone();
                                                     let portal_fn_url = crate::services::portal_links::function(
                                                         &az.tenant, &az.subscription, &az.resource_group,
                                                         &app_name, &fn_name,
@@ -472,6 +582,13 @@ pub fn FunctionsPanel(props: FunctionsPanelProps) -> Element {
                                                                     title: "Open this function's invocations in Azure Portal",
                                                                     onclick: move |_| crate::services::portal_links::open_in_browser(&portal_fn_url),
                                                                     "🔗"
+                                                                }
+                                                                button {
+                                                                    class: if is_inv_open { "func-runs-btn open" } else { "func-runs-btn" },
+                                                                    disabled: !has_ai,
+                                                                    title: if has_ai { "Show recent invocations and their logs" } else { "Needs Application Insights" },
+                                                                    onclick: move |_| fetch_invocations(an_inv.clone(), fn_inv.clone()),
+                                                                    if is_inv_open { "Runs ▴" } else { "Runs ▾" }
                                                                 }
                                                             }
                                                             td { class: "func-lang",
@@ -563,6 +680,113 @@ pub fn FunctionsPanel(props: FunctionsPanelProps) -> Element {
                                                                                                         ));
                                                                                                     },
                                                                                                     "⎘"
+                                                                                                }
+                                                                                            }
+                                                                                        }
+                                                                                        }}
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                        }
+                                                                    }
+                                                                }
+                                                            }
+                                                        }
+                                                        if is_inv_open {
+                                                            tr { class: "func-error-detail-row",
+                                                                td { colspan: "{col_span}",
+                                                                    div { class: "func-error-detail-panel",
+                                                                        if invs_loading {
+                                                                            div { class: "func-error-loading", "Fetching invocations…" }
+                                                                        } else if let Some(e) = invs_error.clone() {
+                                                                            div { class: "az-error", "{e}" }
+                                                                        } else if invs.is_empty() {
+                                                                            div { class: "func-error-empty", "No invocations in the selected range." }
+                                                                        } else {
+                                                                            table { class: "func-error-table func-inv-table",
+                                                                                thead {
+                                                                                    tr {
+                                                                                        th { "Time" }
+                                                                                        th { "Result" }
+                                                                                        th { "Code" }
+                                                                                        th { class: "func-th-num", "Duration" }
+                                                                                        th { }
+                                                                                    }
+                                                                                }
+                                                                                tbody {
+                                                                                    for inv in &invs {
+                                                                                        {
+                                                                                        let op = inv.operation_id.clone();
+                                                                                        let is_log_open = active_log_op.as_deref() == Some(op.as_str());
+                                                                                        let mut fetch_logs = fetch_logs.clone();
+                                                                                        let op_click = op.clone();
+                                                                                        let row_class = if is_log_open { "func-inv-row open" } else { "func-inv-row" };
+                                                                                        let copy_all = logs.iter()
+                                                                                            .map(|l| format!("[{}] {} {}", l.timestamp, l.level, l.message))
+                                                                                            .collect::<Vec<_>>()
+                                                                                            .join("\n");
+                                                                                        rsx! {
+                                                                                        tr {
+                                                                                            class: "{row_class}",
+                                                                                            title: "Show this invocation's logs",
+                                                                                            onclick: move |_| fetch_logs(op_click.clone()),
+                                                                                            td { class: "func-error-ts", { format_timestamp(&inv.timestamp) } }
+                                                                                            td {
+                                                                                                if inv.success {
+                                                                                                    span { class: "func-success", "Succeeded" }
+                                                                                                } else {
+                                                                                                    span { class: "func-errors has-errors", "Failed" }
+                                                                                                }
+                                                                                            }
+                                                                                            td { class: "func-error-ts", "{inv.result_code}" }
+                                                                                            td { class: "func-td-num", { format_duration(inv.duration_ms) } }
+                                                                                            td { class: "func-inv-caret", if is_log_open { "▴" } else { "▾" } }
+                                                                                        }
+                                                                                        if is_log_open {
+                                                                                            tr { class: "func-error-detail-row",
+                                                                                                td { colspan: "5",
+                                                                                                    div { class: "func-log-panel",
+                                                                                                        if logs_loading {
+                                                                                                            div { class: "func-error-loading", "Fetching logs…" }
+                                                                                                        } else if let Some(e) = logs_error.clone() {
+                                                                                                            div { class: "az-error", "{e}" }
+                                                                                                        } else if logs.is_empty() {
+                                                                                                            div { class: "func-error-empty",
+                                                                                                                "No log lines for this invocation. Logs can take a few minutes to reach Application Insights, and sampling may have dropped them."
+                                                                                                            }
+                                                                                                        } else {
+                                                                                                            div { class: "func-log-toolbar",
+                                                                                                                span { "{logs.len()} lines" }
+                                                                                                                button {
+                                                                                                                    class: "func-error-copy-btn",
+                                                                                                                    title: "Copy all lines",
+                                                                                                                    onclick: move |e: Event<MouseData>| {
+                                                                                                                        e.stop_propagation();
+                                                                                                                        let _ = document::eval(&format!(
+                                                                                                                            "navigator.clipboard.writeText({:?})",
+                                                                                                                            copy_all
+                                                                                                                        ));
+                                                                                                                    },
+                                                                                                                    "⎘"
+                                                                                                                }
+                                                                                                            }
+                                                                                                            for line in &logs {
+                                                                                                                {
+                                                                                                                let level_class = match line.level.as_str() {
+                                                                                                                    "Error" | "Critical" => "func-log-level err",
+                                                                                                                    "Warning" => "func-log-level warn",
+                                                                                                                    _ => "func-log-level",
+                                                                                                                };
+                                                                                                                rsx! {
+                                                                                                                div { class: "func-log-line",
+                                                                                                                    span { class: "func-error-ts", { format_log_time(&line.timestamp) } }
+                                                                                                                    span { class: "{level_class}", "{line.level}" }
+                                                                                                                    span { class: "func-log-msg", "{line.message}" }
+                                                                                                                }
+                                                                                                                }}
+                                                                                                            }
+                                                                                                        }
+                                                                                                    }
                                                                                                 }
                                                                                             }
                                                                                         }
@@ -688,6 +912,38 @@ fn format_last_run(ts: &str) -> String {
     } else {
         // Fallback: show first 19 chars (datetime without fractional seconds)
         ts.get(..19).unwrap_or(ts).to_string()
+    }
+}
+
+/// Absolute local time for an invocation row, e.g. "2026-09-29 14:03:07".
+fn format_timestamp(ts: &str) -> String {
+    match chrono::DateTime::parse_from_rfc3339(ts) {
+        Ok(dt) => dt
+            .with_timezone(&chrono::Local)
+            .format("%Y-%m-%d %H:%M:%S")
+            .to_string(),
+        Err(_) => ts.get(..19).unwrap_or(ts).to_string(),
+    }
+}
+
+/// Local time of day with milliseconds, for lines within one invocation.
+fn format_log_time(ts: &str) -> String {
+    match chrono::DateTime::parse_from_rfc3339(ts) {
+        Ok(dt) => dt
+            .with_timezone(&chrono::Local)
+            .format("%H:%M:%S%.3f")
+            .to_string(),
+        Err(_) => ts.to_string(),
+    }
+}
+
+fn format_duration(ms: f64) -> String {
+    if ms < 1000.0 {
+        format!("{ms:.0} ms")
+    } else if ms < 60_000.0 {
+        format!("{:.1} s", ms / 1000.0)
+    } else {
+        format!("{:.1} min", ms / 60_000.0)
     }
 }
 

@@ -16,6 +16,29 @@ Each heading is dated on the day its tag was pushed. Releases that carried only
 build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for.
 
+## [Unreleased]
+
+### Added
+
+- On Function Apps, each function has a **Runs** button that lists its recent
+  invocations — successful and failed — with time, result, status code and
+  duration. Click an invocation to see the log lines it wrote, warnings and
+  errors highlighted, with a button to copy them all. Needs Application
+  Insights, and follows the metrics range picker.
+
+### Changed
+
+- The other tabs — Functions, Health Check, Resource Health, Event Grid, App
+  Settings, Variable Groups, RBAC, Observability and Diagnostics — now load in
+  the background once your chains are discovered, one every few seconds, so
+  they are usually ready by the time you open them instead of starting their
+  scan on first click.
+
+### Fixed
+
+- In a chain's Workflows tab, the "also fed by" line now has a space between
+  the label and each feeding workflow, instead of running the names together.
+
 ## [0.3.38] - 2026-09-28
 
 ### Fixed
