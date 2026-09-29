@@ -16,6 +16,21 @@ Each heading is dated on the day its tag was pushed. Releases that carried only
 build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for.
 
+## [Unreleased]
+
+### Added
+
+- On Home, click a workflow under "Workflows running" to follow that run live
+  in the console at the bottom: its actions appear in the order they start,
+  with their status, start time and how long each took, refreshed every few
+  seconds until the run finishes. The console then shows how the run ended and
+  stays open until you close it.
+
+### Changed
+
+- Run logs, including the ones under "Still failing", now list actions in the
+  order they ran, with when each started and how long it took.
+
 ## [0.3.39] - 2026-09-29
 
 ### Added
