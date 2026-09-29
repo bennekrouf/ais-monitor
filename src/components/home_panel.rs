@@ -39,6 +39,7 @@ struct LiveRun {
     /// once per chain — this collects those rather than repeating the run.
     chains: Vec<String>,
     workflow: String,
+    run_id: String,
     started: DateTime<Utc>,
 }
 
@@ -62,6 +63,10 @@ struct LiveChain {
 /// Ten seconds is right for a handful of workflows and wildly wrong for
 /// several dozen, which is how the subscription throttle got tripped.
 const POLL_SECS: u64 = 10;
+
+/// How often the console re-reads a run it is following live. Each tick is
+/// two `az rest` calls (run status + actions), so not much tighter than this.
+const LIVE_LOG_SECS: u64 = 5;
 
 /// How often the driver loop wakes to check whether a sweep is due. Short
 /// so chain discovery finishing mid-interval is noticed promptly; the tick
@@ -161,6 +166,12 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
     let mut log_actions: Signal<Vec<azure::ActionInfo>> = use_signal(Vec::new);
     let mut log_loading: Signal<bool> = use_signal(|| false);
     let mut log_error: Signal<Option<String>> = use_signal(|| None);
+    // Set when the console was opened from "Workflows running": it then
+    // follows the run, re-reading it every LIVE_LOG_SECS until it finishes,
+    // and stays open after the run leaves that list so the outcome is seen.
+    let mut log_live: Signal<bool> = use_signal(|| false);
+    let mut log_run_status: Signal<Option<String>> = use_signal(|| None);
+    let mut log_updated_at: Signal<Option<DateTime<Utc>>> = use_signal(|| None);
 
     // The rollup load runs on mount and again on Refresh, and it publishes
     // in four stages as each section resolves — so a superseded run has four
@@ -306,41 +317,97 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
         move || load()
     });
 
-    // Toggle the action log for a failed run. Clicking the open row closes
-    // it, so the same click target both opens and dismisses the console.
+    // Toggle the action log for a run. Clicking the open row closes it, so the
+    // same click target both opens and dismisses the console. `live` follows
+    // a running run until it finishes; otherwise the log is read once.
     let toggle_log = {
         let az = az.clone();
-        move |workflow: String, run_id: String| {
+        move |workflow: String, run_id: String, live: bool| {
             let key = (workflow.clone(), run_id.clone());
             if open_log.read().as_ref() == Some(&key) {
+                log_guard.begin();
                 open_log.set(None);
                 log_actions.set(Vec::new());
                 log_error.set(None);
                 return;
             }
             let az = az.clone();
-            open_log.set(Some(key));
+            open_log.set(Some(key.clone()));
             log_actions.set(Vec::new());
             log_error.set(None);
+            log_live.set(live);
+            log_run_status.set(live.then(|| "Running".to_string()));
+            log_updated_at.set(None);
             let token = log_guard.begin();
             log_loading.set(true);
             spawn(async move {
-                let sub = az.subscription.clone();
-                let rg = az.resource_group.clone();
-                let app = az.app_name.clone();
-                let result = tokio::task::spawn_blocking(move || {
-                    azure::list_actions(&sub, &rg, &app, &workflow, &run_id)
-                })
-                .await
-                .unwrap_or_else(|e| Err(format!("{e}")));
-                if !log_guard.is_current(token) {
-                    return;
+                // `peek` only: this task must not subscribe the panel to the
+                // signals it writes.
+                let still_open =
+                    move || log_guard.is_current(token) && open_log.peek().as_ref() == Some(&key);
+                loop {
+                    let (sub, rg, app) = (
+                        az.subscription.clone(),
+                        az.resource_group.clone(),
+                        az.app_name.clone(),
+                    );
+                    let (wf, rid) = (workflow.clone(), run_id.clone());
+                    let actions = tokio::task::spawn_blocking(move || {
+                        azure::list_actions(&sub, &rg, &app, &wf, &rid)
+                    })
+                    .await
+                    .unwrap_or_else(|e| Err(format!("{e}")));
+                    let run = if live {
+                        let (sub, rg, app) = (
+                            az.subscription.clone(),
+                            az.resource_group.clone(),
+                            az.app_name.clone(),
+                        );
+                        let (wf, rid) = (workflow.clone(), run_id.clone());
+                        Some(
+                            tokio::task::spawn_blocking(move || {
+                                azure::get_run(&sub, &rg, &app, &wf, &rid)
+                            })
+                            .await
+                            .unwrap_or_else(|e| Err(format!("{e}"))),
+                        )
+                    } else {
+                        None
+                    };
+                    if !still_open() {
+                        return;
+                    }
+                    // A failed tick keeps the last good actions on screen and
+                    // shows the error beside them; the next tick may recover.
+                    match actions {
+                        Ok(a) => {
+                            log_actions.set(a);
+                            log_error.set(None);
+                        }
+                        Err(e) => log_error.set(Some(e)),
+                    }
+                    let finished = match run {
+                        Some(Ok(r)) => {
+                            let done = r.status != "Running";
+                            log_run_status.set(Some(r.status));
+                            done
+                        }
+                        Some(Err(e)) => {
+                            log_error.set(Some(e));
+                            false
+                        }
+                        None => true,
+                    };
+                    log_updated_at.set(Some(Utc::now()));
+                    log_loading.set(false);
+                    if finished {
+                        return;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_secs(LIVE_LOG_SECS)).await;
+                    if !still_open() {
+                        return;
+                    }
                 }
-                match result {
-                    Ok(actions) => log_actions.set(actions),
-                    Err(e) => log_error.set(Some(e)),
-                }
-                log_loading.set(false);
             });
         }
     };
@@ -768,10 +835,12 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
     // The run log belongs to a row in the list above. Once that row drops out
     // — a narrower window, or the workflow recovered on the next poll — there
     // is no selection on screen, so the log must not linger below either.
-    let shown_log: Option<(String, String)> = open_log
-        .read()
-        .clone()
-        .filter(|(w, r)| failing.iter().any(|f| &f.workflow == w && &f.run_id == r));
+    // A live log is the exception: its run leaves "Workflows running" the
+    // moment it finishes, which is exactly when its outcome is worth seeing,
+    // so it stays until closed.
+    let shown_log: Option<(String, String)> = open_log.read().clone().filter(|(w, r)| {
+        *log_live.read() || failing.iter().any(|f| &f.workflow == w && &f.run_id == r)
+    });
     // Count actual runs, not chain keys: a sweep whose `list_runs` calls all
     // failed still inserts an (empty) entry per chain, so testing the outer
     // map would report "have data" and make the card claim nothing is
@@ -805,6 +874,7 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                         .or_insert_with(|| LiveRun {
                             chains: Vec::new(),
                             workflow: workflow.clone(),
+                            run_id: r.id.clone(),
                             started: dt.with_timezone(&Utc),
                         })
                         .chains
@@ -1200,7 +1270,7 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                                             tr {
                                                 class: if is_open { "func-row home-row-clickable home-row-selected" } else { "func-row home-row-clickable" },
                                                 title: "Show this run's action log",
-                                                onclick: move |_| toggle_log(wf.clone(), rid.clone()),
+                                                onclick: move |_| toggle_log(wf.clone(), rid.clone(), false),
                                                 td { class: "func-name",
                                                     span { class: "home-caret", if is_open { "▾" } else { "▸" } }
                                                     div { class: "home-wf-cell",
@@ -1262,8 +1332,20 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                             thead { tr { th { "Workflow" } th { "Started" } th { "Elapsed" } } }
                             tbody {
                                 for r in live_runs.iter() {
-                                    tr { class: "func-row",
+                                    {
+                                    let is_open = open_log.read().as_ref()
+                                        .map(|(w, id)| w == &r.workflow && id == &r.run_id)
+                                        .unwrap_or(false);
+                                    let wf = r.workflow.clone();
+                                    let rid = r.run_id.clone();
+                                    let mut toggle_log = toggle_log.clone();
+                                    rsx! {
+                                    tr {
+                                        class: if is_open { "func-row home-row-clickable home-row-selected" } else { "func-row home-row-clickable" },
+                                        title: "Follow this run's actions live",
+                                        onclick: move |_| toggle_log(wf.clone(), rid.clone(), true),
                                         td { class: "func-name",
+                                            span { class: "home-caret", if is_open { "▾" } else { "▸" } }
                                             span { class: "home-live-dot" }
                                             div { class: "home-wf-cell",
                                                 div { class: "home-wf-line",
@@ -1278,7 +1360,10 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                                                             button {
                                                                 class: "portal-link",
                                                                 title: "Open this workflow in the Azure Portal",
-                                                                onclick: move |_| crate::services::portal_links::open_in_browser(&url),
+                                                                onclick: move |e: Event<MouseData>| {
+                                                                    e.stop_propagation();
+                                                                    crate::services::portal_links::open_in_browser(&url);
+                                                                },
                                                                 "🔗"
                                                             }
                                                         }
@@ -1305,6 +1390,8 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                                         }
                                         td { "{format_dt_utc(r.started)}" }
                                         td { "{format_elapsed(r.started)}" }
+                                    }
+                                    }
                                     }
                                 }
                             }
@@ -1426,7 +1513,7 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                 }
             }
 
-            // ── Action log for the selected failed run ──────────────────
+            // ── Action log for the selected run ─────────────────────────
             // Anchored at the bottom of the page rather than expanding
             // inline, so opening it never pushes the tables and tiles
             // around — important on an unattended display.
@@ -1436,15 +1523,39 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                     let failed: Vec<&azure::ActionInfo> = actions.iter()
                         .filter(|a| a.status == "Failed")
                         .collect();
+                    let live = *log_live.read();
+                    let run_status = log_run_status.read().clone();
+                    let updated = (*log_updated_at.read()).map(|t| t.with_timezone(&Local).format("%H:%M:%S").to_string());
+                    let err = log_error.read().clone();
                     rsx! {
                         div { class: "func-app-card home-card home-console",
                             div { class: "func-app-header",
-                                h3 { "Run log — {wf}" }
+                                h3 { if live { "Live run — {wf}" } else { "Run log — {wf}" } }
                                 span { class: "func-app-count", title: "{run_id}", "run {short_id(&run_id)}" }
+                                if let Some(status) = run_status {
+                                    span {
+                                        class: match status.as_str() {
+                                            "Running" => "home-run-status running",
+                                            "Succeeded" => "home-run-status func-badge-active",
+                                            "Failed" | "Cancelled" | "TimedOut" => "home-run-status func-errors has-errors",
+                                            _ => "home-run-status",
+                                        },
+                                        if status == "Running" {
+                                            span { class: "home-live-dot" }
+                                        }
+                                        "{status}"
+                                    }
+                                }
+                                if live {
+                                    if let Some(t) = updated {
+                                        span { class: "func-app-count", "updated {t}" }
+                                    }
+                                }
                                 button {
                                     class: "btn btn-small",
                                     style: "margin-left:auto;",
                                     onclick: move |_| {
+                                        log_guard.begin();
                                         open_log.set(None);
                                         log_actions.set(Vec::new());
                                         log_error.set(None);
@@ -1454,11 +1565,18 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                             }
                             if *log_loading.read() {
                                 div { class: "func-loading", "Loading run actions…" }
-                            } else if let Some(e) = log_error.read().clone() {
+                            } else if let (Some(e), true) = (err.clone(), actions.is_empty()) {
                                 div { class: "az-error", "{e}" }
                             } else if actions.is_empty() {
-                                div { class: "func-empty-small", "No actions reported for this run." }
+                                div { class: "func-empty-small",
+                                    if live { "No actions have started yet." } else { "No actions reported for this run." }
+                                }
                             } else {
+                                // A live tick that failed keeps the last good
+                                // actions below and says why they may be stale.
+                                if let Some(e) = err {
+                                    div { class: "az-error", "Last refresh failed: {e}" }
+                                }
                                 // Failed actions carry the actual cause, so
                                 // they lead; the full sequence follows for
                                 // context on where it broke.
@@ -1475,7 +1593,7 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                                 }
                                 div { class: "home-section-label", "All actions" }
                                 table { class: "func-table home-table",
-                                    thead { tr { th { "Action" } th { "Status" } th { "Detail" } } }
+                                    thead { tr { th { "Action" } th { "Status" } th { "Started" } th { "Took" } th { "Detail" } } }
                                     tbody {
                                         for a in actions.iter() {
                                             tr { class: "func-row",
@@ -1487,9 +1605,14 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                                                             "Succeeded" => "func-badge-active",
                                                             _ => "func-no-data",
                                                         },
+                                                        if a.status == "Running" {
+                                                            span { class: "home-live-dot" }
+                                                        }
                                                         "{a.status}"
                                                     }
                                                 }
+                                                td { class: "home-rel", { action_started(a) } }
+                                                td { class: "home-rel", { action_took(a) } }
                                                 td { class: "home-console-detail",
                                                     { a.error.clone().unwrap_or_else(|| "—".into()) }
                                                 }
@@ -1503,6 +1626,50 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                 }
             }
         }
+    }
+}
+
+/// Local time an action started, to the second — actions in one run are
+/// seconds apart, so the minute alone would not order them.
+fn action_started(a: &azure::ActionInfo) -> String {
+    a.start
+        .as_deref()
+        .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+        .map(|t| t.with_timezone(&Local).format("%H:%M:%S").to_string())
+        .unwrap_or_else(|| "—".into())
+}
+
+/// How long an action took, or has been going if it has not ended.
+fn action_took(a: &azure::ActionInfo) -> String {
+    let parse = |s: &Option<String>| {
+        s.as_deref()
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|t| t.with_timezone(&Utc))
+    };
+    let Some(start) = parse(&a.start) else {
+        return "—".into();
+    };
+    match parse(&a.end) {
+        Some(end) => {
+            let ms = (end - start).num_milliseconds().max(0);
+            if ms < 1000 {
+                format!("{ms} ms")
+            } else if ms < 60_000 {
+                format!("{:.1} s", ms as f64 / 1000.0)
+            } else {
+                format_elapsed_between(start, end)
+            }
+        }
+        None => format_elapsed(start),
+    }
+}
+
+fn format_elapsed_between(start: DateTime<Utc>, end: DateTime<Utc>) -> String {
+    let secs = (end - start).num_seconds().max(0);
+    if secs < 3600 {
+        format!("{}m {}s", secs / 60, secs % 60)
+    } else {
+        format!("{}h {}m", secs / 3600, (secs % 3600) / 60)
     }
 }
 

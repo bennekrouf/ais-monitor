@@ -2884,3 +2884,11 @@ body {
 .func-log-level.warn { color: var(--yellow); font-weight: 600; }
 .func-log-level.err { color: var(--red); font-weight: 600; }
 .func-log-msg { font-family: monospace; white-space: pre-wrap; word-break: break-word; color: var(--text1); }
+.home-run-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-size: var(--home-fs-sm);
+    font-weight: 600;
+}
+.home-run-status.running { color: var(--text1); }

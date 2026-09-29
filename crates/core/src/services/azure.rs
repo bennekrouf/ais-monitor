@@ -883,6 +883,9 @@ pub struct ActionInfo {
     pub name: String,
     pub status: String,
     pub error: Option<String>,
+    /// RFC 3339; absent for an action that has not started yet.
+    pub start: Option<String>,
+    pub end: Option<String>,
 }
 
 /// List actions for a specific run (blocking)
@@ -925,11 +928,63 @@ pub fn list_actions(
                 name: v["name"].as_str()?.to_string(),
                 status: props["status"].as_str()?.to_string(),
                 error,
+                start: props["startTime"].as_str().map(String::from),
+                end: props["endTime"].as_str().map(String::from),
             })
         })
         .collect();
 
-    Ok(actions)
+    Ok(sort_actions_by_start(actions))
+}
+
+/// Azure returns a run's actions in no particular order. Execution order is
+/// what a reader follows, so sort by start time — RFC 3339 UTC strings sort
+/// chronologically as text — with not-yet-started actions last, by name.
+fn sort_actions_by_start(mut actions: Vec<ActionInfo>) -> Vec<ActionInfo> {
+    actions.sort_by(|a, b| match (&a.start, &b.start) {
+        (Some(x), Some(y)) => x.cmp(y).then_with(|| a.name.cmp(&b.name)),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => a.name.cmp(&b.name),
+    });
+    actions
+}
+
+/// Fetch one run's current status (blocking) — for following a run live.
+pub fn get_run(
+    sub: &str,
+    rg: &str,
+    app: &str,
+    workflow: &str,
+    run_id: &str,
+) -> Result<RunInfo, String> {
+    // Encoded so a hand-typed name cannot redirect the request.
+    let sub = &arm_seg(sub);
+    let rg = &arm_seg(rg);
+    let app = &arm_seg(app);
+    let workflow = &arm_seg(workflow);
+    let run_id = &arm_seg(run_id);
+    let url = format!(
+        "https://management.azure.com/subscriptions/{sub}/resourceGroups/{rg}/providers/Microsoft.Web/sites/{app}/hostruntime/runtime/webhooks/workflow/api/management/workflows/{workflow}/runs/{run_id}?api-version=2024-04-01"
+    );
+
+    let output = az_command(&["rest", "--method", "GET", "--url", &url, "--output", "json"])
+        .output()
+        .map_err(|e| format!("az rest failed: {e}"))?;
+
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).to_string());
+    }
+
+    let body = String::from_utf8_lossy(&output.stdout);
+    let v: serde_json::Value = serde_json::from_str(&body).map_err(|e| format!("parse: {e}"))?;
+    let props = &v["properties"];
+    Ok(RunInfo {
+        id: v["name"].as_str().unwrap_or(run_id).to_string(),
+        status: props["status"].as_str().unwrap_or("Unknown").to_string(),
+        start: props["startTime"].as_str().unwrap_or("").to_string(),
+        end: props["endTime"].as_str().map(String::from),
+    })
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -3362,6 +3417,28 @@ fn severity_label(level: Option<i64>) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn action(name: &str, start: Option<&str>) -> ActionInfo {
+        ActionInfo {
+            name: name.into(),
+            status: "Succeeded".into(),
+            error: None,
+            start: start.map(String::from),
+            end: None,
+        }
+    }
+
+    #[test]
+    fn actions_sort_by_start_with_unstarted_last() {
+        let sorted = sort_actions_by_start(vec![
+            action("Waiting_B", None),
+            action("Send", Some("2026-09-29T10:00:05Z")),
+            action("Waiting_A", None),
+            action("Parse", Some("2026-09-29T10:00:01Z")),
+        ]);
+        let names: Vec<&str> = sorted.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, ["Parse", "Send", "Waiting_A", "Waiting_B"]);
+    }
 
     /// A quote in a function or app name must not end the KQL literal.
     #[test]
