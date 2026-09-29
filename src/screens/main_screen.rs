@@ -21,6 +21,9 @@ use crate::services::{
 use dioxus::prelude::*;
 use std::collections::HashMap;
 
+/// Gap between background tab prefetches after chain discovery lands.
+const PREFETCH_STAGGER_SECS: u64 = 3;
+
 #[derive(Props, Clone, PartialEq)]
 pub struct MainScreenProps {
     pub az_config: AzConfig,
@@ -87,9 +90,9 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     // Mirrors `view_mode == Graph` as a plain bool signal so the (always-mounted)
     // GraphPanel can react to becoming visible and re-measure its container.
     let mut graph_visible = use_signal(|| false);
-    // Lazy keep-alive: the EventGrid and Functions panels run Azure discovery on
-    // mount, so we only mount them once their tab is first opened — then keep them
-    // mounted (hidden) so their fetched state survives later tab switches.
+    // Keep-alive: these panels run Azure discovery on mount, so each is mounted
+    // once — when its tab is first opened or when the background prefetch below
+    // reaches it — then kept mounted (hidden) so its state survives tab switches.
     let mut visited_eg = use_signal(|| false);
     let mut visited_fn = use_signal(|| false);
     let mut visited_settings = use_signal(|| false);
@@ -392,6 +395,44 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                 loading_chains.set(false);
             });
         }
+    });
+
+    // ── Prefetch the other tabs in the background ────────────────────────
+    // Each lazily-mounted panel starts its Azure load on mount, so marking a
+    // tab visited is what prefetches it. Wait for chain discovery to succeed
+    // (a failure usually means `az` is not signed in, and every panel would
+    // just fail the same way), then mount them one at a time, a few seconds
+    // apart, so they do not all spawn `az` at once alongside Home's own polls.
+    // A tab the user opens first is simply already mounted by then.
+    let mut prefetch_started = use_signal(|| false);
+    use_effect(move || {
+        if *loading_chains.read() || load_error.read().is_some() {
+            return;
+        }
+        // `peek`: this effect writes the flag, so reading it would rerun it.
+        if *prefetch_started.peek() {
+            return;
+        }
+        prefetch_started.set(true);
+        spawn(async move {
+            let tabs = [
+                visited_fn,
+                visited_health,
+                visited_res_health,
+                visited_eg,
+                visited_settings,
+                visited_var_groups,
+                visited_rbac,
+                visited_observability,
+                visited_diagnostics,
+            ];
+            for mut visited in tabs {
+                tokio::time::sleep(std::time::Duration::from_secs(PREFETCH_STAGGER_SECS)).await;
+                if !*visited.peek() {
+                    visited.set(true);
+                }
+            }
+        });
     });
 
     // ── Fetch Event Grid links (queue → topic mapping) ────────────────────
