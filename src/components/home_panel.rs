@@ -1415,7 +1415,36 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                                         tr { class: "func-row",
                                             td { class: "func-name", title: "{queue}",
                                                 div { class: "home-wf-cell",
-                                                    span { class: "home-wf-name", "{queue}" }
+                                                    div { class: "home-wf-line",
+                                                        span { class: "home-wf-name", "{queue}" }
+                                                        {
+                                                            // Same namespace fallback as the Chains tab:
+                                                            // the profile's, else the discovered one. No
+                                                            // namespace → no link rather than a broken one.
+                                                            let ns = if !az.sb_namespace.is_empty() {
+                                                                Some(az.sb_namespace.clone())
+                                                            } else {
+                                                                props.discovered_sb_namespace.read().clone()
+                                                            };
+                                                            if let Some(ns) = ns {
+                                                                let url = crate::services::portal_links::sb_queue(
+                                                                    &az.tenant, &az.subscription, &az.resource_group,
+                                                                    &ns, queue,
+                                                                );
+                                                                rsx! {
+                                                                    button {
+                                                                        class: "portal-link",
+                                                                        title: "Open this queue in Service Bus Explorer (Azure Portal)",
+                                                                        onclick: move |e: Event<MouseData>| {
+                                                                            e.stop_propagation();
+                                                                            crate::services::portal_links::open_in_browser(&url);
+                                                                        },
+                                                                        "🔗"
+                                                                    }
+                                                                }
+                                                            } else { rsx! {} }
+                                                        }
+                                                    }
                                                     span { class: "home-wf-chain", "{disp_chain(chain)}" }
                                                 }
                                             }

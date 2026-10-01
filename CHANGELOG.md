@@ -16,6 +16,15 @@ Each heading is dated on the day its tag was pushed. Releases that carried only
 build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for.
 
+## [Unreleased]
+
+### Added
+
+- On Home, each queue under "Dead-letter backlog" now has a 🔗 button that
+  opens it straight in Service Bus Explorer in the Azure Portal, so you can
+  peek, resubmit or purge its dead letters without going through the Chains
+  tab first.
+
 ## [0.3.40] - 2026-09-29
 
 ### Added
