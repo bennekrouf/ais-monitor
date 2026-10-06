@@ -148,6 +148,10 @@ jobs:
           echo "KEYCHAIN_PATH=$KEYCHAIN_PATH" >> "$GITHUB_ENV"
 
       - name: Build
+        env:
+          # Where anonymous usage statistics go (repository variable, not a
+          # secret). Unset, the build sends nothing and never asks.
+          MAYORANA_TELEMETRY_URL: ${{ vars.MAYORANA_TELEMETRY_URL }}
         run: cargo build --release --target aarch64-apple-darwin
 
       - name: Build TUI
@@ -333,6 +337,10 @@ jobs:
           }
 
       - name: Build
+        env:
+          # Where anonymous usage statistics go (repository variable, not a
+          # secret). Unset, the build sends nothing and never asks.
+          MAYORANA_TELEMETRY_URL: ${{ vars.MAYORANA_TELEMETRY_URL }}
         run: cargo build --release
 
       - name: Build TUI
@@ -568,6 +576,10 @@ jobs:
             pkg-config
 
       - name: Build
+        env:
+          # Where anonymous usage statistics go (repository variable, not a
+          # secret). Unset, the build sends nothing and never asks.
+          MAYORANA_TELEMETRY_URL: ${{ vars.MAYORANA_TELEMETRY_URL }}
         run: cargo build --release --target x86_64-unknown-linux-gnu
 
       - name: Build TUI

@@ -3,6 +3,7 @@ mod hooks;
 mod notice;
 mod screens;
 mod services;
+mod telemetry;
 mod update_check;
 
 use components::chain_detail::AzConfig;
@@ -241,10 +242,34 @@ fn WindowRoot(initial: Option<AzConfig>) -> Element {
         move |_rx: dioxus::prelude::UnboundedReceiver<()>| async move {
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             if let Some(info) = update_check::check().await {
+                telemetry::record(telemetry::Event::UpdateOffered {
+                    to: info.latest_version.clone(),
+                });
                 update_info.set(Some(info));
             }
         },
     );
+
+    // ── Anonymous usage statistics ─────────────────────────────────────────
+    // On by default, but only once the person has been told: `start` reads the
+    // opt-outs (including a shell profile's), records the launch, and says
+    // whether the notice is still owed. See telemetry.rs.
+    let mut ask_consent = use_signal(|| false);
+    use_coroutine(
+        move |_rx: dioxus::prelude::UnboundedReceiver<()>| async move {
+            if telemetry::start().await {
+                ask_consent.set(true);
+            }
+            telemetry::flush_forever().await;
+        },
+    );
+    // Recorded while the notice is on screen, so collection starts from the
+    // next event — never from one the person had no chance to read about.
+    use_effect(move || {
+        if *ask_consent.read() {
+            telemetry::mark_informed();
+        }
+    });
 
     rsx! {
         if let (Some(info), false) = (update_info.read().clone(), *update_dismissed.read()) {
@@ -262,10 +287,14 @@ fn WindowRoot(initial: Option<AzConfig>) -> Element {
                     // remote page inside the IPC bridge. Routing through
                     // `open_in_browser` also runs its scheme check.
                     let url = info.release_url.clone();
+                    let to = info.latest_version.clone();
                     rsx! {
                         button {
                             class: "update-banner-link",
-                            onclick: move |_| services::portal_links::open_in_browser(&url),
+                            onclick: move |_| {
+                                telemetry::record(telemetry::Event::UpdateClicked { to: to.clone() });
+                                services::portal_links::open_in_browser(&url)
+                            },
                             "Download"
                         }
                     }
@@ -281,6 +310,34 @@ fn WindowRoot(initial: Option<AzConfig>) -> Element {
                     class: "update-banner-dismiss",
                     onclick: move |_| update_dismissed.set(true),
                     "×"
+                }
+            }
+        }
+
+        // Usage-statistics notice: once, at the bottom so it never sits under the
+        // update or notice banners. Either button is remembered.
+        if *ask_consent.read() {
+            div { class: "consent-banner",
+                span { class: "update-banner-text",
+                    strong { "AIS Monitor shares anonymous usage statistics. " }
+                    "Whether it is installed and opened, and its version and operating system \
+                     — never your files, data, accounts or anything you type."
+                }
+                button {
+                    class: "update-banner-link",
+                    onclick: move |_| {
+                        telemetry::set_consent(true);
+                        ask_consent.set(false);
+                    },
+                    "OK"
+                }
+                button {
+                    class: "update-banner-link",
+                    onclick: move |_| {
+                        telemetry::set_consent(false);
+                        ask_consent.set(false);
+                    },
+                    "Turn off"
                 }
             }
         }
