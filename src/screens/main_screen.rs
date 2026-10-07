@@ -340,6 +340,69 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     // into the same `chains`/`deployed_workflows`/`unlinked_workflows`.
     let mut discovery_guard = crate::hooks::fetch_guard::use_fetch_guard();
 
+    // ── Rebuild chains when the poll finds workflows that are gone ──────
+    // The chain graph is cached on disk without expiry, so a workflow deleted
+    // or renamed in Azure stays in it — and gets polled — until someone hits
+    // Refresh. Same rebuild as "Recompute links": the graph is rebuilt from
+    // a fresh list of deployed workflows, which drops the missing ones.
+    let rebuild_for_missing = use_callback({
+        let az = az.clone();
+        move |missing: Vec<String>| {
+            if *loading_chains.peek() {
+                return;
+            }
+            let az = az.clone();
+            let token = discovery_guard.begin();
+            loading_chains.set(true);
+            spawn(async move {
+                let sub = az.subscription.clone();
+                let app = az.app_name.clone();
+                let sub2 = sub.clone();
+                let rg = az.resource_group.clone();
+                let app2 = app.clone();
+                let local_dir = az.local_dir.clone();
+                tokio::task::spawn_blocking(move || {
+                    remote_chain::recompute_chains(&sub, &app);
+                })
+                .await
+                .ok();
+                let result = tokio::task::spawn_blocking(move || {
+                    remote_chain::discover_chains_remote(&sub2, &rg, &app2, &local_dir)
+                })
+                .await;
+                if !discovery_guard.is_current(token) {
+                    return;
+                }
+                match result {
+                    Ok(Ok(discovery)) => {
+                        let discovered = discovery.chains;
+                        activity::warn(
+                            "Chains rebuilt: workflows no longer in Azure",
+                            format!("{} chain(s)", discovered.len()),
+                            format!(
+                                "These workflows were in the saved chain list but no longer \
+                                 exist in {}, so the chains were rebuilt from what is \
+                                 deployed now:\n{}",
+                                az.app_name,
+                                missing.join("\n"),
+                            ),
+                        );
+                        let deployed: Vec<String> = discovered
+                            .iter()
+                            .flat_map(|c| c.steps.iter().map(|s| s.workflow.clone()))
+                            .collect();
+                        deployed_workflows.set(deployed);
+                        chains.set(discovered);
+                        unlinked_workflows.set(discovery.unlinked);
+                    }
+                    Ok(Err(e)) => activity::error("Rebuilding chains failed", "", e),
+                    Err(e) => activity::error("Rebuilding chains failed", "", format!("{e}")),
+                }
+                loading_chains.set(false);
+            });
+        }
+    });
+
     // ── Discover chains from Azure on mount ─────────────────────────────
     use_effect({
         let az = az.clone();
@@ -1176,6 +1239,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                                         discovered_sb_namespace: discovered_sb_namespace,
                                         discovered_location: discovered_location,
                                         chain_names: chain_names,
+                                        on_missing_workflows: move |missing| rebuild_for_missing.call(missing),
                                     }
                                 }
                             }

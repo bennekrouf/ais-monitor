@@ -16,6 +16,17 @@ Each heading is dated on the day its tag was pushed. Releases that carried only
 build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for.
 
+## [Unreleased]
+
+### Fixed
+
+- Home no longer keeps reporting "WorkflowNotFound" errors for a workflow that
+  was deleted or renamed in Azure. AIS Monitor remembers your chains between
+  launches, so a workflow that has since gone stayed in them until you clicked
+  **Refresh**. Now, when Azure says a workflow no longer exists, the chains are
+  rebuilt from what is deployed and the activity log lists which workflows were
+  dropped.
+
 ## [0.3.43] - 2026-10-06
 
 ### Added

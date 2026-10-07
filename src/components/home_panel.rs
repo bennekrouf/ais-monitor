@@ -138,6 +138,10 @@ pub struct HomePanelProps {
     /// only at render time so a rename shows up immediately without
     /// invalidating any of that keyed state.
     pub chain_names: Signal<HashMap<String, String>>,
+    /// Called with the polled workflows Azure reports as no longer existing,
+    /// so MainScreen can rebuild the chain graph instead of polling them
+    /// forever from a stale cache.
+    pub on_missing_workflows: EventHandler<Vec<String>>,
 }
 
 #[component]
@@ -470,8 +474,13 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
         });
     }
 
+    // Missing workflows last handed to `on_missing_workflows`. If a rebuild
+    // still names the same ones, asking again would rebuild every sweep.
+    let mut missing_reported: Signal<Vec<String>> = use_signal(Vec::new);
+
     let mut poll_chains = {
         let az = az.clone();
+        let on_missing_workflows = props.on_missing_workflows;
         let chains_sig = props.chains;
         let mut chain_runs = props.chain_runs;
         let mut chain_health_sig = props.chain_health;
@@ -496,6 +505,7 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                 let mut errs = 0usize;
                 let mut samples: Vec<String> = Vec::new();
                 let mut halt: Option<chain_probe::ProbeHalt> = None;
+                let mut missing: Vec<String> = Vec::new();
                 // Resolved once per sweep rather than per chain — it can't
                 // change mid-sweep and peeking a signal in a loop is waste.
                 let ns = if !az.sb_namespace.is_empty() {
@@ -549,6 +559,9 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                             Err(e) => {
                                 errs += 1;
                                 halt = halt.or(chain_probe::classify(&e));
+                                if chain_probe::is_workflow_not_found(&e) {
+                                    missing.push(wf.clone());
+                                }
                                 let line = format!("list_runs {wf}: {e}");
                                 if samples.len() < 5 && !samples.contains(&line) {
                                     samples.push(line);
@@ -630,6 +643,15 @@ pub fn HomePanel(props: HomePanelProps) -> Element {
                 poll_errors.set(errs);
                 poll_error_samples.set(samples);
                 poll_halt.set(halt);
+                missing.sort();
+                if missing.is_empty() {
+                    if !missing_reported.peek().is_empty() {
+                        missing_reported.set(Vec::new());
+                    }
+                } else if *missing_reported.peek() != missing {
+                    missing_reported.set(missing.clone());
+                    on_missing_workflows.call(missing);
+                }
                 sweep_secs.set(sweep_started.elapsed().as_secs_f64());
                 chain_poll_at.set(epoch_secs());
                 // Both halt reasons back off — an unauthorized sweep will not
