@@ -210,6 +210,15 @@ pub fn classify(err: &str) -> Option<ProbeHalt> {
     }
 }
 
+/// Whether `err` says the workflow no longer exists in the Logic App.
+///
+/// Unlike the `classify` cases this concerns one workflow, not the app: it
+/// means the chain graph names a workflow that has since been deleted or
+/// renamed, so the remedy is rebuilding the graph rather than backing off.
+pub fn is_workflow_not_found(err: &str) -> bool {
+    err.contains("WorkflowNotFound")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,5 +274,15 @@ mod tests {
         // probe must carry on and report the rest.
         assert_eq!(classify(r#"Not Found({"code":"WorkflowNotFound"})"#), None);
         assert_eq!(classify("some transient parse failure"), None);
+    }
+
+    #[test]
+    fn workflow_not_found_is_recognised() {
+        assert!(is_workflow_not_found(
+            r#"ERROR: Not Found({"error":{"code":"WorkflowNotFound","message":"The workflow 'X' could not be found."}})"#
+        ));
+        assert!(!is_workflow_not_found(
+            "ResourceNotFound: Logic App missing"
+        ));
     }
 }
