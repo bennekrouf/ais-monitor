@@ -54,15 +54,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
     // so a rename survives across app restarts — same directory chain_detail
     // writes to on save.
     let chain_names = {
-        let dir = dirs::config_dir()
-            .unwrap_or_else(|| std::path::PathBuf::from("."))
-            .join("ais-monitor")
-            .join(format!(
-                "{}_{}_{}",
-                az.subscription, az.resource_group, az.app_name
-            ))
-            .to_string_lossy()
-            .to_string();
+        let dir = chain_names_dir(&az);
         use_signal(move || crate::services::names::load(&dir))
     };
     let mut chain_health = use_signal(HashMap::<String, ChainHealth>::new);
@@ -1484,4 +1476,18 @@ enum ViewMode {
     Observability,
     Diagnostics,
     VariableGroups,
+}
+
+/// The folder holding a profile's chain renames — shared with `ais-monitor mcp`,
+/// so Claude names a chain the way this window does.
+pub(crate) fn chain_names_dir(az: &AzConfig) -> String {
+    dirs::config_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("ais-monitor")
+        .join(format!(
+            "{}_{}_{}",
+            az.subscription, az.resource_group, az.app_name
+        ))
+        .to_string_lossy()
+        .to_string()
 }

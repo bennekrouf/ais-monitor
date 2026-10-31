@@ -1040,7 +1040,7 @@ fn config_file() -> std::path::PathBuf {
         .join("profiles.json")
 }
 
-fn load_profiles() -> Vec<AzConfig> {
+pub(crate) fn load_profiles() -> Vec<AzConfig> {
     crate::services::store::with_lock(load_profiles_unlocked)
 }
 
