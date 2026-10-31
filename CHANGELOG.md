@@ -16,6 +16,14 @@ Each heading is dated on the day its tag was pushed. Releases that carried only
 build or packaging work say so rather than being hidden: the version numbers a
 user sees in the update prompt should all be accounted for.
 
+## [Unreleased]
+
+### Changed
+
+- AIS Monitor no longer requires the Visual C++ Redistributable to run on
+  Windows. This change ensures the application can start on any PC without
+  additional dependencies.
+
 ## [0.3.44] - 2026-10-07
 
 ### Fixed
