@@ -43,3 +43,27 @@ getrandom = "0.3"
 
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"
+
+# ── Debug build size ─────────────────────────────────────────────────────────
+# Set before this one grows: the sibling Dioxus apps reached 9-10 GB in
+# target/ each, and the dependencies were never the problem — in ais-analytics
+# the 353 dependency rlibs came to 0.77 GB against 3.99 GB of the app's own
+# object files and 5.7 GB of target/debug/incremental. `rsx!` expands into
+# deeply nested generic component trees, so with the stock `debug = true`
+# every instantiation carries full DWARF.
+#
+# An application crate is hashed over its whole dependency graph, so each
+# dependency change mints a fresh generation of its objects, and Cargo never
+# collects the old ones. Line tables keep file:line in panic backtraces, which
+# is the part we read; the dependencies get no debuginfo at all. Set
+# `debug = 2` here temporarily when you need a real debugger over dependency
+# frames.
+#
+# Profiles only take effect at the workspace root, so this covers crates/core
+# and crates/tui too. target/debug/incremental is never pruned, so clear it
+# when it grows: `rm -rf target/debug/incremental`.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false

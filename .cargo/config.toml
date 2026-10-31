@@ -5,3 +5,12 @@
 # published asset names, so it can't be renamed without breaking those.
 tui = "run -p ais-monitor-tui"
 t = "run -p ais-monitor-tui"
+
+# Link the MSVC C runtime statically on Windows. With the default dynamic CRT, ais-monitor.exe and ais-monitor-tui.exe
+# import VCRUNTIME140.dll / VCRUNTIME140_1.dll and fail to start on any PC without the Visual
+# C++ Redistributable. The installer is per-user with no UAC prompt, so it can't install the
+# redistributable itself.
+# The cc crate follows this flag, so C dependencies build with /MT too.
+# Release CI checks the result with scripts/check-windows-crt.ps1.
+[target.x86_64-pc-windows-msvc]
+rustflags = ["-C", "target-feature=+crt-static"]
