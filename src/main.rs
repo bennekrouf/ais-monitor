@@ -1,12 +1,14 @@
 mod components;
 mod hooks;
+mod kit;
 mod notice;
 mod screens;
 mod services;
 mod telemetry;
-mod update_check;
 
 use components::chain_detail::AzConfig;
+use desktop_kit::self_update::{self, Stage};
+use desktop_kit::update_check::UpdateInfo;
 use dioxus::desktop::LogicalSize;
 use dioxus::prelude::*;
 use screens::{main_screen::MainScreen, welcome::Welcome};
@@ -60,6 +62,9 @@ pub fn open_in_new_window(config: AzConfig) {
 }
 
 fn main() {
+    // Names the app to desktop-kit before its update check can run.
+    kit::init();
+
     // Before anything can shell out: an app launched from Finder or a .dmg
     // does not inherit the terminal's PATH, so `az` reads as "not found".
     services::env::adopt_login_path();
@@ -236,19 +241,57 @@ fn WindowRoot(initial: Option<AzConfig>) -> Element {
         },
     );
 
-    let mut update_info = use_signal(|| Option::<update_check::UpdateInfo>::None);
+    let mut update_info = use_signal(|| Option::<UpdateInfo>::None);
     let mut update_dismissed = use_signal(|| false);
+    // Whether this copy can put the new build in place itself (an installed
+    // app, not a `cargo` build), and how far an install has got. A failure
+    // keeps the banner with the reason and the button to try again. Starts
+    // with what the last attempt left, so an app that quit to update and came
+    // back on the old version says why.
+    let mut update_installable = use_signal(|| false);
+    let mut update_stage = use_signal(|| Option::<Stage>::None);
+    let mut update_failed = use_signal(self_update::last_failure);
     use_coroutine(
         move |_rx: dioxus::prelude::UnboundedReceiver<()>| async move {
             tokio::time::sleep(std::time::Duration::from_secs(3)).await;
-            if let Some(info) = update_check::check().await {
+            if let Some(info) = desktop_kit::update_check::check().await {
                 telemetry::record(telemetry::Event::UpdateOffered {
                     to: info.latest_version.clone(),
                 });
+                update_installable.set(self_update::installable(&info));
                 update_info.set(Some(info));
             }
         },
     );
+    // Downloads, checks the digest and signature, and prepares the swap off
+    // the UI thread, showing how far it got, then quits: what desktop-kit
+    // started beside the app puts the new version in place and opens it.
+    let mut install_update = move |info: UpdateInfo| {
+        telemetry::record(telemetry::Event::UpdateClicked {
+            to: info.latest_version.clone(),
+        });
+        update_failed.set(None);
+        update_stage.set(Some(Stage::Downloading(0)));
+        spawn(async move {
+            let (tx, rx) = tokio::sync::watch::channel(Stage::Downloading(0));
+            let job = tokio::task::spawn_blocking(move || {
+                self_update::install(&info, &|stage| {
+                    let _ = tx.send(stage);
+                })
+            });
+            while !job.is_finished() {
+                let stage = rx.borrow().clone();
+                update_stage.set(Some(stage));
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+            }
+            match job.await {
+                Ok(Ok(())) => std::process::exit(0),
+                Ok(Err(e)) => update_failed.set(Some(e)),
+                Err(e) => update_failed.set(Some(e.to_string())),
+            }
+            update_stage.set(None);
+        });
+    };
 
     // ── Anonymous usage statistics ─────────────────────────────────────────
     // On by default, but only once the person has been told: `start` reads the
@@ -275,41 +318,81 @@ fn WindowRoot(initial: Option<AzConfig>) -> Element {
         if let (Some(info), false) = (update_info.read().clone(), *update_dismissed.read()) {
             div { class: "update-banner",
                 span { class: "update-banner-text",
-                    "AIS Monitor "
-                    strong { "{info.latest_version}" }
-                    " is available (you have {env!(\"CARGO_PKG_VERSION\")})."
+                    match (update_stage(), update_failed()) {
+                        (Some(Stage::Downloading(bytes)), _) => rsx! {
+                            "Downloading AIS Monitor "
+                            strong { "{info.latest_version}" }
+                            "… {bytes as f64 / 1_000_000.0:.1} MB"
+                        },
+                        (Some(Stage::Checking), _) => rsx! {
+                            "Checking the download of AIS Monitor "
+                            strong { "{info.latest_version}" }
+                            "…"
+                        },
+                        (Some(Stage::Installing), _) => rsx! {
+                            "Installing AIS Monitor "
+                            strong { "{info.latest_version}" }
+                            ": it restarts in a moment."
+                        },
+                        (None, Some(e)) => rsx! {
+                            "Couldn't install AIS Monitor "
+                            strong { "{info.latest_version}" }
+                            ": {e}."
+                        },
+                        (None, None) => rsx! {
+                            "AIS Monitor "
+                            strong { "{info.latest_version}" }
+                            " is available (you have {env!(\"CARGO_PKG_VERSION\")})."
+                        },
+                    }
                 }
-                {
-                    // Deliberately a button, not an `<a href>`. This URL
-                    // comes from a remote `latest.json`, and a bare anchor in
-                    // a desktop webview is one interception rule away from
-                    // navigating the *app's own* webview to it — putting a
-                    // remote page inside the IPC bridge. Routing through
-                    // `open_in_browser` also runs its scheme check.
-                    let url = info.release_url.clone();
-                    let to = info.latest_version.clone();
-                    rsx! {
+                if update_stage().is_none() {
+                    if desktop_kit::policy::get().disable_self_update {
+                        span { class: "update-banner-sha", "Your organization installs updates." }
+                    } else if update_installable() {
                         button {
                             class: "update-banner-link",
-                            onclick: move |_| {
-                                telemetry::record(telemetry::Event::UpdateClicked { to: to.clone() });
-                                services::portal_links::open_in_browser(&url)
+                            title: "Download {info.latest_version}, check it, install it in place of this version and restart AIS Monitor",
+                            onclick: {
+                                let info = info.clone();
+                                move |_| install_update(info.clone())
                             },
-                            "Download"
+                            "Install & restart"
+                        }
+                    } else {
+                        {
+                            // Deliberately a button, not an `<a href>`. This
+                            // URL comes from a remote `latest.json`, and a
+                            // bare anchor in a desktop webview is one
+                            // interception rule away from navigating the
+                            // *app's own* webview to it. Routing through
+                            // `open_in_browser` also runs its scheme check.
+                            let url = info.download_url.clone();
+                            let to = info.latest_version.clone();
+                            rsx! {
+                                button {
+                                    class: "update-banner-link",
+                                    onclick: move |_| {
+                                        telemetry::record(telemetry::Event::UpdateClicked { to: to.clone() });
+                                        services::portal_links::open_in_browser(&url)
+                                    },
+                                    "Download"
+                                }
+                            }
+                        }
+                        if !info.sha256.is_empty() {
+                            span {
+                                class: "update-banner-sha",
+                                title: "SHA-256 of the published build — compare it against the file you downloaded",
+                                "sha256 {services::text::head(&info.sha256, 12)}"
+                            }
                         }
                     }
-                }
-                if !info.sha256.is_empty() {
-                    span {
-                        class: "update-banner-sha",
-                        title: "SHA-256 of the published build — compare it against the file you downloaded",
-                        "sha256 {services::text::head(&info.sha256, 12)}"
+                    button {
+                        class: "update-banner-dismiss",
+                        onclick: move |_| update_dismissed.set(true),
+                        "×"
                     }
-                }
-                button {
-                    class: "update-banner-dismiss",
-                    onclick: move |_| update_dismissed.set(true),
-                    "×"
                 }
             }
         }
