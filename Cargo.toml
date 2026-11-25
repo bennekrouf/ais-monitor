@@ -26,6 +26,10 @@ chrono = { version = "0.4", features = ["serde"] }
 # dependencies they need belong to this crate rather than being listed —
 # and compiled — twice.
 ais-monitor-core = { path = "crates/core" }
+# What every mayorana desktop app shares. Only its update check and in-place
+# install (self_update) are used: the `ui` feature needs Dioxus 0.7. Pinned to
+# a commit so a change to the kit lands here only when this line moves.
+desktop-kit = { git = "https://github.com/bennekrouf/desktop-kit.git", rev = "d0aee9c1a75b347ffdcc53160f961c8e7cb4cab7" }
 dirs = "5"
 rfd = "0.15"
 dark-light = "1"
