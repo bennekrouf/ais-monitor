@@ -369,7 +369,12 @@ jobs:
       - name: Copy WebView2Loader.dll
         shell: pwsh
         run: |
-          $dll = Get-ChildItem "target\release\build\webview2-com-sys-*\out\x64\WebView2Loader.dll" | Select-Object -First 1
+          # Searched for rather than spelled out: Cargo 1.100 moved build-script
+          # output from build\<pkg>-<hash>\out to build\<pkg>\<hash>\out, and
+          # the layout is not a stable interface, so a fixed path breaks again.
+          $dll = Get-ChildItem "target\release\build" -Recurse -Filter "WebView2Loader.dll" |
+            Where-Object { $_.FullName -like "*webview2-com-sys*" -and $_.Directory.Name -eq "x64" } |
+            Select-Object -First 1
           if ($dll) { Copy-Item $dll.FullName "target\release\WebView2Loader.dll" -Force }
           else { Write-Error "WebView2Loader.dll not found in build output" }
 
