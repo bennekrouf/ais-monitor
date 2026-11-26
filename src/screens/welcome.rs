@@ -137,6 +137,10 @@ pub fn Welcome(props: WelcomeProps) -> Element {
 
     rsx! {
         div { class: "welcome",
+            // Top right, out of the way of the connection form.
+            div { class: "welcome-corner",
+                crate::components::mcp_dialog::McpButton { class: "btn btn-small" }
+            }
             div { class: "welcome-card",
                 h1 { "AIS Monitor" }
                 p { class: "subtitle", "Azure Logic Apps — Production Chain Monitoring" }

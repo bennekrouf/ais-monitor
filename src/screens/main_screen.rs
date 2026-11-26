@@ -1035,6 +1035,7 @@ pub fn MainScreen(props: MainScreenProps) -> Element {
                 }
 
                 div { class: "topbar-spacer" }
+                crate::components::mcp_dialog::McpButton { class: "btn btn-small" }
                 button {
                     class: "btn-theme",
                     onclick: move |_| {

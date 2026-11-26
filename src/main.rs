@@ -1,6 +1,7 @@
 mod components;
 mod hooks;
 mod kit;
+mod mcp;
 mod notice;
 mod screens;
 mod services;
@@ -62,12 +63,17 @@ pub fn open_in_new_window(config: AzConfig) {
 }
 
 fn main() {
+    // Before anything can shell out: an app launched from Finder or a .dmg,
+    // or by an MCP client, does not inherit the terminal's PATH, so `az`
+    // reads as "not found".
+    services::env::adopt_login_path();
+
     // Names the app to desktop-kit before its update check can run.
     kit::init();
-
-    // Before anything can shell out: an app launched from Finder or a .dmg
-    // does not inherit the terminal's PATH, so `az` reads as "not found".
-    services::env::adopt_login_path();
+    // `ais-monitor mcp`: the tools over stdio for an MCP client, and no window.
+    if std::env::args().nth(1).as_deref() == Some("mcp") {
+        return mcp::serve();
+    }
 
     // Suppress noisy debug logs from hyper/reqwest unless the user overrides RUST_LOG
     if std::env::var("RUST_LOG").is_err() {

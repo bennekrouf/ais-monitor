@@ -10,6 +10,7 @@ pub mod graph_panel;
 pub mod health_check_panel;
 pub mod home_panel;
 pub mod login_banner;
+pub mod mcp_dialog;
 pub mod observability_panel;
 pub mod rbac_panel;
 pub mod resource_health_panel;
