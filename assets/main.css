@@ -2913,3 +2913,30 @@ button.update-banner-link {
     font-weight: 600;
 }
 .home-run-status.running { color: var(--text1); }
+
+/* "Use AIS Monitor from Claude or Codex" — the MCP button's window. */
+.welcome-corner { position: absolute; top: 14px; right: 16px; }
+.mcp-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.55); z-index: 1000; }
+.mcp-dialog {
+    position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); z-index: 1001;
+    width: 620px; max-width: 92vw; max-height: calc(100vh - 48px); overflow-y: auto;
+    background: var(--bg1); border: 1px solid var(--border); border-radius: 10px;
+    box-shadow: 0 20px 60px #0008; text-align: left;
+}
+.mcp-dialog-header {
+    display: flex; align-items: flex-start; justify-content: space-between; gap: 10px;
+    padding: 14px 16px 10px; border-bottom: 1px solid var(--border);
+}
+.mcp-dialog-header h3 { font-size: 14px; color: var(--text1); margin: 0 0 3px; }
+.mcp-dialog-body { padding: 12px 16px 16px; display: flex; flex-direction: column; gap: 6px; }
+.mcp-label { margin: 8px 0 0; font-size: 12px; font-weight: 600; color: var(--text1); }
+.mcp-hint { margin: 0; font-size: 12px; line-height: 1.5; color: var(--text2); }
+.mcp-path, .mcp-note { font-size: 11.5px; }
+.mcp-snippet-wrap { position: relative; }
+.mcp-snippet {
+    margin: 0; padding: 10px 76px 10px 12px; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--bg0); color: var(--text1);
+    font: 11.5px var(--mono); line-height: 1.5;
+    white-space: pre-wrap; word-break: break-all; user-select: text; -webkit-user-select: text;
+}
+.mcp-copy { position: absolute; top: 6px; right: 6px; }
